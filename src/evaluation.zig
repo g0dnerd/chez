@@ -77,10 +77,10 @@ fn materialCount(state: *const State, c: Color) i32 {
 
 fn positionalScore(state: *const State, c: Color, is_endgame: bool) i32 {
     var score: i32 = 0;
-    const pieces = state.colorBitboard(c);
 
     var piece: Pieces.Piece = 0;
     while (piece < 6) {
+        var pieces = state.colorBitboard(c).bitAnd(state.pieceBitboard(piece));
         defer piece += 1;
 
         var piece_iter = pieces.iter();
@@ -107,7 +107,7 @@ fn positionalScore(state: *const State, c: Color, is_endgame: bool) i32 {
 
 fn pawnStructureScore(state: *const State, c: Color) i32 {
     var score: i32 = 0;
-    const pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
+    var pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
     var pawns_iter = pawns.iter();
 
     while (pawns_iter.next()) |s| {
@@ -118,19 +118,19 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
         const ahead_mask = blk: {
             if (c == Colors.white) {
                 if (rank < 7) {
-                    const lhs: u64 = 0xFF << ((rank + 1) * 8);
+                    const lhs: u64 = @as(u64, 0xFF) << ((rank + 1) * 8);
                     const rhs: u64 = rhs: {
                         if (file > 0) {
-                            break :rhs 0x0101010101010101 << (file - 1);
+                            break :rhs @as(u64, 0x0101010101010101) << (file - 1);
                         } else {
                             break :rhs 0;
                         }
                     };
                     const inner: u64 = inner: {
                         if (file < 7) {
-                            break :inner 0x0101010101010101 << file | 0x0101010101010101 << (file + 1);
+                            break :inner @as(u64, 0x0101010101010101) << file | @as(u64, 0x0101010101010101) << (file + 1);
                         } else {
-                            break :inner 0x0101010101010101 << file | 0;
+                            break :inner @as(u64, 0x0101010101010101) << file | 0;
                         }
                     };
                     break :blk lhs & (rhs | inner);
@@ -138,19 +138,19 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
                     break :blk 0;
                 }
             } else if (rank > 0) {
-                const lhs: u64 = (1 << (rank * 8)) - 1;
+                const lhs: u64 = (@as(u64, 1) << (rank * 8)) - 1;
                 const rhs: u64 = rhs: {
                     if (file > 0) {
-                        break :rhs 0x0101010101010101 << (file - 1);
+                        break :rhs @as(u64, 0x0101010101010101) << (file - 1);
                     } else {
                         break :rhs 0;
                     }
                 };
                 const inner: u64 = inner: {
                     if (file < 7) {
-                        break :inner 0x0101010101010101 << file | 0x0101010101010101 << (file + 1);
+                        break :inner @as(u64, 0x0101010101010101) << file | @as(u64, 0x0101010101010101) << (file + 1);
                     } else {
-                        break :inner 0x0101010101010101 << file | 0;
+                        break :inner @as(u64, 0x0101010101010101) << file | 0;
                     }
                 };
                 break :blk lhs & (rhs | inner);
@@ -159,7 +159,7 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
             }
         };
 
-        const opp_pawns = state.pieceBitboard(Pieces.pawn) & state.colorBitboard(~c);
+        const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
         if ((opp_pawns.bits & ahead_mask) == 0) {
             const passed_rank: u6 = blk: {
                 if (c == Colors.white) {
@@ -173,7 +173,7 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
         }
 
         // Doubled pawn penalty
-        const file_mask = 0x0101010101010101 << file;
+        const file_mask = @as(u64, 0x0101010101010101) << file;
         if (@popCount(pawns.bits & file_mask) > 1) {
             score -= 10;
         }
@@ -186,34 +186,33 @@ fn mobilityScore(state: *const State, c: Color) i32 {
     const movegen = @import("movegen.zig");
 
     var score: i32 = 0;
-    const pieces = state.colorBitboard(~c);
-    const own_pieces = state.colorBitboard(c);
+    const pieces = state.colorBitboard(c);
 
-    const knights = state.pieceBitboard(Pieces.knight).bitAnd(pieces);
+    var knights = state.pieceBitboard(Pieces.knight).bitAnd(pieces);
     var knight_iter = knights.iter();
     while (knight_iter.next()) |s| {
-        const moves = movegen.knightMoves(s).bitAnd(own_pieces.not());
+        const moves = movegen.knightMoves(s).bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
     }
 
-    const bishops = state.pieceBitboard(Pieces.bishop).bitAnd(pieces);
+    var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(pieces);
     var bishop_iter = bishops.iter();
     while (bishop_iter.next()) |s| {
-        const moves = movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(own_pieces.not());
+        const moves = movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
     }
 
-    const rooks = state.pieceBitboard(Pieces.rook).bitAnd(pieces);
+    var rooks = state.pieceBitboard(Pieces.rook).bitAnd(pieces);
     var rook_iter = rooks.iter();
     while (rook_iter.next()) |s| {
-        const moves = movegen.sliderMoves(state, s, Pieces.rook).bitAnd(own_pieces.not());
+        const moves = movegen.sliderMoves(state, s, Pieces.rook).bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
     }
 
-    return score / 4;
+    return @divTrunc(score, 4);
 }
 
 pub fn evaluate(state: *const State) i32 {
@@ -232,20 +231,24 @@ pub fn evaluate(state: *const State) i32 {
     const our_position = positionalScore(state, to_move, is_endgame);
     const opp_position = positionalScore(state, opp, is_endgame);
 
-    return our_material + our_position + our_pawn_structure + our_mobility - opp_material + opp_position + opp_pawn_structure + opp_mobility;
+    return our_material + our_position + our_pawn_structure + our_mobility - opp_material - opp_position - opp_pawn_structure - opp_mobility;
 }
 
 // Order moves by their score (best first)
 pub fn orderMoves(state: *const State, moves: []game.Move, color: Color) void {
-    std.mem.sort(game.Move, moves, {}, cmpMove());
+    var ctx = SortCtx{ .state = state, .color = color };
+    std.mem.sort(game.Move, moves, &ctx, cmpMove);
 }
 
-pub fn cmpMove(lhs: *const game.Move, rhs: *const game.Move, state: *const State, color: Color) bool {
-    const lhs_score = scoreMove(state, lhs, color);
-    const rhs_score = scoreMove(state, rhs, color);
-
-    return lhs_score < rhs_score;
+fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
+    // const sort_ctx: *const SortCtx = @ptrCast(ctx);
+    return scoreMove(ctx.state, a, ctx.color) > scoreMove(ctx.state, b, ctx.color);
 }
+
+const SortCtx = struct {
+    state: *const State,
+    color: Color,
+};
 
 pub fn scoreMove(state: *const State, m: game.Move, color: Color) i32 {
     var score: i32 = 0;

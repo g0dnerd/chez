@@ -212,10 +212,10 @@ pub fn kingMoves(state: *const State, s: Square, c: Color) Bitboard {
                 }
             },
             Colors.black => {
-                if (castling_rights & game.Castling.BlackKingside != 0 and state.isSquareEmpty(Squares.f8) and state.isSquareEmpty(Squares.g8) and state.colorBitboard(Colors.black).contains(Squares.h1) and state.pieceBitboard(Pieces.rook).contains(Squares.h1)) {
+                if (castling_rights & game.Castling.BlackKingside != 0 and state.isSquareEmpty(Squares.f8) and state.isSquareEmpty(Squares.g8) and state.colorBitboard(Colors.black).contains(Squares.h8) and state.pieceBitboard(Pieces.rook).contains(Squares.h8)) {
                     ret.bitOrAssign(Squares.g8);
                 }
-                if (castling_rights & game.Castling.BlackQueenside != 0 and state.isSquareEmpty(Squares.b8) and state.isSquareEmpty(Squares.c8) and state.isSquareEmpty(Squares.d8) and state.colorBitboard(Colors.black).contains(Squares.a1) and state.pieceBitboard(Pieces.rook).contains(Squares.a1)) {
+                if (castling_rights & game.Castling.BlackQueenside != 0 and state.isSquareEmpty(Squares.b8) and state.isSquareEmpty(Squares.c8) and state.isSquareEmpty(Squares.d8) and state.colorBitboard(Colors.black).contains(Squares.a8) and state.pieceBitboard(Pieces.rook).contains(Squares.a8)) {
                     ret.bitOrAssign(Squares.c8);
                 }
             },

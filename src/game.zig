@@ -6,6 +6,12 @@ pub const Move = struct {
     end: Squares.Square,
 };
 
+pub const GameResult = union(enum) {
+    checkmate: Colors.Color,
+    stalemate,
+    fiftyMoveRule,
+};
+
 pub const Squares = struct {
     pub const Square = u6;
 
@@ -248,6 +254,38 @@ pub fn rayBetweenInclusive(from: Squares.Square, to: Squares.Square, d: Directio
 
     return ray;
 }
+
+var keys_once = std.once(initZobristKeys);
+var keys_storage: [6][64]u64 = undefined;
+
+fn initZobristKeys() void {
+    var seed: u64 = undefined;
+    std.posix.getrandom(std.mem.asBytes(&seed)) catch @panic("getrandom failed");
+    var rng = std.Random.DefaultPrng.init(seed);
+    const random = rng.random();
+
+    var dupe_keys = std.AutoHashMap(u64, void).init(std.heap.page_allocator);
+    defer dupe_keys.deinit();
+
+    for (0..6) |piece_type| {
+        for (0..64) |square| {
+            const key = random.int(u64);
+            std.debug.assert(!dupe_keys.contains(key));
+            dupe_keys.put(key, {}) catch @panic("OOM");
+            keys_storage[piece_type][square] = key;
+        }
+    }
+}
+
+pub fn getZobristKeys() *const [6][64]u64 {
+    keys_once.call();
+    return &keys_storage;
+}
+
+pub const PieceRepr = [2][6]u8{
+    [_]u8{ 'P', 'N', 'B', 'R', 'Q', 'K' },
+    [_]u8{ 'p', 'n', 'b', 'r', 'q', 'k' },
+};
 
 test "test try square offset" {
     try std.testing.expectEqual(trySquareOffset(Squares.a1, -1, 0), null);

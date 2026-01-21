@@ -21,6 +21,7 @@ en_passant: ?Square = null,
 in_check: ?Color = null,
 halfmove_clock: u16 = 0,
 fullmove_clock: u16 = 1,
+last_move: ?game.Move = null,
 
 pub fn defaultPosition() State {
     const pawns = Bitboard{ .bits = 0xff00000000ff00 };
@@ -33,12 +34,7 @@ pub fn defaultPosition() State {
     const white_pieces = Bitboard{ .bits = 0xffff };
     const black_pieces = Bitboard{ .bits = 0xffff000000000000 };
 
-    return State{
-        .colors = .{ white_pieces, black_pieces },
-        .pieces = .{ pawns, knights, bishops, rooks, queens, kings },
-        .to_move = Colors.white,
-        .castling_rights = Castling.AllLegal
-    };
+    return State{ .colors = .{ white_pieces, black_pieces }, .pieces = .{ pawns, knights, bishops, rooks, queens, kings }, .to_move = Colors.white, .castling_rights = Castling.AllLegal };
 }
 
 pub fn fromFen(fen: []const u8) !State {
@@ -221,10 +217,10 @@ pub fn fromFen(fen: []const u8) !State {
                 switch (c) {
                     '-' => {},
                     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' => en_passant_file = @intCast(@as(u8, c) - 'a'),
-                    '0', '1', '2', '3', '4', '5', '6', '7', '8' => {
+                    '1', '2', '3', '4', '5', '6', '7', '8' => {
                         if (en_passant_file) |f| {
                             const rank: u6 = @intCast(try std.fmt.charToDigit(c, 10));
-                            const ep: Square = rank * 8 + f;
+                            const ep: Square = (rank - 1) * 8 + f;
                             if (ep > 63) {
                                 return error.InvalidEnpassantSquare;
                             }
@@ -281,6 +277,40 @@ pub fn fromFen(fen: []const u8) !State {
     }
 
     return res;
+}
+
+pub fn format(self: State, writer: *std.Io.Writer) !void {
+    var rank: u6 = 7;
+    while (true) {
+        var file: u6 = 0;
+        while (file < 8) {
+            defer file += 1;
+
+            const s = rank * 8 + file;
+            if (self.pieceAt(s)) |p| {
+                const c = self.colorAt(s).?;
+                try writer.print("{c} ", .{game.PieceRepr[c][p]});
+            } else {
+                try writer.writeAll("- ");
+            }
+        }
+        try writer.writeByte('\n');
+        try writer.flush();
+
+        if (rank == 0) break;
+        rank -= 1;
+    }
+}
+
+pub fn hash(self: *const State) u64 {
+    var ret: u64 = 0;
+    var pieces = self.allPieces();
+    var piece_iter = pieces.iter();
+    while (piece_iter.next()) |s| {
+        const p = self.pieceAt(s).?;
+        ret ^= game.getZobristKeys()[p][s];
+    }
+    return ret;
 }
 
 pub fn colorBitboard(self: *const State, c: Color) Bitboard {
@@ -378,9 +408,9 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
                             Squares.c1 => {
                                 if (self.castling_rights & Castling.WhiteQueenside != 0) {
                                     self.*.pieces[Pieces.rook].bitXorAssign(Squares.a1);
-                                    self.*.pieces[Pieces.rook].bitOrAssign(Squares.c1);
+                                    self.*.pieces[Pieces.rook].bitOrAssign(Squares.d1);
                                     self.*.colors[c].bitXorAssign(Squares.a1);
-                                    self.*.colors[c].bitOrAssign(Squares.c1);
+                                    self.*.colors[c].bitOrAssign(Squares.d1);
                                 }
                             },
                             else => unreachable,
@@ -402,9 +432,9 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
                             Squares.c8 => {
                                 if (self.castling_rights & Castling.BlackQueenside != 0) {
                                     self.*.pieces[Pieces.rook].bitXorAssign(Squares.a8);
-                                    self.*.pieces[Pieces.rook].bitOrAssign(Squares.c8);
+                                    self.*.pieces[Pieces.rook].bitOrAssign(Squares.d8);
                                     self.*.colors[c].bitXorAssign(Squares.a8);
-                                    self.*.colors[c].bitOrAssign(Squares.c8);
+                                    self.*.colors[c].bitOrAssign(Squares.d8);
                                 }
                             },
                             else => unreachable,
@@ -542,18 +572,18 @@ test "test fen from e4 c5 nf3" {
     const queens = state.pieceBitboard(Pieces.queen);
     const kings = state.pieceBitboard(Pieces.king);
 
-    try expectEqual(Bitboard{ .bits = 0xfb00041000ef00}, pawns);
-    try expectEqual(Bitboard{ .bits = 0x4200000000200002}, knights);
-    try expectEqual(Bitboard{ .bits = 0x2400000000000024}, bishops);
-    try expectEqual(Bitboard{ .bits = 0x8100000000000081}, rooks);
-    try expectEqual(Bitboard{ .bits = 0x800000000000008}, queens);
-    try expectEqual(Bitboard{ .bits = 0x1000000000000010}, kings);
+    try expectEqual(Bitboard{ .bits = 0xfb00041000ef00 }, pawns);
+    try expectEqual(Bitboard{ .bits = 0x4200000000200002 }, knights);
+    try expectEqual(Bitboard{ .bits = 0x2400000000000024 }, bishops);
+    try expectEqual(Bitboard{ .bits = 0x8100000000000081 }, rooks);
+    try expectEqual(Bitboard{ .bits = 0x800000000000008 }, queens);
+    try expectEqual(Bitboard{ .bits = 0x1000000000000010 }, kings);
 
     const white_pieces = state.colorBitboard(Colors.white);
     const black_pieces = state.colorBitboard(Colors.black);
 
-    try expectEqual(Bitboard{ .bits = 0x1020efbf}, white_pieces);
-    try expectEqual(Bitboard{ .bits = 0xfffb000400000000}, black_pieces);
+    try expectEqual(Bitboard{ .bits = 0x1020efbf }, white_pieces);
+    try expectEqual(Bitboard{ .bits = 0xfffb000400000000 }, black_pieces);
 
     try expectEqual(Colors.black, state.to_move);
     try expectEqual(Castling.AllLegal, state.castling_rights);

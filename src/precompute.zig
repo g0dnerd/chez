@@ -192,9 +192,6 @@ pub fn writeMagics(piece_name: []const u8, magics: *const [64]MagicTableEntry, w
 }
 
 pub fn main() !void {
-    // const time: u128 = @bitCast(std.time.nanoTimestamp());
-    // const seed: u64 = @truncate(time);
-    // var rng = std.Random.DefaultPrng.init(seed);
     const alloc = std.heap.page_allocator;
 
     // try precomputeMagics(alloc, &rng);
