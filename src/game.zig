@@ -97,7 +97,8 @@ pub fn trySquareOffset(s: Squares.Square, dx: i3, dy: i3) ?Squares.Square {
 }
 
 pub fn absDiff(lhs: Squares.Square, rhs: Squares.Square) Squares.Square {
-    return @max(lhs, rhs) - @min(lhs, rhs);
+    const diff = @as(i8, @intCast(lhs)) - @as(i8, @intCast(rhs));
+    return @intCast(@abs(diff));
 }
 
 pub const Pieces = struct {
@@ -113,13 +114,13 @@ pub const Pieces = struct {
 
 pub const Slider = struct {
     pub const SliderDirections = [4][2]i2;
-    pub const RookDirections: SliderDirections = .{
+    pub const ROOK_DIRECTIONS: SliderDirections = .{
         .{ 0, 1 },
         .{ 1, 0 },
         .{ 0, -1 },
         .{ -1, 0 },
     };
-    pub const BishopDirections: SliderDirections = .{
+    pub const BISHOP_DIRECTIONS: SliderDirections = .{
         .{ 1, 1 },
         .{ 1, -1 },
         .{ -1, 1 },
@@ -255,8 +256,15 @@ pub fn rayBetweenInclusive(from: Squares.Square, to: Squares.Square, d: Directio
     return ray;
 }
 
+pub const ZobristKeys = struct {
+    pieces: [2][6][64]u64, // [color][piece_type][square]
+    side_to_move: u64, // XOR when black to move
+    castling: [16]u64, // One key per castling rights combination
+    en_passant: [8]u64, // One key per file (only file matters for en passant)
+};
+
 var keys_once = std.once(initZobristKeys);
-var keys_storage: [6][64]u64 = undefined;
+var keys_storage: ZobristKeys = undefined;
 
 fn initZobristKeys() void {
     var seed: u64 = undefined;
@@ -264,27 +272,73 @@ fn initZobristKeys() void {
     var rng = std.Random.DefaultPrng.init(seed);
     const random = rng.random();
 
-    var dupe_keys = std.AutoHashMap(u64, void).init(std.heap.page_allocator);
-    defer dupe_keys.deinit();
-
-    for (0..6) |piece_type| {
-        for (0..64) |square| {
-            const key = random.int(u64);
-            std.debug.assert(!dupe_keys.contains(key));
-            dupe_keys.put(key, {}) catch @panic("OOM");
-            keys_storage[piece_type][square] = key;
+    // Piece-square keys for each color
+    for (0..2) |color| {
+        for (0..6) |piece_type| {
+            for (0..64) |square| {
+                keys_storage.pieces[color][piece_type][square] = random.int(u64);
+            }
         }
+    }
+
+    // Side to move key
+    keys_storage.side_to_move = random.int(u64);
+
+    // Castling rights keys
+    for (0..16) |rights| {
+        keys_storage.castling[rights] = random.int(u64);
+    }
+
+    // En passant file keys
+    for (0..8) |file| {
+        keys_storage.en_passant[file] = random.int(u64);
     }
 }
 
-pub fn getZobristKeys() *const [6][64]u64 {
+pub fn getZobristKeys() *const ZobristKeys {
     keys_once.call();
     return &keys_storage;
 }
 
-pub const PieceRepr = [2][6]u8{
+pub const PIECE_REPR = [2][6]u8{
     [_]u8{ 'P', 'N', 'B', 'R', 'Q', 'K' },
     [_]u8{ 'p', 'n', 'b', 'r', 'q', 'k' },
+};
+
+pub const CastleData = struct {
+    king_end: Squares.Square,
+    rook_from: Squares.Square,
+    rook_to: Squares.Square,
+    rights_bit: Castling.CastlingRights,
+};
+
+pub const CASTLE_DATA: [2][2]CastleData = .{
+    // White
+    .{
+        .{ .king_end = Squares.g1, .rook_from = Squares.h1, .rook_to = Squares.f1, .rights_bit = Castling.WhiteKingside },
+        .{ .king_end = Squares.c1, .rook_from = Squares.a1, .rook_to = Squares.d1, .rights_bit = Castling.WhiteQueenside },
+    },
+    // Black
+    .{
+        .{ .king_end = Squares.g8, .rook_from = Squares.h8, .rook_to = Squares.f8, .rights_bit = Castling.BlackKingside },
+        .{ .king_end = Squares.c8, .rook_from = Squares.a8, .rook_to = Squares.d8, .rights_bit = Castling.BlackQueenside },
+    },
+};
+
+pub const KING_CASTLING_MASK: [2]Castling.CastlingRights = .{
+    ~Castling.WhiteCastling,
+    ~Castling.BlackCastling,
+};
+
+pub const ROOK_CASTLING_RIGHTS_MASK: [64]Castling.CastlingRights = blk: {
+    var mask: [64]Castling.CastlingRights = @splat(Castling.AllLegal);
+
+    mask[Squares.a1] = ~Castling.WhiteQueenside;
+    mask[Squares.h1] = ~Castling.WhiteKingside;
+    mask[Squares.a8] = ~Castling.BlackQueenside;
+    mask[Squares.h8] = ~Castling.BlackKingside;
+
+    break :blk mask;
 };
 
 test "test try square offset" {

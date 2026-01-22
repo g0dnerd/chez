@@ -5,7 +5,7 @@ const Colors = game.Colors;
 const Color = Colors.Color;
 const Pieces = game.Pieces;
 
-const PieceValues = [6]i32{ 100, 305, 333, 563, 950, 20000 };
+const PIECE_VALUES = [6]i32{ 100, 305, 333, 563, 950, 20000 };
 const POSITIONAL_SCORES = [6][64]i32{
     // Pawns
     [_]i32{
@@ -234,22 +234,6 @@ pub fn evaluate(state: *const State) i32 {
     return our_material + our_position + our_pawn_structure + our_mobility - opp_material - opp_position - opp_pawn_structure - opp_mobility;
 }
 
-// Order moves by their score (best first)
-pub fn orderMoves(state: *const State, moves: []game.Move, color: Color) void {
-    var ctx = SortCtx{ .state = state, .color = color };
-    std.mem.sort(game.Move, moves, &ctx, cmpMove);
-}
-
-fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
-    // const sort_ctx: *const SortCtx = @ptrCast(ctx);
-    return scoreMove(ctx.state, a, ctx.color) > scoreMove(ctx.state, b, ctx.color);
-}
-
-const SortCtx = struct {
-    state: *const State,
-    color: Color,
-};
-
 pub fn scoreMove(state: *const State, m: game.Move, color: Color) i32 {
     var score: i32 = 0;
 
@@ -257,7 +241,7 @@ pub fn scoreMove(state: *const State, m: game.Move, color: Color) i32 {
     if (state.pieceAt(m.end)) |captured_piece| {
         const attacker_piece = state.pieceAt(m.start).?;
         // Value of captured piece (victim) minus value of attacker
-        score += PieceValues[captured_piece] * 10 - PieceValues[attacker_piece];
+        score += PIECE_VALUES[captured_piece] * 10 - PIECE_VALUES[attacker_piece];
     }
 
     const end_rank = m.end / 8;

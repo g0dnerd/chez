@@ -10,9 +10,10 @@ fn squareToAlgebraic(square: game.Squares.Square, buf: []u8) !void {
     _ = try std.fmt.bufPrint(buf, "{c}{c}", .{ file, rank });
 }
 
-fn displayLegalMoves(moves: []game.Move, w: *std.Io.Writer) !void {
+fn displayLegalMoves(moves: *const movegen.MoveList, w: *std.Io.Writer) !void {
     try w.writeAll("Legal moves: ");
-    for (moves, 0..) |m, i| {
+    for (0..moves.len) |i| {
+        const m = moves.moves[i];
         var sq_start: [2]u8 = undefined;
         var sq_end: [2]u8 = undefined;
         try squareToAlgebraic(m.start, &sq_start);
@@ -76,7 +77,7 @@ fn pieceName(p: game.Pieces.Piece) []const u8 {
     };
 }
 
-fn containsMove(haystack: []game.Move, needle: *const game.Move) bool {
+fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool {
     for (haystack) |straw| {
         if (straw.start == needle.start and straw.end == needle.end) {
             return true;
@@ -134,7 +135,7 @@ pub fn main() !void {
         try stdout.print("{f}\n", .{state});
         try stdout.flush();
 
-        if (try search.isGameOver(&state)) |res| {
+        if (search.isGameOver(&state)) |res| {
             switch (res) {
                 .checkmate => {
                     const winner = switch (res.checkmate) {
@@ -151,10 +152,10 @@ pub fn main() !void {
         }
 
         const current_color = state.to_move;
-        var moves = try movegen.legalMoves(std.heap.page_allocator, &state, current_color);
-        defer moves.deinit(std.heap.page_allocator);
+        const moves = movegen.legalMoves(&state, current_color);
+        try displayLegalMoves(&moves, stdout);
 
-        if (moves.items.len == 0) {
+        if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
             try stdout.flush();
             break;
@@ -163,8 +164,6 @@ pub fn main() !void {
         if (current_color != engine_color) {
             // Human's turn
             try stdout.writeAll("Your turn\n");
-
-            try displayLegalMoves(moves.items, stdout);
 
             while (true) {
                 try stdout.writeAll("\nEnter move (e.g., e2e4) or 'quit/q': ");
@@ -184,7 +183,7 @@ pub fn main() !void {
                 }
 
                 if (parseMove(move)) |user_move| {
-                    if (containsMove(moves.items, &user_move)) {
+                    if (containsMove(&moves.moves, &user_move)) {
                         const piece = state.pieceAt(user_move.start).?;
                         state.makeMove(user_move, ~engine_color, piece);
                         num_moves += 1;
@@ -230,7 +229,7 @@ pub fn main() !void {
                 state.makeMove(best_move, engine_color, piece);
                 num_moves += 1;
 
-                try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
+                // try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
                 try stdout.print("Move {d}\n", .{num_moves});
                 try stdout.print("{f}\n", .{state});
                 try stdout.print("Engine moved {s} from {s} to {s} (score: {d:.2}, found in {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });

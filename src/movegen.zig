@@ -1,5 +1,6 @@
 const std = @import("std");
 const Bitboard = @import("Bitboard.zig");
+const evaluation = @import("evaluation.zig");
 const magics = @import("magics.zig");
 const moves = @import("moves.zig");
 const game = @import("game.zig");
@@ -14,7 +15,7 @@ const Piece = Pieces.Piece;
 const Squares = game.Squares;
 const Square = Squares.Square;
 
-pub const PawnAttacks = [2][8]Bitboard{ [_]Bitboard{
+pub const PAWN_ATTACKS = [2][8]Bitboard{ [_]Bitboard{
     Bitboard{ .bits = 0x200 },
     Bitboard{ .bits = 0x500 },
     Bitboard{ .bits = 0xA00 },
@@ -34,7 +35,7 @@ pub const PawnAttacks = [2][8]Bitboard{ [_]Bitboard{
     Bitboard{ .bits = 0x40 },
 } };
 
-pub const KnightMoves = [64]Bitboard{
+pub const KNIGHT_MOVES = [64]Bitboard{
     Bitboard{ .bits = 0x20400 },
     Bitboard{ .bits = 0x50800 },
     Bitboard{ .bits = 0xa1100 },
@@ -101,8 +102,99 @@ pub const KnightMoves = [64]Bitboard{
     Bitboard{ .bits = 0x20400000000000 },
 };
 
+const KING_MOVES = [64]Bitboard{
+    Bitboard{ .bits = 0x302 },
+    Bitboard{ .bits = 0x705 },
+    Bitboard{ .bits = 0xE0A },
+    Bitboard{ .bits = 0x1C14 },
+    Bitboard{ .bits = 0x3828 },
+    Bitboard{ .bits = 0x7050 },
+    Bitboard{ .bits = 0xE0A0 },
+    Bitboard{ .bits = 0xC040 },
+    Bitboard{ .bits = 0x30203 },
+    Bitboard{ .bits = 0x70507 },
+    Bitboard{ .bits = 0xE0A0E },
+    Bitboard{ .bits = 0x1C141C },
+    Bitboard{ .bits = 0x382838 },
+    Bitboard{ .bits = 0x705070 },
+    Bitboard{ .bits = 0xE0A0E0 },
+    Bitboard{ .bits = 0xC040C0 },
+    Bitboard{ .bits = 0x3020300 },
+    Bitboard{ .bits = 0x7050700 },
+    Bitboard{ .bits = 0xE0A0E00 },
+    Bitboard{ .bits = 0x1C141C00 },
+    Bitboard{ .bits = 0x38283800 },
+    Bitboard{ .bits = 0x70507000 },
+    Bitboard{ .bits = 0xE0A0E000 },
+    Bitboard{ .bits = 0xC040C000 },
+    Bitboard{ .bits = 0x302030000 },
+    Bitboard{ .bits = 0x705070000 },
+    Bitboard{ .bits = 0xE0A0E0000 },
+    Bitboard{ .bits = 0x1C141C0000 },
+    Bitboard{ .bits = 0x3828380000 },
+    Bitboard{ .bits = 0x7050700000 },
+    Bitboard{ .bits = 0xE0A0E00000 },
+    Bitboard{ .bits = 0xC040C00000 },
+    Bitboard{ .bits = 0x30203000000 },
+    Bitboard{ .bits = 0x70507000000 },
+    Bitboard{ .bits = 0xE0A0E000000 },
+    Bitboard{ .bits = 0x1C141C000000 },
+    Bitboard{ .bits = 0x382838000000 },
+    Bitboard{ .bits = 0x705070000000 },
+    Bitboard{ .bits = 0xE0A0E0000000 },
+    Bitboard{ .bits = 0xC040C0000000 },
+    Bitboard{ .bits = 0x3020300000000 },
+    Bitboard{ .bits = 0x7050700000000 },
+    Bitboard{ .bits = 0xE0A0E00000000 },
+    Bitboard{ .bits = 0x1C141C00000000 },
+    Bitboard{ .bits = 0x38283800000000 },
+    Bitboard{ .bits = 0x70507000000000 },
+    Bitboard{ .bits = 0xE0A0E000000000 },
+    Bitboard{ .bits = 0xC040C000000000 },
+    Bitboard{ .bits = 0x302030000000000 },
+    Bitboard{ .bits = 0x705070000000000 },
+    Bitboard{ .bits = 0xE0A0E0000000000 },
+    Bitboard{ .bits = 0x1C141C0000000000 },
+    Bitboard{ .bits = 0x3828380000000000 },
+    Bitboard{ .bits = 0x7050700000000000 },
+    Bitboard{ .bits = 0xE0A0E00000000000 },
+    Bitboard{ .bits = 0xC040C00000000000 },
+    Bitboard{ .bits = 0x203000000000000 },
+    Bitboard{ .bits = 0x507000000000000 },
+    Bitboard{ .bits = 0xA0E000000000000 },
+    Bitboard{ .bits = 0x141C000000000000 },
+    Bitboard{ .bits = 0x2838000000000000 },
+    Bitboard{ .bits = 0x5070000000000000 },
+    Bitboard{ .bits = 0xA0E0000000000000 },
+    Bitboard{ .bits = 0x40C0000000000000 },
+};
+
+pub const MoveList = struct {
+    moves: [256]game.Move = undefined,
+    len: u8 = 0,
+
+    pub fn append(self: *MoveList, m: game.Move) void {
+        self.moves[self.len] = m;
+        self.len += 1;
+    }
+
+    const SortCtx = struct {
+        state: *const State,
+        color: Color,
+    };
+
+    pub fn order(self: *MoveList, state: *const State, color: Color) void {
+        var ctx = SortCtx{ .state = state, .color = color };
+        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
+    }
+
+    fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
+        return evaluation.scoreMove(ctx.state, a, ctx.color) > evaluation.scoreMove(ctx.state, b, ctx.color);
+    }
+};
+
 pub fn knightMoves(s: Square) Bitboard {
-    return KnightMoves[s];
+    return KNIGHT_MOVES[s];
 }
 
 pub fn pawnAttacks(s: Square, c: Color) Bitboard {
@@ -117,7 +209,7 @@ pub fn pawnAttacks(s: Square, c: Color) Bitboard {
         Colors.black => @intCast(rank - 1),
     };
 
-    return PawnAttacks[c][file].shl(8 * rank_idx);
+    return PAWN_ATTACKS[c][file].shl(8 * rank_idx);
 }
 
 // Possible pawn moves that do not check positional legality (e.g. whether or not your king would
@@ -163,7 +255,7 @@ fn blockersFromState(state: *const State, s: Square, p: Piece) Bitboard {
         Pieces.queen => Bitboard{ .bits = magics.RookMagics[s].mask | magics.BishopMagics[s].mask },
         else => unreachable,
     };
-    return blockers.bitAnd(state.allPieces());
+    return blockers.bitAnd(state.all_pieces);
 }
 
 pub fn sliderMoves(state: *const State, s: Square, p: Piece) Bitboard {
@@ -182,23 +274,7 @@ pub fn sliderMoves(state: *const State, s: Square, p: Piece) Bitboard {
 }
 
 pub fn kingMoves(state: *const State, s: Square, c: Color) Bitboard {
-    var ret = Bitboard.empty();
-    for (game.Slider.RookDirections) |d| {
-        const dx = d[0];
-        const dy = d[1];
-        const offs = game.trySquareOffset(s, dx, dy);
-        if (offs != null) {
-            ret.bitOrAssign(offs.?);
-        }
-    }
-    for (game.Slider.BishopDirections) |d| {
-        const dx = d[0];
-        const dy = d[1];
-        const offs = game.trySquareOffset(s, dx, dy);
-        if (offs != null) {
-            ret.bitOrAssign(offs.?);
-        }
-    }
+    var ret = KING_MOVES[s];
 
     if (state.in_check == null) {
         const castling_rights = state.castling_rights;
@@ -224,22 +300,7 @@ pub fn kingMoves(state: *const State, s: Square, c: Color) Bitboard {
 
     var opp_king_mask = state.pieceBitboard(Pieces.king).bitAnd(state.colorBitboard(~c));
     const opp_king_square = opp_king_mask.trailingZeros();
-    for (game.Slider.RookDirections) |d| {
-        const dx = d[0];
-        const dy = d[1];
-        const offs = game.trySquareOffset(opp_king_square, dx, dy);
-        if (offs != null) {
-            opp_king_mask.bitOrAssign(offs.?);
-        }
-    }
-    for (game.Slider.BishopDirections) |d| {
-        const dx = d[0];
-        const dy = d[1];
-        const offs = game.trySquareOffset(opp_king_square, dx, dy);
-        if (offs != null) {
-            opp_king_mask.bitOrAssign(offs.?);
-        }
-    }
+    opp_king_mask.bitOrAssign(KING_MOVES[opp_king_square]);
 
     return ret.bitAnd(opp_king_mask.not());
 }
@@ -288,8 +349,48 @@ pub fn movesForPiece(state: *const State, s: Square, c: Color, p: Piece) Bitboar
     return ret.bitAnd(state.colorBitboard(c).not());
 }
 
-pub fn legalMoves(alloc: std.mem.Allocator, state: *const State, c: Color) !std.ArrayList(game.Move) {
-    var ret = std.ArrayList(game.Move).empty;
+pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
+    var pieces = state.colorBitboard(c);
+    const king_mask = state.pieceBitboard(Pieces.king).bitAnd(pieces);
+    const king_square = king_mask.trailingZeros();
+    const in_check = isSquareAttackedBy(state, king_square, ~c);
+
+    var piece_iter = pieces.iter();
+    while (piece_iter.next()) |s| {
+        const p = state.pieceAt(s).?;
+        var piece_moves = movesForPiece(state, s, c, p);
+
+        var piece_move_iter = piece_moves.iter();
+        while (piece_move_iter.next()) |end| {
+            const candidate_move = game.Move{ .start = s, .end = end };
+            if (in_check) {
+                var tmp_state = state.*;
+                tmp_state.makeMove(candidate_move, c, p);
+
+                const new_king_square = blk: {
+                    if (p == Pieces.king) {
+                        break :blk end;
+                    } else {
+                        break :blk king_square;
+                    }
+                };
+
+                if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
+                    return true;
+                }
+            } else {
+                if (isLegalMove(state, candidate_move, c, p, king_square)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+pub fn legalMoves(state: *const State, c: Color) MoveList {
+    var ret = MoveList{};
 
     var pieces = state.colorBitboard(c);
     const king_mask = state.pieceBitboard(Pieces.king).bitAnd(pieces);
@@ -317,11 +418,11 @@ pub fn legalMoves(alloc: std.mem.Allocator, state: *const State, c: Color) !std.
                 };
 
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
-                    try ret.append(alloc, candidate_move);
+                    ret.append(candidate_move);
                 }
             } else {
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
-                    try ret.append(alloc, candidate_move);
+                    ret.append(candidate_move);
                 }
             }
         }
@@ -334,7 +435,7 @@ fn isLegalMove(state: *const State, m: game.Move, c: Color, p: Piece, king_squar
     // King moves: check if destination is attacked
     if (p == Pieces.king) {
         if (game.absDiff(m.start, m.end) == 2) {
-            const intermediate = (m.start + m.end) / 2;
+            const intermediate: Square = @intCast((@as(u8, m.start) + @as(u8, m.end)) / @as(u8, 2));
             if (isSquareAttackedBy(state, intermediate, ~c)) {
                 return false;
             }
@@ -368,7 +469,7 @@ fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboar
     }
 
     const between = game.betweenSquares(king_square, s);
-    if (!(between.bitAnd(state.allPieces())).isEmpty()) {
+    if (!(between.bitAnd(state.all_pieces)).isEmpty()) {
         return Bitboard.empty();
     }
 
@@ -397,7 +498,7 @@ fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboar
 
     while (current_rank >= 0 and current_rank < 8 and current_file >= 0 and current_file < 8) {
         const sq: Square = @intCast(current_rank * 8 + current_file);
-        if (state.allPieces().contains(sq)) {
+        if (state.all_pieces.contains(sq)) {
             next_piece_square = sq;
             break;
         }
@@ -439,7 +540,7 @@ fn enPassantExposesKing(state: *const State, m: game.Move, c: Color, king_square
     };
 
     // Temporarily remove both pawns and check for attacks
-    const all_pieces = state.allPieces().bitAnd(Bitboard.fromSquare(m.start).not()).bitAnd(Bitboard.fromSquare(captured_pawn_square).not());
+    const all_pieces = state.all_pieces.bitAnd(Bitboard.fromSquare(m.start).not()).bitAnd(Bitboard.fromSquare(captured_pawn_square).not());
 
     // Check for enemy rooks/queens on the same rank
     const enemy_pieces = state.colorBitboard(~c);
@@ -490,32 +591,236 @@ test "test slider moves" {
 
 test "test legal moves from default" {
     const state = State.defaultPosition();
-    const alloc = std.heap.page_allocator;
-
-    var actual = try legalMoves(alloc, &state, state.to_move);
-    defer actual.deinit(alloc);
-
-    try std.testing.expectEqual(20, actual.items.len);
+    const actual = legalMoves(&state, state.to_move);
+    try std.testing.expectEqual(20, actual.len);
 }
 
 test "test legal moves no discovered check" {
     const fen = "rnbqk1nr/pppp1ppp/8/4p3/1b2P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
-    const alloc = std.heap.page_allocator;
     const state = try State.fromFen(fen);
-    const actual = try legalMoves(alloc, &state, Colors.white);
+    const actual = legalMoves(&state, Colors.white);
 
-    for (actual.items) |m| {
+    for (0..actual.len) |i| {
+        const m = actual.moves[i];
         try std.testing.expect(m.start != Squares.d2);
     }
 }
 
 test "test legal moves cannot move into check" {
     const fen = "rn1qkbnr/ppp1pppp/8/3p4/3PP1b1/8/PPP2PPP/RNBQKBNR w KQkq - 1 3";
-    const alloc = std.heap.page_allocator;
     const state = try State.fromFen(fen);
-    const actual = try legalMoves(alloc, &state, Colors.white);
+    const actual = legalMoves(&state, Colors.white);
 
-    for (actual.items) |m| {
+    for (0..actual.len) |i| {
+        const m = actual.moves[i];
         try std.testing.expect(!(m.start == Squares.e1 and m.end == Squares.e2));
     }
+}
+
+// Knight move tests
+test "knight moves from center" {
+    const fen = "8/8/8/8/4N3/8/8/4K2k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Knight on e4 should have 8 possible squares: d2, f2, c3, g3, c5, g5, d6, f6
+    var knight_moves: u8 = 0;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e4) {
+            knight_moves += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u8, 8), knight_moves);
+}
+
+test "knight moves blocked by own pieces" {
+    const fen = "8/8/8/8/8/5P1P/8/4K1Nk w - - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Knight on g1 with pawns on f3 and h3 - should have fewer moves
+    var knight_moves: u8 = 0;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.g1) {
+            knight_moves += 1;
+            // Verify f3 and h3 are NOT in the move list
+            try std.testing.expect(actual.moves[i].end != Squares.f3);
+            try std.testing.expect(actual.moves[i].end != Squares.h3);
+        }
+    }
+    // g1 knight normally has 3 moves (e2, f3, h3), but f3 and h3 blocked = 1 move (e2)
+    try std.testing.expectEqual(@as(u8, 1), knight_moves);
+}
+
+// Castling legality tests
+test "white kingside castling legal" {
+    const fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    var found_kingside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.g1) {
+            found_kingside = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_kingside);
+}
+
+test "white queenside castling legal" {
+    const fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    var found_queenside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.c1) {
+            found_queenside = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_queenside);
+}
+
+test "black castling legal" {
+    const fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.black);
+
+    var found_kingside = false;
+    var found_queenside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e8 and actual.moves[i].end == Squares.g8) {
+            found_kingside = true;
+        }
+        if (actual.moves[i].start == Squares.e8 and actual.moves[i].end == Squares.c8) {
+            found_queenside = true;
+        }
+    }
+    try std.testing.expect(found_kingside);
+    try std.testing.expect(found_queenside);
+}
+
+test "castling blocked by piece" {
+    const fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3KB1R w KQkq - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Bishop on f1 blocks kingside castling
+    var found_kingside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.g1) {
+            found_kingside = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_kingside);
+}
+
+test "castling through attacked square illegal" {
+    const fen = "1k3r2/8/8/8/8/8/8/R3K2R w KQ - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Rook on f8 attacks f1 - kingside castling should be illegal
+    var found_kingside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.g1) {
+            found_kingside = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_kingside);
+}
+
+test "castling while in check illegal" {
+    const fen = "r3k2r/pppppppp/8/8/4q3/8/PPPP1PPP/R3K2R w KQkq - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Queen on e4 gives check - no castling allowed
+    var found_kingside = false;
+    var found_queenside = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.g1) {
+            found_kingside = true;
+        }
+        if (actual.moves[i].start == Squares.e1 and actual.moves[i].end == Squares.c1) {
+            found_queenside = true;
+        }
+    }
+    try std.testing.expect(!found_kingside);
+    try std.testing.expect(!found_queenside);
+}
+
+// Promotion tests
+test "pawn promotion moves generated" {
+    const fen = "8/4P3/8/8/8/8/8/4K2k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Pawn on e7 can promote to e8
+    var found_promotion = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e7 and actual.moves[i].end == Squares.e8) {
+            found_promotion = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_promotion);
+}
+
+test "pawn promotion capture" {
+    const fen = "3r1r2/4P3/8/8/8/8/8/4K2k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Pawn on e7 can capture d8 and f8 with promotion
+    var found_d8 = false;
+    var found_f8 = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e7 and actual.moves[i].end == Squares.d8) {
+            found_d8 = true;
+        }
+        if (actual.moves[i].start == Squares.e7 and actual.moves[i].end == Squares.f8) {
+            found_f8 = true;
+        }
+    }
+    try std.testing.expect(found_d8);
+    try std.testing.expect(found_f8);
+}
+
+// En passant tests
+test "en passant capture generated" {
+    const fen = "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // e5 pawn can capture d6 en passant
+    var found_en_passant = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e5 and actual.moves[i].end == Squares.d6) {
+            found_en_passant = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_en_passant);
+}
+
+test "en passant illegal when pinned" {
+    const fen = "8/8/8/K2pP2r/8/8/8/7k w - d6 0 1";
+    const state = try State.fromFen(fen);
+    const actual = legalMoves(&state, Colors.white);
+
+    // Horizontal pin: king on a5, pawn on e5, opponent pawn on d5, rook on h5
+    // En passant would expose king to rook attack
+    var found_en_passant = false;
+    for (0..actual.len) |i| {
+        if (actual.moves[i].start == Squares.e5 and actual.moves[i].end == Squares.d6) {
+            found_en_passant = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_en_passant);
 }

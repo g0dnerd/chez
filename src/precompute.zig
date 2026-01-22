@@ -109,7 +109,7 @@ fn precomputeMagics(alloc: std.mem.Allocator, rng: *std.Random.DefaultPrng) !voi
     try writer.interface.flush();
 
     const piece_names = [2][]const u8{ "Rook", "Bishop" };
-    const sliders = [2]*const SliderDirections{ &Slider.RookDirections, &Slider.BishopDirections };
+    const sliders = [2]*const SliderDirections{ &Slider.ROOK_DIRECTIONS, &Slider.BISHOP_DIRECTIONS };
     for (0..2) |i| {
         const piece_name = piece_names[i];
         const slider = sliders[i];
@@ -202,8 +202,8 @@ pub fn main() !void {
     var writer_buf: [8192]u8 = undefined;
     var writer = out_f.writer(&writer_buf);
 
-    const rook_tbl = try makeMoveTable(alloc, magics.RookTableSize, &Slider.RookDirections, &magics.RookMagics);
-    const bishop_tbl = try makeMoveTable(alloc, magics.BishopTableSize, &Slider.BishopDirections, &magics.BishopMagics);
+    const rook_tbl = try makeMoveTable(alloc, magics.RookTableSize, &Slider.ROOK_DIRECTIONS, &magics.RookMagics);
+    const bishop_tbl = try makeMoveTable(alloc, magics.BishopTableSize, &Slider.BISHOP_DIRECTIONS, &magics.BishopMagics);
     defer alloc.free(rook_tbl);
     defer alloc.free(bishop_tbl);
 
@@ -218,6 +218,6 @@ pub fn main() !void {
 }
 
 test "test blockers for square" {
-    const blockers = blockersForSquare(Squares.e2, &Slider.RookDirections);
+    const blockers = blockersForSquare(Squares.e2, &Slider.ROOK_DIRECTIONS);
     try std.testing.expectEqual(blockers.bits, 0x10101010106e00);
 }
