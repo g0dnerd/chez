@@ -5,11 +5,14 @@ const State = @import("State.zig");
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
+const Atomic = std.atomic.Value;
 
 const CHECKMATE_SCORE: i32 = 100000;
 const ALPHA_INIT: i32 = std.math.minInt(i32) + 1;
 const BETA_INIT: i32 = std.math.maxInt(i32);
 const MAX_PLY: usize = 64;
+const MAX_THREADS: usize = 16;
+const DEFAULT_THREADS: usize = 8;
 
 // Killer move table: stores 2 killer moves per ply
 // Killer moves are quiet moves that caused beta cutoffs
@@ -64,21 +67,39 @@ const TT_SIZE_BITS = 20; // 2^20 = ~1M entries
 const TT_SIZE: usize = 1 << TT_SIZE_BITS;
 const TT_MASK: u64 = TT_SIZE - 1;
 
+// Lock striping: use fewer locks than entries to reduce memory overhead
+// while still allowing concurrent access to different parts of the table
+const LOCK_COUNT_BITS = 12; // 4096 locks
+const LOCK_COUNT: usize = 1 << LOCK_COUNT_BITS;
+const LOCK_MASK: u64 = LOCK_COUNT - 1;
+
 const TranspositionTable = struct {
     entries: []TranspositionEntry,
+    locks: []std.Thread.Mutex,
+    alloc: std.mem.Allocator,
 
     fn init(alloc: std.mem.Allocator) !TranspositionTable {
         const entries = try alloc.alloc(TranspositionEntry, TT_SIZE);
         @memset(entries, TranspositionEntry{});
-        return .{ .entries = entries };
+
+        const locks = try alloc.alloc(std.Thread.Mutex, LOCK_COUNT);
+        @memset(locks, std.Thread.Mutex{});
+
+        return .{ .entries = entries, .locks = locks, .alloc = alloc };
     }
 
-    fn deinit(self: *TranspositionTable, alloc: std.mem.Allocator) void {
-        alloc.free(self.entries);
+    fn deinit(self: *TranspositionTable) void {
+        self.alloc.free(self.entries);
+        self.alloc.free(self.locks);
     }
 
-    fn probe(self: *const TranspositionTable, hash: u64) ?TranspositionEntry {
+    fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
         const idx = hash & TT_MASK;
+        const lock_idx = hash & LOCK_MASK;
+
+        self.locks[lock_idx].lock();
+        defer self.locks[lock_idx].unlock();
+
         const entry = self.entries[idx];
 
         // Check if entry is valid and matches the hash
@@ -89,6 +110,11 @@ const TranspositionTable = struct {
 
     fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?game.Move) void {
         const idx = hash & TT_MASK;
+        const lock_idx = hash & LOCK_MASK;
+
+        self.locks[lock_idx].lock();
+        defer self.locks[lock_idx].unlock();
+
         const existing = &self.entries[idx];
 
         // Replacement strategy: always replace if new entry has >= depth
@@ -103,6 +129,80 @@ const TranspositionTable = struct {
             };
         }
     }
+};
+
+// Shared state for Lazy SMP parallel search
+// All threads read/write this to coordinate
+const SharedSearchState = struct {
+    // Best result found so far (updated atomically)
+    best_move_start: Atomic(u8) = Atomic(u8).init(255), // 255 = no move
+    best_move_end: Atomic(u8) = Atomic(u8).init(255),
+    best_score: Atomic(i32) = Atomic(i32).init(std.math.minInt(i32) + 1),
+
+    // Current depth being searched
+    current_depth: Atomic(u8) = Atomic(u8).init(0),
+    max_depth: u8 = 0,
+
+    // Synchronization
+    stop_flag: Atomic(bool) = Atomic(bool).init(false),
+    threads_completed: Atomic(usize) = Atomic(usize).init(0),
+    num_threads: usize = 1,
+
+    fn getBestMove(self: *SharedSearchState) ?game.Move {
+        const start = self.best_move_start.load(.acquire);
+        if (start == 255) return null;
+
+        const end = self.best_move_end.load(.acquire);
+
+        return game.Move{
+            .start = @intCast(start),
+            .end = @intCast(end),
+        };
+    }
+
+    fn updateBestMove(self: *SharedSearchState, m: game.Move, score: i32) void {
+        // Use compare-and-swap loop to atomically update if score is better
+        while (true) {
+            const current_score = self.best_score.load(.acquire);
+            if (score <= current_score) break;
+
+            // Try to update the score
+            if (self.best_score.cmpxchgWeak(current_score, score, .acq_rel, .acquire)) |_| {
+                // CAS failed, retry
+                continue;
+            }
+
+            // Score updated successfully, now update the move
+            self.best_move_start.store(m.start, .release);
+            self.best_move_end.store(m.end, .release);
+            break;
+        }
+    }
+
+    fn resetForNewDepth(self: *SharedSearchState, depth: u8) void {
+        self.best_score.store(std.math.minInt(i32) + 1, .release);
+        self.best_move_start.store(255, .release);
+        self.best_move_end.store(255, .release);
+        self.threads_completed.store(0, .release);
+        self.current_depth.store(depth, .release);
+    }
+
+    fn signalThreadComplete(self: *SharedSearchState) void {
+        _ = self.threads_completed.fetchAdd(1, .acq_rel);
+    }
+
+    fn allThreadsComplete(self: *SharedSearchState) bool {
+        return self.threads_completed.load(.acquire) >= self.num_threads;
+    }
+};
+
+// Per-thread context for search
+const ThreadContext = struct {
+    state: State,
+    killers: KillerTable,
+    thread_id: usize,
+    tbl: *TranspositionTable,
+    shared: *SharedSearchState,
 };
 
 // Quiescence search: search only captures until the position is "quiet"
@@ -391,11 +491,175 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
     }
 }
 
-// Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
-// This enables better move ordering from previous iterations via the transposition table.
-pub fn search(state: *const State, max_depth: u8) !?SearchResult {
+// Worker thread function for Lazy SMP
+// Each thread searches the same position but with its own state copy
+fn workerThread(ctx: *ThreadContext) void {
+    var last_depth: u8 = 0;
+
+    while (!ctx.shared.stop_flag.load(.acquire)) {
+        const current_depth = ctx.shared.current_depth.load(.acquire);
+
+        // Wait for new depth to be set
+        if (current_depth == 0 or current_depth == last_depth) {
+            // Spin-wait with yield to avoid burning CPU
+            std.Thread.yield() catch {};
+            continue;
+        }
+
+        last_depth = current_depth;
+
+        // Get PV move from shared state or TT for move ordering
+        const pv_move = ctx.shared.getBestMove() orelse blk: {
+            if (ctx.tbl.probe(ctx.state.zobrist_hash)) |entry| {
+                break :blk entry.best_move;
+            }
+            break :blk null;
+        };
+
+        // Search at this depth
+        const result = searchAtDepth(&ctx.state, current_depth, ctx.tbl, &ctx.killers, pv_move);
+
+        if (result) |r| {
+            // Update shared best if this is better
+            ctx.shared.updateBestMove(r.move, r.score);
+        }
+
+        // Signal this thread is done with current depth
+        std.debug.print("Search thread at depth {d} completed\n", .{current_depth});
+        ctx.shared.signalThreadComplete();
+
+        // Wait for all threads to complete before next depth
+        while (!ctx.shared.stop_flag.load(.acquire) and
+            ctx.shared.current_depth.load(.acquire) == current_depth)
+        {
+            std.Thread.yield() catch {};
+        }
+    }
+}
+
+// Parallel search using Lazy SMP
+// Spawns multiple threads that search the same position with shared TT
+pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize) !?SearchResult {
+    const actual_threads = @min(num_threads, MAX_THREADS);
+
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
-    defer tbl.deinit(std.heap.page_allocator);
+    defer tbl.deinit();
+
+    var shared = SharedSearchState{
+        .max_depth = max_depth,
+        .num_threads = actual_threads,
+    };
+
+    // Create thread contexts
+    var contexts: [MAX_THREADS]ThreadContext = undefined;
+    for (0..actual_threads) |i| {
+        contexts[i] = ThreadContext{
+            .state = state.*,
+            .killers = KillerTable{},
+            .thread_id = i,
+            .tbl = &tbl,
+            .shared = &shared,
+        };
+    }
+
+    // Spawn worker threads (thread 0 is handled specially - it's the main thread helper)
+    var threads: [MAX_THREADS]std.Thread = undefined;
+    for (1..actual_threads) |i| {
+        threads[i] = std.Thread.spawn(.{}, workerThread, .{&contexts[i]}) catch {
+            // If we can't spawn a thread, reduce thread count
+            shared.num_threads = i;
+            break;
+        };
+    }
+
+    var best_move: ?game.Move = null;
+    var best_score: i32 = std.math.minInt(i32);
+    var best_depth: u8 = 0;
+
+    var sq_start: [2]u8 = undefined;
+    var sq_end: [2]u8 = undefined;
+
+    // Iterative deepening with depth synchronization
+    for (1..max_depth + 1) |depth_usize| {
+        const depth: u8 = @intCast(depth_usize);
+
+        // Reset shared state for new depth
+        shared.resetForNewDepth(depth);
+
+        // Main thread also searches (as thread 0)
+        const pv_move = best_move orelse blk: {
+            if (tbl.probe(state.zobrist_hash)) |entry| {
+                break :blk entry.best_move;
+            }
+            break :blk null;
+        };
+
+        const result = searchAtDepth(&contexts[0].state, depth, &tbl, &contexts[0].killers, pv_move);
+        if (result) |r| {
+            shared.updateBestMove(r.move, r.score);
+        }
+        shared.signalThreadComplete();
+
+        // Wait for all threads to complete this depth
+        while (!shared.allThreadsComplete()) {
+            std.Thread.yield() catch {};
+        }
+
+        // Collect best result from this depth
+        if (shared.getBestMove()) |m| {
+            const score = shared.best_score.load(.acquire);
+            if (score > best_score or best_move == null) {
+                best_move = m;
+                best_score = score;
+                best_depth = depth;
+
+                game.squareToAlgebraic(m.start, &sq_start) catch {};
+                game.squareToAlgebraic(m.end, &sq_end) catch {};
+                std.debug.print("Depth {d} ({d} threads) - move: {s}{s} - eval: {d}\r", .{
+                    depth, shared.num_threads, sq_start, sq_end, best_score,
+                });
+            }
+
+            // Early exit if we found checkmate
+            if (best_score >= CHECKMATE_SCORE - 100) {
+                break;
+            }
+        }
+    }
+
+    // Signal threads to stop
+    shared.stop_flag.store(true, .release);
+    // Bump depth to wake up any waiting threads
+    shared.current_depth.store(shared.max_depth + 1, .release);
+
+    // Join worker threads
+    for (1..shared.num_threads) |i| {
+        threads[i].join();
+    }
+
+    std.debug.print("\n", .{});
+
+    if (best_move) |m| {
+        return .{
+            .move = m,
+            .score = best_score,
+            .depth = best_depth,
+        };
+    } else {
+        return null;
+    }
+}
+
+// Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
+// Uses parallel search with default thread count.
+pub fn search(state: *const State, max_depth: u8) !?SearchResult {
+    return searchParallel(state, max_depth, DEFAULT_THREADS);
+}
+
+// Single-threaded search for testing and debugging
+pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
+    var tbl = try TranspositionTable.init(std.heap.page_allocator);
+    defer tbl.deinit();
 
     var killers = KillerTable{};
 
@@ -417,7 +681,7 @@ pub fn search(state: *const State, max_depth: u8) !?SearchResult {
 
             try game.squareToAlgebraic(best_move.?.start, &sq_start);
             try game.squareToAlgebraic(best_move.?.end, &sq_end);
-            std.debug.print("Thinking at depth {d} - candidate move: {s}{s} - evaluation: {d}\r", .{ depth, sq_start, sq_end, best_score });
+            std.debug.print("Depth {d} - move: {s}{s} - eval: {d}\r", .{ depth, sq_start, sq_end, best_score });
 
             best_depth = r.depth;
 
