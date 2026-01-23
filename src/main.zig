@@ -124,7 +124,7 @@ pub fn main() !void {
     std.debug.assert(depth <= 20);
 
     const engine_color = if (fen.len == 0)
-        game.Colors.white
+        game.Colors.black
     else
         state.to_move;
 

@@ -525,7 +525,6 @@ fn workerThread(ctx: *ThreadContext) void {
         }
 
         // Signal this thread is done with current depth
-        std.debug.print("Search thread at depth {d} completed\n", .{current_depth});
         ctx.shared.signalThreadComplete();
 
         // Wait for all threads to complete before next depth
