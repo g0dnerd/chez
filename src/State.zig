@@ -13,6 +13,20 @@ const expectEqual = std.testing.expectEqual;
 
 pub const State = @This();
 
+// Information needed to unmake a move
+pub const UndoInfo = struct {
+    captured_piece: ?Piece,
+    captured_square: Square, // Different from move.end for en passant
+    castling_rights: Castling.CastlingRights,
+    en_passant: ?Square,
+    halfmove_clock: u16,
+    in_check: ?Color,
+    zobrist_hash: u64,
+    was_promotion: bool,
+    was_castling: bool,
+    castling_side: Color, // 0 = kingside, 1 = queenside (only valid if was_castling)
+};
+
 pieces: [6]Bitboard,
 colors: [2]Bitboard,
 to_move: Color,
@@ -28,7 +42,7 @@ mailbox: [64]?Piece,
 
 const PAWN_START_RANK: [2]Square = .{ 1, 6 };
 const PAWN_DOUBLE_RANK: [2]Square = .{ 3, 4 };
-const PAWN_PROMO_RANK: [2]Square = .{ 7, 0 };
+pub const PAWN_PROMO_RANK: [2]Square = .{ 7, 0 };
 const PAWN_EP_OFFSET: [2]i8 = .{ -8, 8 };
 
 pub fn defaultPosition() State {
@@ -126,15 +140,15 @@ pub fn fromFen(fen: []const u8) !State {
     var state: FenState = .placement;
     var current_square: Square = 56;
 
-    var pawns = Bitboard.empty();
-    var knights = Bitboard.empty();
-    var bishops = Bitboard.empty();
-    var rooks = Bitboard.empty();
-    var queens = Bitboard.empty();
-    var kings = Bitboard.empty();
+    var pawns = Bitboard.empty;
+    var knights = Bitboard.empty;
+    var bishops = Bitboard.empty;
+    var rooks = Bitboard.empty;
+    var queens = Bitboard.empty;
+    var kings = Bitboard.empty;
 
-    var white_pieces = Bitboard.empty();
-    var black_pieces = Bitboard.empty();
+    var white_pieces = Bitboard.empty;
+    var black_pieces = Bitboard.empty;
     var to_move: ?Color = null;
     var en_passant: ?Square = null;
     var en_passant_file: ?Square = null;
@@ -339,8 +353,7 @@ pub fn fromFen(fen: []const u8) !State {
     var mailbox: [64]?Piece = @splat(null);
     for (0..6) |piece_idx| {
         var bb = all_pieces[piece_idx];
-        var bb_iter = bb.iter();
-        while (bb_iter.next()) |s| {
+        while (bb.next()) |s| {
             mailbox[s] = @intCast(piece_idx);
         }
     }
@@ -380,7 +393,7 @@ pub fn format(self: State, writer: *std.Io.Writer) !void {
 
             const s = rank * 8 + file;
             if (self.pieceAt(s)) |p| {
-                const c = self.colorAt(s).?;
+                const c = self.colorAtUnchecked(s);
                 try writer.print("{c} ", .{game.PIECE_REPR[c][p]});
             } else {
                 try writer.writeAll("- ");
@@ -394,7 +407,7 @@ pub fn format(self: State, writer: *std.Io.Writer) !void {
     }
 }
 
-/// Compute the full Zobrist hash from scratch. Used for initialization.
+// Compute the full Zobrist hash from scratch. Used for initialization.
 pub fn computeHash(self: *const State) u64 {
     const keys = game.getZobristKeys();
     var h: u64 = 0;
@@ -403,8 +416,7 @@ pub fn computeHash(self: *const State) u64 {
     for (0..2) |color_idx| {
         const color: Color = @intCast(color_idx);
         var color_pieces = self.colorBitboard(color);
-        var piece_iter = color_pieces.iter();
-        while (piece_iter.next()) |s| {
+        while (color_pieces.next()) |s| {
             const p = self.pieceAt(s).?;
             h ^= keys.pieces[color][p][s];
         }
@@ -449,17 +461,44 @@ pub fn colorAt(self: *const State, s: Square) ?Color {
     return @intFromBool(self.colors[1].contains(s));
 }
 
+pub fn colorAtUnchecked(self: *const State, s: Square) Color {
+    return @intFromBool(self.colors[1].contains(s));
+}
+
 pub fn isSquareEmpty(self: *const State, s: Square) bool {
     return !self.all_pieces.contains(s);
 }
 
-pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
+// Returns true if the given color has any non-pawn material (knights, bishops, rooks, queens)
+pub fn hasNonPawnMaterial(self: *const State, c: Color) bool {
+    const color_pieces = self.colorBitboard(c);
+    const non_pawn_pieces = self.pieceBitboard(Pieces.knight)
+        .bitOr(self.pieceBitboard(Pieces.bishop))
+        .bitOr(self.pieceBitboard(Pieces.rook))
+        .bitOr(self.pieceBitboard(Pieces.queen));
+    return !color_pieces.bitAnd(non_pawn_pieces).isEmpty();
+}
+
+pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
     const keys = game.getZobristKeys();
     const start = m.start;
     const end = m.end;
 
+    // Store undo info before modifying state
+    var undo = UndoInfo{
+        .captured_piece = self.pieceAt(end),
+        .captured_square = end,
+        .castling_rights = self.castling_rights,
+        .en_passant = self.en_passant,
+        .halfmove_clock = self.halfmove_clock,
+        .in_check = self.in_check,
+        .zobrist_hash = self.zobrist_hash,
+        .was_promotion = false,
+        .was_castling = false,
+        .castling_side = 0,
+    };
+
     var is_promotion = false;
-    const piece_to_capture = self.pieceAt(end);
     var en_passant_target: ?Square = null;
     var new_en_passant: ?Square = null;
 
@@ -485,6 +524,7 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
                 en_passant_target = @intCast(@as(i8, end) + PAWN_EP_OFFSET[c]);
             } else if (end_rank == PAWN_PROMO_RANK[c]) {
                 is_promotion = true;
+                undo.was_promotion = true;
             }
         },
         Pieces.king => {
@@ -494,6 +534,9 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
                 const data = game.CASTLE_DATA[c][side];
 
                 if (self.castling_rights & data.rights_bit != 0) {
+                    undo.was_castling = true;
+                    undo.castling_side = side;
+
                     // Move rook
                     self.*.pieces[Pieces.rook].bitXorAssign(data.rook_from);
                     self.*.colors[c].bitXorAssign(data.rook_from);
@@ -522,7 +565,7 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
     }
 
     // Handle capture
-    if (piece_to_capture) |x| {
+    if (undo.captured_piece) |x| {
         self.*.castling_rights &= game.ROOK_CASTLING_RIGHTS_MASK[end];
         self.*.halfmove_clock = 0;
         self.*.pieces[x].bitXorAssign(end);
@@ -534,6 +577,8 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
 
     // Handle en passant capture
     if (en_passant_target) |t| {
+        undo.captured_piece = Pieces.pawn;
+        undo.captured_square = t;
         self.*.halfmove_clock = 0;
         self.*.pieces[Pieces.pawn].bitXorAssign(t);
         self.*.colors[~c].bitXorAssign(t);
@@ -577,6 +622,67 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) void {
 
     self.*.to_move = ~self.to_move;
     self.all_pieces = self.allPieces();
+
+    // Update in_check for the new side to move
+    const new_to_move = self.to_move;
+    const king_bb = self.pieceBitboard(Pieces.king).bitAnd(self.colorBitboard(new_to_move));
+    const king_square = king_bb.trailingZeros();
+    if (movegen.isSquareAttackedBy(self, king_square, ~new_to_move)) {
+        self.*.in_check = new_to_move;
+    } else {
+        self.*.in_check = null;
+    }
+
+    return undo;
+}
+
+// Unmake a move, restoring the previous state
+pub fn unmakeMove(self: *State, m: game.Move, c: Color, p: Piece, undo: UndoInfo) void {
+    const start = m.start;
+    const end = m.end;
+
+    // Restore simple fields from undo info
+    self.*.castling_rights = undo.castling_rights;
+    self.*.en_passant = undo.en_passant;
+    self.*.halfmove_clock = undo.halfmove_clock;
+    self.*.in_check = undo.in_check;
+    self.*.zobrist_hash = undo.zobrist_hash;
+    self.*.fullmove_clock -= c; // Undo the increment (only increments when black moves)
+    self.*.to_move = c;
+
+    // Handle promotion: piece on end square is queen, but we need to restore pawn
+    const actual_piece = if (undo.was_promotion) Pieces.queen else p;
+
+    // Move piece back from end to start
+    self.*.pieces[actual_piece].bitXorAssign(end);
+    self.*.colors[c].bitXorAssign(end);
+    self.*.mailbox[end] = null;
+    self.*.pieces[p].bitOrAssign(start);
+    self.*.colors[c].bitOrAssign(start);
+    self.*.mailbox[start] = p;
+
+    // Handle castling: unmove the rook
+    if (undo.was_castling) {
+        const data = game.CASTLE_DATA[c][undo.castling_side];
+        // Move rook back
+        self.*.pieces[Pieces.rook].bitXorAssign(data.rook_to);
+        self.*.colors[c].bitXorAssign(data.rook_to);
+        self.*.mailbox[data.rook_to] = null;
+        self.*.pieces[Pieces.rook].bitOrAssign(data.rook_from);
+        self.*.colors[c].bitOrAssign(data.rook_from);
+        self.*.mailbox[data.rook_from] = Pieces.rook;
+    }
+
+    // Restore captured piece
+    if (undo.captured_piece) |captured| {
+        const cap_sq = undo.captured_square;
+        self.*.pieces[captured].bitOrAssign(cap_sq);
+        self.*.colors[~c].bitOrAssign(cap_sq);
+        self.*.mailbox[cap_sq] = captured;
+    }
+
+    // Update all_pieces
+    self.all_pieces = self.allPieces();
 }
 
 test "piece at sanity" {
@@ -612,19 +718,19 @@ test "all pieces sanity" {
 
 test "test castling rights removal" {
     var state = State.defaultPosition();
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
-    state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.e5 }, Colors.black, Pieces.pawn);
-    state.makeMove(game.Move{ .start = Squares.g1, .end = Squares.f3 }, Colors.white, Pieces.knight);
-    state.makeMove(game.Move{ .start = Squares.d8, .end = Squares.e7 }, Colors.black, Pieces.queen);
-    state.makeMove(game.Move{ .start = Squares.f1, .end = Squares.e2 }, Colors.white, Pieces.bishop);
-    state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.d8 }, Colors.black, Pieces.queen);
-    state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.e5 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.g1, .end = Squares.f3 }, Colors.white, Pieces.knight);
+    _ = state.makeMove(game.Move{ .start = Squares.d8, .end = Squares.e7 }, Colors.black, Pieces.queen);
+    _ = state.makeMove(game.Move{ .start = Squares.f1, .end = Squares.e2 }, Colors.white, Pieces.bishop);
+    _ = state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.d8 }, Colors.black, Pieces.queen);
+    _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
     try expectEqual(Castling.AllLegal ^ Castling.WhiteCastling, state.castling_rights);
 
     state = State.defaultPosition();
-    state.makeMove(game.Move{ .start = Squares.a2, .end = Squares.a3 }, Colors.white, Pieces.pawn);
-    state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
-    state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.a2 }, Colors.white, Pieces.rook);
+    _ = state.makeMove(game.Move{ .start = Squares.a2, .end = Squares.a3 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.a2 }, Colors.white, Pieces.rook);
     try expectEqual(Castling.AllLegal ^ Castling.WhiteQueenside, state.castling_rights);
 }
 
@@ -678,26 +784,26 @@ test "incremental hash matches computed hash" {
     var state = State.defaultPosition();
 
     // Play some moves and verify hash consistency after each
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.e5 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.e5 }, Colors.black, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.g1, .end = Squares.f3 }, Colors.white, Pieces.knight);
+    _ = state.makeMove(game.Move{ .start = Squares.g1, .end = Squares.f3 }, Colors.white, Pieces.knight);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.b8, .end = Squares.c6 }, Colors.black, Pieces.knight);
+    _ = state.makeMove(game.Move{ .start = Squares.b8, .end = Squares.c6 }, Colors.black, Pieces.knight);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
     // Test capture
-    state.makeMove(game.Move{ .start = Squares.f1, .end = Squares.b5 }, Colors.white, Pieces.bishop);
+    _ = state.makeMove(game.Move{ .start = Squares.f1, .end = Squares.b5 }, Colors.white, Pieces.bishop);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.b5, .end = Squares.c6 }, Colors.white, Pieces.bishop);
+    _ = state.makeMove(game.Move{ .start = Squares.b5, .end = Squares.c6 }, Colors.white, Pieces.bishop);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 }
 
@@ -708,7 +814,7 @@ test "incremental hash with castling" {
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
     // Castle kingside
-    state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.g1 }, Colors.white, Pieces.king);
+    _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.g1 }, Colors.white, Pieces.king);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 }
 
@@ -716,20 +822,20 @@ test "incremental hash with en passant" {
     var state = State.defaultPosition();
 
     // Set up en passant
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.e4, .end = Squares.e5 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e4, .end = Squares.e5 }, Colors.white, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
-    state.makeMove(game.Move{ .start = Squares.d7, .end = Squares.d5 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.d7, .end = Squares.d5 }, Colors.black, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 
     // En passant capture
-    state.makeMove(game.Move{ .start = Squares.e5, .end = Squares.d6 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e5, .end = Squares.d6 }, Colors.white, Pieces.pawn);
     try expectEqual(state.computeHash(), state.zobrist_hash);
 }
 
@@ -739,7 +845,7 @@ test "king move removes both castling rights" {
     var state = try State.fromFen(fen);
 
     // Move white king e1 to f1
-    state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
+    _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
 
     // Both white castling rights should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteCastling);
@@ -752,7 +858,7 @@ test "black king move removes black castling" {
     var state = try State.fromFen(fen);
 
     // Move black king e8 to f8
-    state.makeMove(game.Move{ .start = Squares.e8, .end = Squares.f8 }, Colors.black, Pieces.king);
+    _ = state.makeMove(game.Move{ .start = Squares.e8, .end = Squares.f8 }, Colors.black, Pieces.king);
 
     // Both black castling rights should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackCastling);
@@ -766,7 +872,7 @@ test "kingside rook move removes kingside castling" {
     var state = try State.fromFen(fen);
 
     // Move h1 rook to g1
-    state.makeMove(game.Move{ .start = Squares.h1, .end = Squares.g1 }, Colors.white, Pieces.rook);
+    _ = state.makeMove(game.Move{ .start = Squares.h1, .end = Squares.g1 }, Colors.white, Pieces.rook);
 
     // White kingside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteKingside);
@@ -779,7 +885,7 @@ test "queenside rook move removes queenside castling" {
     var state = try State.fromFen(fen);
 
     // Move a1 rook to b1
-    state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.b1 }, Colors.white, Pieces.rook);
+    _ = state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.b1 }, Colors.white, Pieces.rook);
 
     // White queenside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteQueenside);
@@ -792,7 +898,7 @@ test "black kingside rook move" {
     var state = try State.fromFen(fen);
 
     // Move h8 rook to g8
-    state.makeMove(game.Move{ .start = Squares.h8, .end = Squares.g8 }, Colors.black, Pieces.rook);
+    _ = state.makeMove(game.Move{ .start = Squares.h8, .end = Squares.g8 }, Colors.black, Pieces.rook);
 
     // Black kingside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackKingside);
@@ -805,7 +911,7 @@ test "black queenside rook move" {
     var state = try State.fromFen(fen);
 
     // Move a8 rook to b8
-    state.makeMove(game.Move{ .start = Squares.a8, .end = Squares.b8 }, Colors.black, Pieces.rook);
+    _ = state.makeMove(game.Move{ .start = Squares.a8, .end = Squares.b8 }, Colors.black, Pieces.rook);
 
     // Black queenside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackQueenside);
@@ -819,7 +925,7 @@ test "capturing rook removes opponent castling" {
     var state = try State.fromFen(fen);
 
     // Bishop on h5 captures h8 rook
-    state.makeMove(game.Move{ .start = Squares.h5, .end = Squares.h8 }, Colors.white, Pieces.bishop);
+    _ = state.makeMove(game.Move{ .start = Squares.h5, .end = Squares.h8 }, Colors.white, Pieces.bishop);
 
     // Black kingside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackKingside);
@@ -832,7 +938,7 @@ test "capturing white rook removes white castling" {
     var state = try State.fromFen(fen);
 
     // Bishop on h3 captures h1 rook
-    state.makeMove(game.Move{ .start = Squares.h3, .end = Squares.h1 }, Colors.black, Pieces.bishop);
+    _ = state.makeMove(game.Move{ .start = Squares.h3, .end = Squares.h1 }, Colors.black, Pieces.bishop);
 
     // White kingside castling should be removed
     try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteKingside);
@@ -846,7 +952,7 @@ test "castling moves rook correctly" {
     var state = try State.fromFen(fen);
 
     // Castle kingside (O-O)
-    state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.g1 }, Colors.white, Pieces.king);
+    _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.g1 }, Colors.white, Pieces.king);
 
     // King should be on g1
     try std.testing.expect(state.pieceAt(Squares.g1) == Pieces.king);
@@ -865,7 +971,7 @@ test "en passant square set after double push" {
     var state = State.defaultPosition();
 
     // e2-e4 should set en passant square to e3
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
 
     try expectEqual(Squares.e3, state.en_passant.?);
 }
@@ -874,10 +980,10 @@ test "en passant square set for black" {
     var state = State.defaultPosition();
 
     // White move first
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e3 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e3 }, Colors.white, Pieces.pawn);
 
     // d7-d5 should set en passant square to d6
-    state.makeMove(game.Move{ .start = Squares.d7, .end = Squares.d5 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.d7, .end = Squares.d5 }, Colors.black, Pieces.pawn);
 
     try expectEqual(Squares.d6, state.en_passant.?);
 }
@@ -887,11 +993,11 @@ test "en passant cleared after non-pawn move" {
     var state = State.defaultPosition();
 
     // e2-e4 sets en passant
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
     try std.testing.expect(state.en_passant != null);
 
     // Knight move should clear en passant
-    state.makeMove(game.Move{ .start = Squares.g8, .end = Squares.f6 }, Colors.black, Pieces.knight);
+    _ = state.makeMove(game.Move{ .start = Squares.g8, .end = Squares.f6 }, Colors.black, Pieces.knight);
 
     try expectEqual(@as(?Squares.Square, null), state.en_passant);
 }
@@ -900,11 +1006,11 @@ test "en passant cleared after single push" {
     var state = State.defaultPosition();
 
     // e2-e4 sets en passant
-    state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e2, .end = Squares.e4 }, Colors.white, Pieces.pawn);
     try std.testing.expect(state.en_passant != null);
 
     // a7-a6 (single push) should clear en passant
-    state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
 
     try expectEqual(@as(?Squares.Square, null), state.en_passant);
 }
@@ -919,7 +1025,7 @@ test "en passant capture removes captured pawn" {
     try std.testing.expect(state.colorAt(Squares.d5) == Colors.black);
 
     // e5xd6 en passant
-    state.makeMove(game.Move{ .start = Squares.e5, .end = Squares.d6 }, Colors.white, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e5, .end = Squares.d6 }, Colors.white, Pieces.pawn);
 
     // d5 pawn should be removed
     try std.testing.expect(state.pieceAt(Squares.d5) == null);
@@ -938,7 +1044,7 @@ test "black en passant capture" {
     try std.testing.expect(state.colorAt(Squares.d4) == Colors.white);
 
     // e4xd3 en passant
-    state.makeMove(game.Move{ .start = Squares.e4, .end = Squares.d3 }, Colors.black, Pieces.pawn);
+    _ = state.makeMove(game.Move{ .start = Squares.e4, .end = Squares.d3 }, Colors.black, Pieces.pawn);
 
     // d4 pawn should be removed
     try std.testing.expect(state.pieceAt(Squares.d4) == null);

@@ -7,12 +7,10 @@ const expectEqual = std.testing.expectEqual;
 pub const Bitboard = @This();
 bits: u64 = 0,
 
-pub fn empty() Bitboard {
-    return Bitboard{ .bits = 0 };
-}
+pub const empty = Bitboard{ .bits = 0 };
 
 pub fn fromSquare(s: Square) Bitboard {
-    return Bitboard{ .bits = @as(u64, 1) << s };
+    return .{ .bits = @as(u64, 1) << s };
 }
 
 pub fn contains(self: *const Bitboard, s: Square) bool {
@@ -35,28 +33,20 @@ fn clearLsb(self: *Bitboard) void {
     self.*.bits &= self.bits - 1;
 }
 
-pub fn iter(self: *Bitboard) BitboardIter {
-    return BitboardIter{ .bitboard = self };
-}
-
 pub fn colorflip(self: *const Bitboard) Bitboard {
-    var flipped = Bitboard.empty();
+    var flipped = Bitboard.empty;
     flipped.bits = @byteSwap(self.bits);
     return flipped;
 }
 
-pub const BitboardIter = struct {
-    bitboard: *Bitboard,
-
-    pub fn next(self: BitboardIter) ?Square {
-        if (self.bitboard.isEmpty()) {
-            return null;
-        }
-        const ret = self.bitboard.trailingZeros();
-        self.bitboard.clearLsb();
-        return ret;
+pub fn next(self: *Bitboard) ?Square {
+    if (self.isEmpty()) {
+        return null;
     }
-};
+    const ret = self.trailingZeros();
+    self.clearLsb();
+    return ret;
+}
 
 pub fn bitOr(self: *const Bitboard, rhs: anytype) Bitboard {
     switch (@TypeOf(rhs)) {
@@ -138,15 +128,15 @@ test "bitboard contains sanity" {
 }
 
 test "bitboard square bitwise sanity" {
-    var bb1 = Bitboard.empty();
+    var bb1 = Bitboard.empty;
     bb1.bitOrAssign(Squares.e2);
     const bb1_from_square = Bitboard.fromSquare(Squares.e2);
     try expectEqual(bb1.bits, 4096);
     try expectEqual(bb1, bb1_from_square);
 
-    var bb2 = Bitboard.empty();
+    var bb2 = Bitboard.empty;
     bb2.bitAndAssign(Squares.e2);
-    const bb2_from_square = Bitboard.empty();
+    const bb2_from_square = Bitboard.empty;
     try expectEqual(bb2.bits, 0);
     try expectEqual(bb2, bb2_from_square);
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const State = @import("State.zig");
 const game = @import("game.zig");
+const movegen = @import("movegen.zig");
 const Colors = game.Colors;
 const Color = Colors.Color;
 const Pieces = game.Pieces;
@@ -83,8 +84,7 @@ fn positionalScore(state: *const State, c: Color, is_endgame: bool) i32 {
         var pieces = state.colorBitboard(c).bitAnd(state.pieceBitboard(piece));
         defer piece += 1;
 
-        var piece_iter = pieces.iter();
-        while (piece_iter.next()) |s| {
+        while (pieces.next()) |s| {
             const sq = blk: {
                 if (c == Colors.black) {
                     const rank = s / 8;
@@ -108,9 +108,8 @@ fn positionalScore(state: *const State, c: Color, is_endgame: bool) i32 {
 fn pawnStructureScore(state: *const State, c: Color) i32 {
     var score: i32 = 0;
     var pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
-    var pawns_iter = pawns.iter();
 
-    while (pawns_iter.next()) |s| {
+    while (pawns.next()) |s| {
         const file = s % 8;
         const rank = s / 8;
 
@@ -161,13 +160,10 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
 
         const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
         if ((opp_pawns.bits & ahead_mask) == 0) {
-            const passed_rank: u6 = blk: {
-                if (c == Colors.white) {
-                    break :blk rank;
-                } else {
-                    break :blk 7 - rank;
-                }
-            };
+            const passed_rank: u6 = if (c == Colors.white)
+                rank
+            else
+                7 - rank;
 
             score += 10 + @as(i32, passed_rank) * 10;
         }
@@ -183,30 +179,25 @@ fn pawnStructureScore(state: *const State, c: Color) i32 {
 }
 
 fn mobilityScore(state: *const State, c: Color) i32 {
-    const movegen = @import("movegen.zig");
-
     var score: i32 = 0;
     const pieces = state.colorBitboard(c);
 
     var knights = state.pieceBitboard(Pieces.knight).bitAnd(pieces);
-    var knight_iter = knights.iter();
-    while (knight_iter.next()) |s| {
-        const moves = movegen.knightMoves(s).bitAnd(pieces.not());
+    while (knights.next()) |s| {
+        const moves = movegen.KNIGHT_MOVES[s].bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
     }
 
     var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(pieces);
-    var bishop_iter = bishops.iter();
-    while (bishop_iter.next()) |s| {
+    while (bishops.next()) |s| {
         const moves = movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
     }
 
     var rooks = state.pieceBitboard(Pieces.rook).bitAnd(pieces);
-    var rook_iter = rooks.iter();
-    while (rook_iter.next()) |s| {
+    while (rooks.next()) |s| {
         const moves = movegen.sliderMoves(state, s, Pieces.rook).bitAnd(pieces.not());
         const numMoves: i32 = @intCast(moves.popCount());
         score += numMoves;
@@ -234,21 +225,33 @@ pub fn evaluate(state: *const State) i32 {
     return our_material + our_position + our_pawn_structure + our_mobility - opp_material - opp_position - opp_pawn_structure - opp_mobility;
 }
 
-pub fn scoreMove(state: *const State, m: game.Move, color: Color) i32 {
+pub fn scoreMove(ctx: *const movegen.MoveList.SortCtx, m: game.Move) i32 {
     var score: i32 = 0;
 
-    // Check if this is a capture (MVV-LVA: Most Valuable Victim - Least Valuable Attacker)
-    if (state.pieceAt(m.end)) |captured_piece| {
-        const attacker_piece = state.pieceAt(m.start).?;
-        // Value of captured piece (victim) minus value of attacker
+    // MVV-LVA for captures
+    if (ctx.state.pieceAt(m.end)) |captured_piece| {
+        const attacker_piece = ctx.state.pieceAt(m.start).?;
         score += PIECE_VALUES[captured_piece] * 10 - PIECE_VALUES[attacker_piece];
     }
 
+    // Promotion bonus
     const end_rank = m.end / 8;
-    if (state.pieceAt(m.start) == Pieces.pawn and
-        ((end_rank == 7 and color == Colors.white) or (end_rank == 0 and color == Colors.black)))
+    if (ctx.state.pieceAt(m.start) == game.Pieces.pawn and
+        ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black)))
     {
         score += 5000;
+    }
+
+    // Killer move bonus (below captures, above quiet moves)
+    if (ctx.killers[0]) |k| {
+        if (k.start == m.start and k.end == m.end) {
+            score += 900;
+        }
+    }
+    if (ctx.killers[1]) |k| {
+        if (k.start == m.start and k.end == m.end) {
+            score += 800;
+        }
     }
 
     return score;

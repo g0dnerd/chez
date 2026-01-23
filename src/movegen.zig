@@ -178,31 +178,34 @@ pub const MoveList = struct {
         self.len += 1;
     }
 
-    const SortCtx = struct {
+    pub const SortCtx = struct {
         state: *const State,
         color: Color,
+        killers: [2]?game.Move,
     };
 
     pub fn order(self: *MoveList, state: *const State, color: Color) void {
-        var ctx = SortCtx{ .state = state, .color = color };
+        var ctx = SortCtx{ .state = state, .color = color, .killers = .{ null, null } };
+        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
+    }
+
+    pub fn orderWithKillers(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move) void {
+        var ctx = SortCtx{ .state = state, .color = color, .killers = killers };
         std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
     }
 
     fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
-        return evaluation.scoreMove(ctx.state, a, ctx.color) > evaluation.scoreMove(ctx.state, b, ctx.color);
+        return evaluation.scoreMove(ctx, a) > evaluation.scoreMove(ctx, b);
     }
 };
 
-pub fn knightMoves(s: Square) Bitboard {
-    return KNIGHT_MOVES[s];
-}
-
 pub fn pawnAttacks(s: Square, c: Color) Bitboard {
-    const file = @as(usize, s % 8);
     const rank = @as(usize, s / 8);
-    if ((c == Colors.white and rank == 7) or (c == Colors.black and rank == 0)) {
-        return Bitboard.empty();
+    if (rank == State.PAWN_PROMO_RANK[c]) {
+        return Bitboard.empty;
     }
+
+    const file = @as(usize, s % 8);
 
     const rank_idx: u6 = switch (c) {
         Colors.white => @intCast(rank),
@@ -215,7 +218,7 @@ pub fn pawnAttacks(s: Square, c: Color) Bitboard {
 // Possible pawn moves that do not check positional legality (e.g. whether or not your king would
 // be left in check after making a move).
 pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
-    var ret = Bitboard.empty();
+    var ret = Bitboard.empty;
 
     const direction: i3 = switch (c) {
         Colors.white => 1,
@@ -309,7 +312,7 @@ pub fn pseudolegalForPiece(state: *const State, s: Square, c: Color, p: Piece) B
     return switch (p) {
         // Keep only pawn attacks that point at an opposing piece
         Pieces.pawn => pawnAttacks(s, c).bitAnd(state.colorBitboard(~c)).bitOr(pawnMoves(state, s, c)),
-        Pieces.knight => knightMoves(s),
+        Pieces.knight => KNIGHT_MOVES[s],
         Pieces.bishop, Pieces.rook, Pieces.queen => sliderMoves(state, s, p),
         Pieces.king => kingMoves(state, s, c),
         else => unreachable,
@@ -322,7 +325,7 @@ pub fn isSquareAttackedBy(state: *const State, s: Square, by_color: Color) bool 
     const pawn_attackers = pawnAttacks(s, ~by_color).bitAnd(state.pieceBitboard(Pieces.pawn)).bitAnd(attackers);
     if (!pawn_attackers.isEmpty()) return true;
 
-    const knight_attackers = knightMoves(s).bitAnd(state.pieceBitboard(Pieces.knight)).bitAnd(attackers);
+    const knight_attackers = KNIGHT_MOVES[s].bitAnd(state.pieceBitboard(Pieces.knight)).bitAnd(attackers);
     if (!knight_attackers.isEmpty()) return true;
 
     const king_square = state.pieceBitboard(Pieces.king).bitAnd(attackers).trailingZeros();
@@ -355,25 +358,20 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
-    var piece_iter = pieces.iter();
-    while (piece_iter.next()) |s| {
+    while (pieces.next()) |s| {
         const p = state.pieceAt(s).?;
         var piece_moves = movesForPiece(state, s, c, p);
 
-        var piece_move_iter = piece_moves.iter();
-        while (piece_move_iter.next()) |end| {
+        while (piece_moves.next()) |end| {
             const candidate_move = game.Move{ .start = s, .end = end };
             if (in_check) {
                 var tmp_state = state.*;
-                tmp_state.makeMove(candidate_move, c, p);
+                _ = tmp_state.makeMove(candidate_move, c, p);
 
-                const new_king_square = blk: {
-                    if (p == Pieces.king) {
-                        break :blk end;
-                    } else {
-                        break :blk king_square;
-                    }
-                };
+                const new_king_square = if (p == Pieces.king)
+                    end
+                else
+                    king_square;
 
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
                     return true;
@@ -397,25 +395,67 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
-    var piece_iter = pieces.iter();
-    while (piece_iter.next()) |s| {
+    while (pieces.next()) |s| {
         const p = state.pieceAt(s) orelse unreachable;
         var piece_moves = movesForPiece(state, s, c, p);
 
-        var piece_move_iter = piece_moves.iter();
-        while (piece_move_iter.next()) |end| {
+        while (piece_moves.next()) |end| {
             const candidate_move = game.Move{ .start = s, .end = end };
             if (in_check) {
                 var tmp_state = state.*;
-                tmp_state.makeMove(candidate_move, c, p);
+                _ = tmp_state.makeMove(candidate_move, c, p);
 
-                const new_king_square = blk: {
-                    if (p == Pieces.king) {
-                        break :blk end;
-                    } else {
-                        break :blk king_square;
-                    }
-                };
+                const new_king_square = if (p == Pieces.king)
+                    end
+                else
+                    king_square;
+
+                if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
+                    ret.append(candidate_move);
+                }
+            } else {
+                if (isLegalMove(state, candidate_move, c, p, king_square)) {
+                    ret.append(candidate_move);
+                }
+            }
+        }
+    }
+
+    return ret;
+}
+
+/// Generate only legal captures and promotions (for quiescence search)
+pub fn legalCaptures(state: *const State, c: Color) MoveList {
+    var ret = MoveList{};
+
+    var pieces = state.colorBitboard(c);
+    const king_mask = state.pieceBitboard(Pieces.king).bitAnd(pieces);
+    const king_square = king_mask.trailingZeros();
+    const in_check = isSquareAttackedBy(state, king_square, ~c);
+    const enemy_pieces = state.colorBitboard(~c);
+
+    while (pieces.next()) |s| {
+        const p = state.pieceAt(s) orelse unreachable;
+        var piece_moves = movesForPiece(state, s, c, p);
+
+        // Filter to only captures (landing on enemy piece) or promotions
+        const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
+
+        while (piece_moves.next()) |end| {
+            const is_capture = enemy_pieces.contains(end) or (p == Pieces.pawn and state.en_passant == end);
+            const is_promotion = p == Pieces.pawn and (end / 8) == promotion_rank;
+
+            if (!is_capture and !is_promotion) continue;
+
+            const candidate_move = game.Move{ .start = s, .end = end };
+            if (in_check) {
+                var tmp_state = state.*;
+                _ = tmp_state.makeMove(candidate_move, c, p);
+
+                const new_king_square = if (p == Pieces.king)
+                    end
+                else
+                    king_square;
 
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
                     ret.append(candidate_move);
@@ -459,18 +499,18 @@ fn isLegalMove(state: *const State, m: game.Move, c: Color, p: Piece, king_squar
 // If so, return the ray between them
 fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboard {
     if (s == king_square) {
-        return Bitboard.empty();
+        return Bitboard.empty;
     }
 
     const direction = Direction.fromSquares(king_square, s);
 
     if (direction == Direction.none) {
-        return Bitboard.empty();
+        return Bitboard.empty;
     }
 
     const between = game.betweenSquares(king_square, s);
     if (!(between.bitAnd(state.all_pieces)).isEmpty()) {
-        return Bitboard.empty();
+        return Bitboard.empty;
     }
 
     const king_file = king_square % 8;
@@ -511,7 +551,7 @@ fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboar
         const enemy_sliders = switch (direction) {
             .horizontal, .vertical => state.pieceBitboard(Pieces.rook).bitOr(state.pieceBitboard(Pieces.queen)).bitAnd(state.colorBitboard(~c)),
             .diagonal, .antiDiagonal => state.pieceBitboard(Pieces.bishop).bitOr(state.pieceBitboard(Pieces.queen)).bitAnd(state.colorBitboard(~c)),
-            .none => return Bitboard.empty(),
+            .none => return Bitboard.empty,
         };
 
         if (enemy_sliders.contains(sq)) {
@@ -519,7 +559,7 @@ fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboar
         }
     }
 
-    return Bitboard.empty();
+    return Bitboard.empty;
 }
 
 fn enPassantExposesKing(state: *const State, m: game.Move, c: Color, king_square: Square) bool {
@@ -531,13 +571,10 @@ fn enPassantExposesKing(state: *const State, m: game.Move, c: Color, king_square
         return false;
     }
 
-    const captured_pawn_square = blk: {
-        if (c == Colors.white) {
-            break :blk m.end - 8;
-        } else {
-            break :blk m.end + 8;
-        }
-    };
+    const captured_pawn_square = if (c == Colors.white)
+        m.end - 8
+    else
+        m.end + 8;
 
     // Temporarily remove both pawns and check for attacks
     const all_pieces = state.all_pieces.bitAnd(Bitboard.fromSquare(m.start).not()).bitAnd(Bitboard.fromSquare(captured_pawn_square).not());
@@ -547,8 +584,7 @@ fn enPassantExposesKing(state: *const State, m: game.Move, c: Color, king_square
     var enemy_rooks_queens = state.pieceBitboard(Pieces.rook).bitOr(state.pieceBitboard(Pieces.queen)).bitAnd(enemy_pieces);
 
     // Check horizontal attacks on the king's rank
-    var rk_iter = enemy_rooks_queens.iter();
-    while (rk_iter.next()) |sq| {
+    while (enemy_rooks_queens.next()) |sq| {
         if (sq / 8 == king_rank) {
             // Check if there's a clear path between attacker and king
             const between = game.betweenSquares(sq, king_square);

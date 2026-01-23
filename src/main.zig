@@ -4,20 +4,14 @@ const movegen = @import("movegen.zig");
 const search = @import("search.zig");
 const State = @import("State.zig");
 
-fn squareToAlgebraic(square: game.Squares.Square, buf: []u8) !void {
-    const file: u8 = 'a' + @as(u8, square) % 8;
-    const rank: u8 = '1' + @as(u8, square) / 8;
-    _ = try std.fmt.bufPrint(buf, "{c}{c}", .{ file, rank });
-}
-
 fn displayLegalMoves(moves: *const movegen.MoveList, w: *std.Io.Writer) !void {
     try w.writeAll("Legal moves: ");
     for (0..moves.len) |i| {
         const m = moves.moves[i];
         var sq_start: [2]u8 = undefined;
         var sq_end: [2]u8 = undefined;
-        try squareToAlgebraic(m.start, &sq_start);
-        try squareToAlgebraic(m.end, &sq_end);
+        try game.squareToAlgebraic(m.start, &sq_start);
+        try game.squareToAlgebraic(m.end, &sq_end);
 
         try w.print("{s}{s}", .{ sq_start, sq_end });
         try w.flush();
@@ -88,12 +82,14 @@ fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool 
 const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
 pub fn main() !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var stdout_buffer: [512]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout: *std.Io.Writer = &stdout_writer.interface;
 
     var stdin_buf: [4096]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
     const stdin: *std.Io.Reader = &stdin_reader.interface;
 
     try stdout.writeAll("=== Chez Paul ===\n");
@@ -107,6 +103,8 @@ pub fn main() !void {
             return err;
         }
     };
+    stdin.toss(1);
+
     const fen = std.mem.trimEnd(u8, fen_raw, &std.ascii.whitespace);
 
     var state = if (fen.len == 0)
@@ -120,12 +118,13 @@ pub fn main() !void {
     try stdout.flush();
 
     const depth_input_raw = try stdin_reader.interface.takeDelimiterExclusive('\n');
+    stdin.toss(1);
     const depth_input = std.mem.trimEnd(u8, depth_input_raw, &std.ascii.whitespace);
     const depth = try std.fmt.parseInt(u8, depth_input, 10);
     std.debug.assert(depth <= 20);
 
     const engine_color = if (fen.len == 0)
-        game.Colors.black
+        game.Colors.white
     else
         state.to_move;
 
@@ -153,7 +152,7 @@ pub fn main() !void {
 
         const current_color = state.to_move;
         const moves = movegen.legalMoves(&state, current_color);
-        try displayLegalMoves(&moves, stdout);
+        // try displayLegalMoves(&moves, stdout);
 
         if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
@@ -164,6 +163,7 @@ pub fn main() !void {
         if (current_color != engine_color) {
             // Human's turn
             try stdout.writeAll("Your turn\n");
+            try stdout.flush();
 
             while (true) {
                 try stdout.writeAll("\nEnter move (e.g., e2e4) or 'quit/q': ");
@@ -174,6 +174,7 @@ pub fn main() !void {
                         break :blk line;
                     } else |err| return err;
                 };
+                stdin.toss(1);
                 const move = std.mem.trimEnd(u8, move_raw, &std.ascii.whitespace);
 
                 if (std.mem.eql(u8, move, "quit") or std.mem.eql(u8, move, "q")) {
@@ -185,13 +186,13 @@ pub fn main() !void {
                 if (parseMove(move)) |user_move| {
                     if (containsMove(&moves.moves, &user_move)) {
                         const piece = state.pieceAt(user_move.start).?;
-                        state.makeMove(user_move, ~engine_color, piece);
+                        _ = state.makeMove(user_move, ~engine_color, piece);
                         num_moves += 1;
 
                         var sq_start: [2]u8 = undefined;
                         var sq_end: [2]u8 = undefined;
-                        try squareToAlgebraic(user_move.start, &sq_start);
-                        try squareToAlgebraic(user_move.end, &sq_end);
+                        try game.squareToAlgebraic(user_move.start, &sq_start);
+                        try game.squareToAlgebraic(user_move.end, &sq_end);
                         try stdout.print("\nYou moved {s} from {s} to {s}\n", .{
                             pieceName(piece),
                             sq_start,
@@ -210,8 +211,8 @@ pub fn main() !void {
             }
         } else {
             // Engine's turn
-            try stdout.print("Engine thinking (depth {d})...\n", .{depth});
-            try stdout.flush();
+            // try stdout.print("Engine thinking (depth {d})...\n", .{depth});
+            // try stdout.flush();
 
             const start = try std.time.Instant.now();
             if (try search.search(&state, depth)) |search_res| {
@@ -223,13 +224,13 @@ pub fn main() !void {
 
                 var sq_start: [2]u8 = undefined;
                 var sq_end: [2]u8 = undefined;
-                try squareToAlgebraic(best_move.start, &sq_start);
-                try squareToAlgebraic(best_move.end, &sq_end);
+                try game.squareToAlgebraic(best_move.start, &sq_start);
+                try game.squareToAlgebraic(best_move.end, &sq_end);
 
-                state.makeMove(best_move, engine_color, piece);
+                _ = state.makeMove(best_move, engine_color, piece);
                 num_moves += 1;
 
-                // try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
+                try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
                 try stdout.print("Move {d}\n", .{num_moves});
                 try stdout.print("{f}\n", .{state});
                 try stdout.print("Engine moved {s} from {s} to {s} (score: {d:.2}, found in {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
@@ -241,6 +242,7 @@ pub fn main() !void {
                         break :blk line;
                     } else |err| return err;
                 };
+                stdin.toss(1);
             } else {
                 try stdout.writeAll("Engine has no legal moves!\n");
                 try stdout.flush();

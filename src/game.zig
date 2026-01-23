@@ -184,12 +184,12 @@ pub const Direction = enum {
 
 pub fn betweenSquares(from: Squares.Square, to: Squares.Square) Bitboard {
     if (from == to) {
-        return Bitboard.empty();
+        return Bitboard.empty;
     }
 
     const direction = Direction.fromSquares(from, to);
     if (direction == .none) {
-        return Bitboard.empty();
+        return Bitboard.empty;
     }
 
     const ray = rayBetweenInclusive(from, to, direction);
@@ -202,7 +202,7 @@ pub fn rayBetweenInclusive(from: Squares.Square, to: Squares.Square, d: Directio
     const to_file = to % 8;
     const to_rank = to / 8;
 
-    var ray = Bitboard.empty();
+    var ray = Bitboard.empty;
 
     switch (d) {
         .horizontal => {
@@ -222,20 +222,15 @@ pub fn rayBetweenInclusive(from: Squares.Square, to: Squares.Square, d: Directio
             }
         },
         .diagonal, .antiDiagonal => {
-            const rank_step: i8 = blk: {
-                if (to_rank > from_rank) {
-                    break :blk 1;
-                } else {
-                    break :blk -1;
-                }
-            };
-            const file_step: i8 = blk: {
-                if (to_file > from_file) {
-                    break :blk 1;
-                } else {
-                    break :blk -1;
-                }
-            };
+            const rank_step: i8 = if (to_rank > from_rank)
+                1
+            else
+                -1;
+
+            const file_step: i8 = if (to_file > from_file)
+                1
+            else
+                -1;
 
             var r = @as(i8, from_rank);
             var f = @as(i8, from_file);
@@ -268,7 +263,7 @@ var keys_storage: ZobristKeys = undefined;
 
 fn initZobristKeys() void {
     var seed: u64 = undefined;
-    std.posix.getrandom(std.mem.asBytes(&seed)) catch @panic("getrandom failed");
+    _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0); // catch @panic("getrandom failed");
     var rng = std.Random.DefaultPrng.init(seed);
     const random = rng.random();
 
@@ -340,6 +335,12 @@ pub const ROOK_CASTLING_RIGHTS_MASK: [64]Castling.CastlingRights = blk: {
 
     break :blk mask;
 };
+
+pub fn squareToAlgebraic(square: Squares.Square, buf: []u8) !void {
+    const file: u8 = 'a' + @as(u8, square) % 8;
+    const rank: u8 = '1' + @as(u8, square) / 8;
+    _ = try std.fmt.bufPrint(buf, "{c}{c}", .{ file, rank });
+}
 
 test "test try square offset" {
     try std.testing.expectEqual(trySquareOffset(Squares.a1, -1, 0), null);
