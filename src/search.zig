@@ -688,9 +688,6 @@ pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, ga
         var sq_end: [2]u8 = undefined;
         game.squareToAlgebraic(m.start, &sq_start) catch {};
         game.squareToAlgebraic(m.end, &sq_end) catch {};
-        std.debug.print("Depth {d} ({d} threads) - move: {s}{s} - eval: {d}\n", .{
-            best_depth, spawned_threads + 1, sq_start, sq_end, best_score,
-        });
 
         return .{
             .move = m,
@@ -745,7 +742,6 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
 
             try game.squareToAlgebraic(best_move.?.start, &sq_start);
             try game.squareToAlgebraic(best_move.?.end, &sq_end);
-            std.debug.print("Depth {d} - move: {s}{s} - eval: {d}\r", .{ depth, sq_start, sq_end, best_score });
 
             best_depth = r.depth;
 

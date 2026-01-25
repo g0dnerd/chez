@@ -1,4 +1,5 @@
 const std = @import("std");
+const ffi = @import("ffi.zig");
 const Bitboard = @import("Bitboard.zig");
 const evaluation = @import("evaluation.zig");
 const magics = @import("magics.zig");
@@ -196,6 +197,13 @@ pub const MoveList = struct {
 
     fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
         return evaluation.scoreMove(ctx, a) > evaluation.scoreMove(ctx, b);
+    }
+
+    pub fn toCMoves(self: *const MoveList, c_moves: *ffi.CMoveList) void {
+        for (0..self.len) |i| {
+            self.moves[i].toCMove(&c_moves.moves[i]);
+        }
+        c_moves.len = self.len;
     }
 };
 
@@ -400,7 +408,8 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
         var piece_moves = movesForPiece(state, s, c, p);
 
         while (piece_moves.next()) |end| {
-            const candidate_move = game.Move{ .start = s, .end = end };
+            var candidate_move = game.Move{ .start = s, .end = end };
+
             if (in_check) {
                 var tmp_state = state.*;
                 _ = tmp_state.makeMove(candidate_move, c, p);
@@ -411,6 +420,12 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
                     king_square;
 
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
+                    if (p == Pieces.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                        candidate_move.promotion_piece = Pieces.queen;
+                        inline for (1..4) |promotion_target| {
+                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                        }
+                    }
                     ret.append(candidate_move);
                 }
             } else {

@@ -5,25 +5,25 @@ const movegen = @import("movegen.zig");
 const search = @import("search.zig");
 const State = @import("State.zig");
 
-fn displayLegalMoves(moves: *const movegen.MoveList, w: *std.Io.Writer) !void {
-    try w.writeAll("Legal moves: ");
-    for (0..moves.len) |i| {
-        const m = moves.moves[i];
-        var sq_start: [2]u8 = undefined;
-        var sq_end: [2]u8 = undefined;
-        try game.squareToAlgebraic(m.start, &sq_start);
-        try game.squareToAlgebraic(m.end, &sq_end);
-
-        try w.print("{s}{s}", .{ sq_start, sq_end });
-        try w.flush();
-        if (i < moves.len - 1) {
-            try w.writeAll(", ");
-            try w.flush();
-        }
-    }
-    try w.writeByte('\n');
-    try w.flush();
-}
+// fn displayLegalMoves(moves: *const movegen.MoveList, w: *std.Io.Writer) !void {
+//     try w.writeAll("Legal moves: ");
+//     for (0..moves.len) |i| {
+//         const m = moves.moves[i];
+//         var sq_start: [2]u8 = undefined;
+//         var sq_end: [2]u8 = undefined;
+//         try game.squareToAlgebraic(m.start, &sq_start);
+//         try game.squareToAlgebraic(m.end, &sq_end);
+//
+//         try w.print("{s}{s}", .{ sq_start, sq_end });
+//         try w.flush();
+//         if (i < moves.len - 1) {
+//             try w.writeAll(", ");
+//             try w.flush();
+//         }
+//     }
+//     try w.writeByte('\n');
+//     try w.flush();
+// }
 
 fn algebraicToSquare(s: []const u8) ?game.Squares.Square {
     if (s.len != 2) {
@@ -89,6 +89,14 @@ const Args = struct {
     fen: ?[]const u8,
 };
 
+fn writeHeader(stdout: *std.Io.Writer, state: *State, depth: u8, num_threads: usize) !void {
+    try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
+    try stdout.writeAll(" === Chez Paul ===\n");
+    try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, depth, num_threads });
+    try stdout.print("{f}", .{state});
+    try stdout.flush();
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const arg_parser = try kore.args.declarative.Parser(Args);
 
@@ -115,7 +123,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var history = search.PositionHistory.init();
     history.push(state.zobrist_hash);
 
-    const engine_color = blk: {
+    var engine_color = blk: {
         if (parsed_args.engine_color) |c| {
             if (std.mem.eql(u8, c, "white")) break :blk game.Colors.white;
             if (std.mem.eql(u8, c, "black")) break :blk game.Colors.black;
@@ -125,27 +133,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const depth: u8 = parsed_args.depth orelse 6;
     const num_threads: usize = parsed_args.num_threads orelse 4;
 
-    const engine_color_str = if (engine_color == game.Colors.white)
-        "white"
-    else
-        "black";
-
-    try stdout.print("Engine plays as {s}, depth {d}, {d} threads.\n", .{ engine_color_str, depth, num_threads });
-    try stdout.flush();
-    _ = blk: {
-        while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
-            break :blk line;
-        } else |err| return err;
-    };
-    stdin.toss(1);
-
-    var num_moves: u16 = 1;
-
     while (true) {
-        try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
-        try stdout.print("Move {d}\n", .{num_moves});
-        try stdout.print("{f}\n", .{state});
-        try stdout.flush();
+        try writeHeader(stdout, &state, depth, num_threads);
 
         if (search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
@@ -155,18 +144,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         1 => "Black",
                     };
 
-                    try stdout.print("\nCheckmate! {s} wins!\n", .{winner});
+                    try stdout.print("\n Checkmate! {s} wins!\n", .{winner});
                 },
-                .stalemate => try stdout.print("\nStalemate! Draw.\n", .{}),
-                .fiftyMoveRule => try stdout.print("\nDraw by 50-move rule.\n", .{}),
-                .threefoldRepetition => try stdout.print("\nDraw by threefold repetition.\n", .{}),
+                .stalemate => try stdout.print("\n Stalemate! Draw.\n", .{}),
+                .fiftyMoveRule => try stdout.print("\n Draw by 50-move rule.\n", .{}),
+                .threefoldRepetition => try stdout.print("\n Draw by threefold repetition.\n", .{}),
             }
+            try stdout.flush();
             break;
         }
 
         const current_color = state.to_move;
         const moves = movegen.legalMoves(&state, current_color);
-        // try displayLegalMoves(&moves, stdout);
 
         if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
@@ -176,11 +165,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         if (current_color != engine_color) {
             // Human's turn
-            try stdout.writeAll("Your turn\n");
-            try stdout.flush();
 
             while (true) {
-                try stdout.writeAll("\nEnter move (e.g., e2e4), press enter to pass to the engine or type 'quit/q' to quit: ");
+                try stdout.writeAll(" Your turn: ");
                 try stdout.flush();
 
                 const move_raw = blk: {
@@ -189,12 +176,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     } else |err| return err;
                 };
                 stdin.toss(1);
-                if (move_raw.len == 0) break;
+
+                if (move_raw.len == 0) {
+                    engine_color = ~engine_color;
+                    break;
+                }
 
                 const move = std.mem.trimEnd(u8, move_raw, &std.ascii.whitespace);
 
                 if (std.mem.eql(u8, move, "quit") or std.mem.eql(u8, move, "q")) {
-                    try stdout.writeAll("Thanks for playing!\n");
+                    try stdout.writeAll(" Thanks for playing!\n");
                     try stdout.flush();
                     return;
                 }
@@ -204,30 +195,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         const piece = state.pieceAt(user_move.start).?;
                         _ = state.makeMove(user_move, ~engine_color, piece);
                         history.push(state.zobrist_hash);
-                        num_moves += 1;
-
-                        var sq_start: [2]u8 = undefined;
-                        var sq_end: [2]u8 = undefined;
-                        try game.squareToAlgebraic(user_move.start, &sq_start);
-                        try game.squareToAlgebraic(user_move.end, &sq_end);
-                        try stdout.print("\nYou moved {s} from {s} to {s}\n", .{
-                            pieceName(piece),
-                            sq_start,
-                            sq_end,
-                        });
-                        try stdout.flush();
+                        try writeHeader(stdout, &state, depth, num_threads);
                         break;
                     } else {
-                        try stdout.writeAll("Illegal move! Try again.\n");
+                        try stdout.writeAll(" Illegal move! Try again.\n");
                         try stdout.flush();
                     }
                 } else {
-                    try stdout.writeAll("Invalid format! Specify move like 'e2e4'\n");
+                    try stdout.writeAll(" Invalid format! Specify move like 'e2e4'\n");
                     try stdout.flush();
                 }
             }
         }
+
         // Engine's turn
+        try stdout.writeAll(" Thinking... ");
+        try stdout.flush();
 
         const start = try std.time.Instant.now();
         if (try search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
@@ -244,13 +227,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             _ = state.makeMove(best_move, state.to_move, piece);
             history.push(state.zobrist_hash);
-            num_moves += 1;
 
-            try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
-            try stdout.print("Move {d}\n", .{num_moves});
-            try stdout.print("{f}\n", .{state});
-            try stdout.print("Engine moved {s} from {s} to {s} (score: {d:.2}, found in {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
-            try stdout.writeAll("Press enter to continue...\n");
+            try stdout.writeByte('\n');
+            try writeHeader(stdout, &state, depth, num_threads);
+            try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
+            try stdout.writeAll(" Press enter to continue... ");
             try stdout.flush();
 
             _ = blk: {
@@ -260,7 +241,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             };
             stdin.toss(1);
         } else {
-            try stdout.writeAll("Engine has no legal moves!\n");
+            try stdout.writeAll(" Engine has no legal moves!\n");
             try stdout.flush();
             break;
         }

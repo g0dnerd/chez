@@ -1,9 +1,35 @@
 const std = @import("std");
+const ffi = @import("ffi.zig");
 const Bitboard = @import("Bitboard.zig");
 
 pub const Move = struct {
     start: Squares.Square,
     end: Squares.Square,
+    promotion_piece: ?Pieces.Piece = null,
+
+    pub fn initCMove(c: *const ffi.CMove) Move {
+        const promotion_piece: ?Pieces.Piece = if (c.promotion_piece == 0)
+            null
+        else
+            @as(Pieces.Piece, @intCast(c.promotion_piece));
+
+        return .{
+            .start = @intCast(c.start),
+            .end = @intCast(c.end),
+            .promotion_piece = promotion_piece,
+        };
+    }
+
+    pub fn toCMove(self: *const Move, c_move: *ffi.CMove) void {
+        const c_promotion_piece: u8 = if (self.promotion_piece) |p|
+            @as(u8, @intCast(p))
+        else
+            0;
+
+        c_move.*.start = self.start;
+        c_move.*.end = self.end;
+        c_move.*.promotion_piece = c_promotion_piece;
+    }
 };
 
 pub const GameResult = union(enum) {
@@ -296,10 +322,12 @@ pub fn getZobristKeys() *const ZobristKeys {
     return &keys_storage;
 }
 
-pub const piece_repr = [2][6]u8{
-    [_]u8{ 'P', 'N', 'B', 'R', 'Q', 'K' },
-    [_]u8{ 'p', 'n', 'b', 'r', 'q', 'k' },
+pub const piece_repr = [2][6][]const u8{
+    [_][]const u8{ "\u{265F}", "\u{265E}", "\u{265D}", "\u{265C}", "\u{265B}", "\u{265A}" },
+    [_][]const u8{ "\u{2659}", "\u{2658}", "\u{2657}", "\u{2656}", "\u{2655}", "\u{2654}" },
 };
+
+pub const piece_repr_symbol = [6][]const u8{ "󰡙", "󰡘", "󰡜", "󰡛", "󰡚", "󰡗" };
 
 pub const CastleData = struct {
     king_end: Squares.Square,
