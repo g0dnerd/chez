@@ -7,20 +7,20 @@ const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const Atomic = std.atomic.Value;
 
-const CHECKMATE_SCORE: i32 = 100000;
-const ALPHA_INIT: i32 = std.math.minInt(i32) + 1;
-const BETA_INIT: i32 = std.math.maxInt(i32);
-const MAX_PLY: usize = 64;
-const MAX_THREADS: usize = 16;
-const DEFAULT_THREADS: usize = 8;
+const checkmate_score: i32 = 100000;
+const alpha_init: i32 = std.math.minInt(i32) + 1;
+const beta_init: i32 = std.math.maxInt(i32);
+const max_ply: usize = 64;
+const max_threads: usize = 16;
+const default_threads: usize = 8;
 
-// Maximum game length - 1024 half-moves (512 full moves) is very generous
-const MAX_GAME_LENGTH: usize = 1024;
+// Maximum game length - 1024 half-moves (512 full moves)
+const max_game_length: usize = 1024;
 
 // Position history for threefold repetition detection
 // Stores Zobrist hashes of positions since game start
 pub const PositionHistory = struct {
-    hashes: [MAX_GAME_LENGTH]u64 = undefined,
+    hashes: [max_game_length]u64 = undefined,
     len: usize = 0,
 
     pub fn init() PositionHistory {
@@ -28,7 +28,7 @@ pub const PositionHistory = struct {
     }
 
     pub fn push(self: *PositionHistory, hash: u64) void {
-        if (self.len < MAX_GAME_LENGTH) {
+        if (self.len < max_game_length) {
             self.hashes[self.len] = hash;
             self.len += 1;
         }
@@ -84,10 +84,10 @@ pub const PositionHistory = struct {
 // Killer move table: stores 2 killer moves per ply
 // Killer moves are quiet moves that caused beta cutoffs
 const KillerTable = struct {
-    moves: [MAX_PLY][2]?game.Move = [_][2]?game.Move{.{ null, null }} ** MAX_PLY,
+    moves: [max_ply][2]?game.Move = [_][2]?game.Move{.{ null, null }} ** max_ply,
 
     fn store(self: *KillerTable, ply: usize, m: game.Move) void {
-        if (ply >= MAX_PLY) return;
+        if (ply >= max_ply) return;
         // Don't store if it's already the first killer
         if (self.moves[ply][0]) |k| {
             if (k.start == m.start and k.end == m.end) return;
@@ -98,7 +98,7 @@ const KillerTable = struct {
     }
 
     fn isKiller(self: *const KillerTable, ply: usize, m: game.Move) bool {
-        if (ply >= MAX_PLY) return false;
+        if (ply >= max_ply) return false;
         if (self.moves[ply][0]) |k| {
             if (k.start == m.start and k.end == m.end) return true;
         }
@@ -109,7 +109,7 @@ const KillerTable = struct {
     }
 
     fn clear(self: *KillerTable) void {
-        self.moves = [_][2]?game.Move{.{ null, null }} ** MAX_PLY;
+        self.moves = [_][2]?game.Move{.{ null, null }} ** max_ply;
     }
 };
 
@@ -127,12 +127,6 @@ const TranspositionEntry = struct {
     flag: Flag = .empty,
     best_move: ?game.Move = null,
 };
-
-// Fixed-size transposition table using direct indexing
-// Size must be a power of 2 for fast modulo via bitmask
-const TT_SIZE_BITS = 20; // 2^20 = ~1M entries
-const TT_SIZE: usize = 1 << TT_SIZE_BITS;
-const TT_MASK: u64 = TT_SIZE - 1;
 
 // Lock-free transposition table entry packed into two 64-bit words
 // This allows atomic read/write without locks (Stockfish-style)
@@ -194,8 +188,14 @@ const TranspositionTable = struct {
     entries: []PackedTTEntry,
     alloc: std.mem.Allocator,
 
+    // Fixed-size transposition table using direct indexing
+    // Size must be a power of 2 for fast modulo via bitmask
+    const tt_size_bits = 20; // 2^20 = ~1M entries
+    const tt_size: usize = 1 << tt_size_bits;
+    const tt_mask: u64 = tt_size - 1;
+
     fn init(alloc: std.mem.Allocator) !TranspositionTable {
-        const entries = try alloc.alloc(PackedTTEntry, TT_SIZE);
+        const entries = try alloc.alloc(PackedTTEntry, tt_size);
         @memset(entries, PackedTTEntry{});
         return .{ .entries = entries, .alloc = alloc };
     }
@@ -205,7 +205,7 @@ const TranspositionTable = struct {
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
-        const idx = hash & TT_MASK;
+        const idx = hash & tt_mask;
         const entry = &self.entries[idx];
 
         // Lock-free read with atomic loads
@@ -216,7 +216,7 @@ const TranspositionTable = struct {
     }
 
     fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?game.Move) void {
-        const idx = hash & TT_MASK;
+        const idx = hash & tt_mask;
         const entry = &self.entries[idx];
 
         // Check replacement policy: only replace if new depth >= existing
@@ -256,7 +256,7 @@ const ThreadContext = struct {
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
-fn quiescence(state: *State, alpha_init: i32, beta: i32) i32 {
+fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
     const to_move = state.to_move;
     const in_check = state.in_check == to_move;
 
@@ -265,12 +265,12 @@ fn quiescence(state: *State, alpha_init: i32, beta: i32) i32 {
         var moves = movegen.legalMoves(state, to_move);
 
         if (moves.len == 0) {
-            return -CHECKMATE_SCORE;
+            return -checkmate_score;
         }
 
         moves.order(state, to_move);
 
-        var alpha = alpha_init;
+        var alpha = alpha_initial;
         for (0..moves.len) |i| {
             const m = moves.moves[i];
             const p = state.pieceAt(m.start).?;
@@ -299,7 +299,7 @@ fn quiescence(state: *State, alpha_init: i32, beta: i32) i32 {
         return beta;
     }
 
-    var alpha = alpha_init;
+    var alpha = alpha_initial;
 
     // If stand pat is better than alpha, we can use it as a floor
     if (stand_pat > alpha) {
@@ -335,9 +335,9 @@ fn quiescence(state: *State, alpha_init: i32, beta: i32) i32 {
     return alpha;
 }
 
-fn negamax(state: *State, depth: u8, ply: usize, alpha_init: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory) i32 {
+fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory) i32 {
     const hash = state.zobrist_hash;
-    var alpha = alpha_init;
+    var alpha = alpha_initial;
     var best_move: ?game.Move = null;
 
     // Check for repetition - return draw score (0) if position occurred before
@@ -368,7 +368,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_init: i32, beta: i32, tbl
 
     if (moves.len == 0) {
         if (state.in_check == to_move) {
-            return -CHECKMATE_SCORE;
+            return -checkmate_score;
         } else {
             return 0;
         }
@@ -414,7 +414,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_init: i32, beta: i32, tbl
     }
 
     // Order moves with killer heuristic
-    const ply_killers = if (ply < MAX_PLY) killers.moves[ply] else [2]?game.Move{ null, null };
+    const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?game.Move{ null, null };
     moves.orderWithKillers(state, to_move, ply_killers);
 
     var max_score: i32 = std.math.minInt(i32);
@@ -492,7 +492,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_init: i32, beta: i32, tbl
     }
 
     // Determine flag for TT entry
-    const flag: Flag = if (max_score <= alpha_init)
+    const flag: Flag = if (max_score <= alpha_initial)
         .upperBound
     else if (max_score >= beta)
         .lowerBound
@@ -550,13 +550,13 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
                 .checkmate => if (r.checkmate == to_move) {
                     history.pop();
                     state.unmakeMove(m, to_move, p, undo);
-                    return .{ .move = m, .score = CHECKMATE_SCORE, .depth = depth };
+                    return .{ .move = m, .score = checkmate_score, .depth = depth };
                 },
                 else => {},
             }
         }
 
-        const score = -negamax(state, depth - 1, 1, -BETA_INIT, -ALPHA_INIT, tbl, killers, history);
+        const score = -negamax(state, depth - 1, 1, -beta_init, -alpha_init, tbl, killers, history);
 
         history.pop();
         state.unmakeMove(m, to_move, p, undo);
@@ -603,7 +603,7 @@ fn workerThread(ctx: *ThreadContext) void {
             pv_move = r.move;
 
             // Early exit if checkmate found
-            if (r.score >= CHECKMATE_SCORE - 100) {
+            if (r.score >= checkmate_score - 100) {
                 ctx.shared.stop_flag.store(true, .monotonic);
                 break;
             }
@@ -616,7 +616,7 @@ fn workerThread(ctx: *ThreadContext) void {
 // Threads share TT but run independently (no barriers)
 // game_history: optional history from the actual game (for repetition detection across search boundary)
 pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, game_history: ?*const PositionHistory) !?SearchResult {
-    const actual_threads = @min(num_threads, MAX_THREADS);
+    const actual_threads = @min(num_threads, max_threads);
 
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
@@ -626,7 +626,7 @@ pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, ga
     };
 
     // Create thread contexts
-    var contexts: [MAX_THREADS]ThreadContext = undefined;
+    var contexts: [max_threads]ThreadContext = undefined;
     for (0..actual_threads) |i| {
         // Initialize history with game history if provided
         var history = PositionHistory.init();
@@ -649,7 +649,7 @@ pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, ga
     }
 
     // Spawn worker threads
-    var threads: [MAX_THREADS]std.Thread = undefined;
+    var threads: [max_threads]std.Thread = undefined;
     var spawned_threads: usize = 0;
     for (1..actual_threads) |i| {
         threads[i] = std.Thread.spawn(.{}, workerThread, .{&contexts[i]}) catch break;
@@ -705,7 +705,7 @@ pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, ga
 // Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
 // Uses parallel search with default thread count.
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
-    return searchParallel(state, max_depth, DEFAULT_THREADS, null);
+    return searchParallel(state, max_depth, default_threads, null);
 }
 
 // Search with explicit thread count
@@ -750,7 +750,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             best_depth = r.depth;
 
             // Early exit if we found a checkmate
-            if (best_score >= CHECKMATE_SCORE - 100) {
+            if (best_score >= checkmate_score - 100) {
                 break;
             }
         }

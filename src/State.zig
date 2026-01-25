@@ -40,10 +40,10 @@ zobrist_hash: u64 = 0,
 all_pieces: Bitboard,
 mailbox: [64]?Piece,
 
-const PAWN_START_RANK: [2]Square = .{ 1, 6 };
-const PAWN_DOUBLE_RANK: [2]Square = .{ 3, 4 };
-pub const PAWN_PROMO_RANK: [2]Square = .{ 7, 0 };
-const PAWN_EP_OFFSET: [2]i8 = .{ -8, 8 };
+const pawn_start_rank: [2]Square = .{ 1, 6 };
+const pawn_double_rank: [2]Square = .{ 3, 4 };
+pub const pawn_promo_rank: [2]Square = .{ 7, 0 };
+const pawn_ep_offset: [2]i8 = .{ -8, 8 };
 
 pub fn defaultPosition() State {
     const pawns = Bitboard{ .bits = 0xff00000000ff00 };
@@ -123,7 +123,7 @@ pub fn defaultPosition() State {
         Pieces.rook,
     };
 
-    var state = State{ .colors = .{ white_pieces, black_pieces }, .pieces = .{ pawns, knights, bishops, rooks, queens, kings }, .to_move = Colors.white, .castling_rights = Castling.AllLegal, .all_pieces = white_pieces.bitOr(black_pieces), .mailbox = mailbox };
+    var state = State{ .colors = .{ white_pieces, black_pieces }, .pieces = .{ pawns, knights, bishops, rooks, queens, kings }, .to_move = Colors.white, .castling_rights = Castling.all_legal, .all_pieces = white_pieces.bitOr(black_pieces), .mailbox = mailbox };
     state.zobrist_hash = state.computeHash();
     return state;
 }
@@ -152,7 +152,7 @@ pub fn fromFen(fen: []const u8) !State {
     var to_move: ?Color = null;
     var en_passant: ?Square = null;
     var en_passant_file: ?Square = null;
-    var castling_rights = Castling.NoLegal;
+    var castling_rights = Castling.no_legal;
     var halfmove_clock: ?u16 = null;
 
     var halfmove_start: usize = 0;
@@ -296,10 +296,10 @@ pub fn fromFen(fen: []const u8) !State {
             .castling => {
                 switch (c) {
                     '-' => {},
-                    'k' => castling_rights |= Castling.BlackKingside,
-                    'K' => castling_rights |= Castling.WhiteKingside,
-                    'q' => castling_rights |= Castling.BlackQueenside,
-                    'Q' => castling_rights |= Castling.WhiteQueenside,
+                    'k' => castling_rights |= Castling.black_kingside,
+                    'K' => castling_rights |= Castling.white_kingside,
+                    'q' => castling_rights |= Castling.black_queenside,
+                    'Q' => castling_rights |= Castling.white_queenside,
                     ' ' => state = .enPassant,
                     else => return error.InvalidCharacter,
                 }
@@ -394,7 +394,7 @@ pub fn format(self: State, writer: *std.Io.Writer) !void {
             const s = rank * 8 + file;
             if (self.pieceAt(s)) |p| {
                 const c = self.colorAtUnchecked(s);
-                try writer.print("{c} ", .{game.PIECE_REPR[c][p]});
+                try writer.print("{c} ", .{game.piece_repr[c][p]});
             } else {
                 try writer.writeAll("- ");
             }
@@ -518,11 +518,11 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
             const start_rank = start / 8;
             const end_rank = end / 8;
 
-            if (start_rank == PAWN_START_RANK[c] and end_rank == PAWN_DOUBLE_RANK[c]) {
-                new_en_passant = @intCast(@as(i8, end) + PAWN_EP_OFFSET[c]);
+            if (start_rank == pawn_start_rank[c] and end_rank == pawn_double_rank[c]) {
+                new_en_passant = @intCast(@as(i8, end) + pawn_ep_offset[c]);
             } else if (self.en_passant == end) {
-                en_passant_target = @intCast(@as(i8, end) + PAWN_EP_OFFSET[c]);
-            } else if (end_rank == PAWN_PROMO_RANK[c]) {
+                en_passant_target = @intCast(@as(i8, end) + pawn_ep_offset[c]);
+            } else if (end_rank == pawn_promo_rank[c]) {
                 is_promotion = true;
                 undo.was_promotion = true;
             }
@@ -531,7 +531,7 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
             if (game.absDiff(start, end) == 2) {
                 // Determine kingside (0) or queenside (1) based on end file
                 const side: Color = @intFromBool(end % 8 < 4); // c-file < e-file
-                const data = game.CASTLE_DATA[c][side];
+                const data = game.castle_data[c][side];
 
                 if (self.castling_rights & data.rights_bit != 0) {
                     undo.was_castling = true;
@@ -550,9 +550,9 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
                     self.*.zobrist_hash ^= keys.pieces[c][Pieces.rook][data.rook_to];
                 }
             }
-            self.*.castling_rights &= game.KING_CASTLING_MASK[c];
+            self.*.castling_rights &= game.king_castling_mask[c];
         },
-        Pieces.rook => self.*.castling_rights &= game.ROOK_CASTLING_RIGHTS_MASK[start],
+        Pieces.rook => self.*.castling_rights &= game.rook_castling_mask[start],
         else => {},
     }
 
@@ -566,7 +566,7 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
 
     // Handle capture
     if (undo.captured_piece) |x| {
-        self.*.castling_rights &= game.ROOK_CASTLING_RIGHTS_MASK[end];
+        self.*.castling_rights &= game.rook_castling_mask[end];
         self.*.halfmove_clock = 0;
         self.*.pieces[x].bitXorAssign(end);
         self.*.colors[~c].bitXorAssign(end);
@@ -663,7 +663,7 @@ pub fn unmakeMove(self: *State, m: game.Move, c: Color, p: Piece, undo: UndoInfo
 
     // Handle castling: unmove the rook
     if (undo.was_castling) {
-        const data = game.CASTLE_DATA[c][undo.castling_side];
+        const data = game.castle_data[c][undo.castling_side];
         // Move rook back
         self.*.pieces[Pieces.rook].bitXorAssign(data.rook_to);
         self.*.colors[c].bitXorAssign(data.rook_to);
@@ -725,13 +725,13 @@ test "test castling rights removal" {
     _ = state.makeMove(game.Move{ .start = Squares.f1, .end = Squares.e2 }, Colors.white, Pieces.bishop);
     _ = state.makeMove(game.Move{ .start = Squares.e7, .end = Squares.d8 }, Colors.black, Pieces.queen);
     _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
-    try expectEqual(Castling.AllLegal ^ Castling.WhiteCastling, state.castling_rights);
+    try expectEqual(Castling.all_legal ^ Castling.white_castling, state.castling_rights);
 
     state = State.defaultPosition();
     _ = state.makeMove(game.Move{ .start = Squares.a2, .end = Squares.a3 }, Colors.white, Pieces.pawn);
     _ = state.makeMove(game.Move{ .start = Squares.a7, .end = Squares.a6 }, Colors.black, Pieces.pawn);
     _ = state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.a2 }, Colors.white, Pieces.rook);
-    try expectEqual(Castling.AllLegal ^ Castling.WhiteQueenside, state.castling_rights);
+    try expectEqual(Castling.all_legal ^ Castling.white_queenside, state.castling_rights);
 }
 
 test "test fen from default" {
@@ -774,7 +774,7 @@ test "test fen from e4 c5 nf3" {
     try expectEqual(Bitboard{ .bits = 0xfffb000400000000 }, black_pieces);
 
     try expectEqual(Colors.black, state.to_move);
-    try expectEqual(Castling.AllLegal, state.castling_rights);
+    try expectEqual(Castling.all_legal, state.castling_rights);
     try expectEqual(null, state.en_passant);
     try expectEqual(1, state.halfmove_clock);
     try expectEqual(2, state.fullmove_clock);
@@ -848,9 +848,9 @@ test "king move removes both castling rights" {
     _ = state.makeMove(game.Move{ .start = Squares.e1, .end = Squares.f1 }, Colors.white, Pieces.king);
 
     // Both white castling rights should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteCastling);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.white_castling);
     // Black castling rights should remain
-    try expectEqual(Castling.BlackCastling, state.castling_rights & Castling.BlackCastling);
+    try expectEqual(Castling.black_castling, state.castling_rights & Castling.black_castling);
 }
 
 test "black king move removes black castling" {
@@ -861,9 +861,9 @@ test "black king move removes black castling" {
     _ = state.makeMove(game.Move{ .start = Squares.e8, .end = Squares.f8 }, Colors.black, Pieces.king);
 
     // Both black castling rights should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackCastling);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.black_castling);
     // White castling rights should remain
-    try expectEqual(Castling.WhiteCastling, state.castling_rights & Castling.WhiteCastling);
+    try expectEqual(Castling.white_castling, state.castling_rights & Castling.white_castling);
 }
 
 // Castling rights removal tests - rook moves
@@ -875,9 +875,9 @@ test "kingside rook move removes kingside castling" {
     _ = state.makeMove(game.Move{ .start = Squares.h1, .end = Squares.g1 }, Colors.white, Pieces.rook);
 
     // White kingside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteKingside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.white_kingside);
     // White queenside should remain
-    try expectEqual(Castling.WhiteQueenside, state.castling_rights & Castling.WhiteQueenside);
+    try expectEqual(Castling.white_queenside, state.castling_rights & Castling.white_queenside);
 }
 
 test "queenside rook move removes queenside castling" {
@@ -888,9 +888,9 @@ test "queenside rook move removes queenside castling" {
     _ = state.makeMove(game.Move{ .start = Squares.a1, .end = Squares.b1 }, Colors.white, Pieces.rook);
 
     // White queenside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteQueenside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.white_queenside);
     // White kingside should remain
-    try expectEqual(Castling.WhiteKingside, state.castling_rights & Castling.WhiteKingside);
+    try expectEqual(Castling.white_kingside, state.castling_rights & Castling.white_kingside);
 }
 
 test "black kingside rook move" {
@@ -901,9 +901,9 @@ test "black kingside rook move" {
     _ = state.makeMove(game.Move{ .start = Squares.h8, .end = Squares.g8 }, Colors.black, Pieces.rook);
 
     // Black kingside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackKingside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.black_kingside);
     // Black queenside should remain
-    try expectEqual(Castling.BlackQueenside, state.castling_rights & Castling.BlackQueenside);
+    try expectEqual(Castling.black_queenside, state.castling_rights & Castling.black_queenside);
 }
 
 test "black queenside rook move" {
@@ -914,9 +914,9 @@ test "black queenside rook move" {
     _ = state.makeMove(game.Move{ .start = Squares.a8, .end = Squares.b8 }, Colors.black, Pieces.rook);
 
     // Black queenside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackQueenside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.black_queenside);
     // Black kingside should remain
-    try expectEqual(Castling.BlackKingside, state.castling_rights & Castling.BlackKingside);
+    try expectEqual(Castling.black_kingside, state.castling_rights & Castling.black_kingside);
 }
 
 // Rook capture removes opponent castling rights
@@ -928,9 +928,9 @@ test "capturing rook removes opponent castling" {
     _ = state.makeMove(game.Move{ .start = Squares.h5, .end = Squares.h8 }, Colors.white, Pieces.bishop);
 
     // Black kingside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.BlackKingside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.black_kingside);
     // Black queenside should remain
-    try expectEqual(Castling.BlackQueenside, state.castling_rights & Castling.BlackQueenside);
+    try expectEqual(Castling.black_queenside, state.castling_rights & Castling.black_queenside);
 }
 
 test "capturing white rook removes white castling" {
@@ -941,9 +941,9 @@ test "capturing white rook removes white castling" {
     _ = state.makeMove(game.Move{ .start = Squares.h3, .end = Squares.h1 }, Colors.black, Pieces.bishop);
 
     // White kingside castling should be removed
-    try expectEqual(Castling.NoLegal, state.castling_rights & Castling.WhiteKingside);
+    try expectEqual(Castling.no_legal, state.castling_rights & Castling.white_kingside);
     // White queenside should remain
-    try expectEqual(Castling.WhiteQueenside, state.castling_rights & Castling.WhiteQueenside);
+    try expectEqual(Castling.white_queenside, state.castling_rights & Castling.white_queenside);
 }
 
 // Castling execution test

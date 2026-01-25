@@ -2,7 +2,7 @@ const Bitboard = @import("Bitboard.zig");
 const precompute = @import("precompute.zig");
 const MagicTableEntry = precompute.MagicTableEntry;
 
-pub const RookMagics = [64]MagicTableEntry {
+pub const rook_magics = [64]MagicTableEntry {
     MagicTableEntry {
         .mask = 0x000101010101017e,
         .magic = 0x4080004000166182,
@@ -389,7 +389,7 @@ pub const RookMagics = [64]MagicTableEntry {
     },
 };
 
-pub const BishopMagics = [64]MagicTableEntry {
+pub const bishop_magics = [64]MagicTableEntry {
     MagicTableEntry {
         .mask = 0x0040201008040200,
         .magic = 0x0110100200440820,
@@ -775,7 +775,7 @@ pub const BishopMagics = [64]MagicTableEntry {
         .offset = 5184,
     },
 };
-pub const RookMoves = [102400]u64 {
+pub const rook_moves = [102400]u64 {
     0x01010101010101fe,
     0x00000001010101fe,
     0x000000000000011e,
@@ -103177,7 +103177,7 @@ pub const RookMoves = [102400]u64 {
     0x6080800000000000,
     0x6080800000000000,
 };
-pub const BishopMoves = [5248]u64 {
+pub const bishop_moves = [5248]u64 {
     0x8040201008040200,
     0x0000001008040200,
     0x0040201008040200,

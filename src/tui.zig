@@ -82,16 +82,15 @@ fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool 
 }
 const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    // const alloc = std.heap.page_allocator;
+const Args = struct {
+    engine_color: ?[]const u8,
+    depth: ?u8,
+    num_threads: ?usize,
+    fen: ?[]const u8,
+};
 
-    const arg_parser = comptime blk: {
-        var parser = kore.args.ArgParser(3).empty;
-        parser.addArgument(.{ .field_type = ?[]const u8, .name = "engine_color" });
-        parser.addArgument(.{ .field_type = ?u8, .name = "depth" });
-        parser.addArgument(.{ .field_type = ?usize, .name = "num_threads" });
-        break :blk parser;
-    };
+pub fn main(init: std.process.Init.Minimal) !void {
+    const arg_parser = try kore.args.declarative.Parser(Args);
 
     var args_iter = init.args.iterate();
     const parsed_args = try arg_parser.parse(&args_iter);
@@ -107,24 +106,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const stdin: *std.Io.Reader = &stdin_reader.interface;
 
     try stdout.writeAll("=== Chez Paul ===\n");
-    try stdout.writeAll("Enter FEN or press enter to start from new position\n");
-    try stdout.flush();
 
-    const fen_raw = blk: {
-        while (stdin.takeDelimiterExclusive('\n')) |line| {
-            break :blk line;
-        } else |err| {
-            return err;
-        }
+    var state = blk: {
+        if (parsed_args.fen) |fen| break :blk try State.fromFen(fen) else break :blk State.defaultPosition();
     };
-    stdin.toss(1);
-
-    const fen = std.mem.trimEnd(u8, fen_raw, &std.ascii.whitespace);
-
-    var state = if (fen.len == 0)
-        State.defaultPosition()
-    else
-        try State.fromFen(fen);
 
     // Initialize position history for repetition detection
     var history = search.PositionHistory.init();
@@ -139,31 +124,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     const depth: u8 = parsed_args.depth orelse 6;
     const num_threads: usize = parsed_args.num_threads orelse 4;
-
-    // while (args.next()) |arg| {
-    //     const arg_lower = try std.ascii.allocLowerString(alloc, arg);
-    //     defer alloc.free(arg_lower);
-    //     if (std.mem.eql(u8, arg_lower, "-c")) {
-    //         const color_arg = args.next() orelse return error.MissingArgument;
-    //         const color_arg_lower = try std.ascii.allocLowerString(alloc, color_arg);
-    //         defer alloc.free(color_arg_lower);
-    //         if (std.mem.eql(u8, color_arg_lower, "white") or std.mem.eql(u8, arg_lower, "w")) {
-    //             engine_color = game.Colors.white;
-    //         } else if (std.mem.eql(u8, color_arg_lower, "black") or std.mem.eql(u8, arg_lower, "b")) {
-    //             engine_color = game.Colors.black;
-    //         } else {
-    //             return error.InvalidColor;
-    //         }
-    //     } else if (std.mem.eql(u8, arg_lower, "-d")) {
-    //         const depth_arg = args.next() orelse return error.MissingArgument;
-    //         depth = std.fmt.parseInt(u8, depth_arg, 10) catch return error.InvalidDepth;
-    //         if (depth >= 10) return error.DepthTooHigh;
-    //     } else if (std.mem.eql(u8, arg_lower, "-t")) {
-    //         const threads_arg = args.next() orelse return error.MissingArgument;
-    //         num_threads = std.fmt.parseInt(usize, threads_arg, 10) catch return error.InvalidNumThreads;
-    //         if (num_threads >= 16) return error.TooManyThreads;
-    //     }
-    // }
 
     const engine_color_str = if (engine_color == game.Colors.white)
         "white"
@@ -220,7 +180,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.flush();
 
             while (true) {
-                try stdout.writeAll("\nEnter move (e.g., e2e4) or 'quit/q': ");
+                try stdout.writeAll("\nEnter move (e.g., e2e4), press enter to pass to the engine or type 'quit/q' to quit: ");
                 try stdout.flush();
 
                 const move_raw = blk: {
@@ -229,6 +189,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     } else |err| return err;
                 };
                 stdin.toss(1);
+                if (move_raw.len == 0) break;
+
                 const move = std.mem.trimEnd(u8, move_raw, &std.ascii.whitespace);
 
                 if (std.mem.eql(u8, move, "quit") or std.mem.eql(u8, move, "q")) {
@@ -264,46 +226,43 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     try stdout.flush();
                 }
             }
+        }
+        // Engine's turn
+
+        const start = try std.time.Instant.now();
+        if (try search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            const end = try std.time.Instant.now();
+            const elapsed: f64 = @floatFromInt(end.since(start));
+            const best_move = search_res.move;
+            const best_score = search_res.score;
+            const piece = state.pieceAt(best_move.start).?;
+
+            var sq_start: [2]u8 = undefined;
+            var sq_end: [2]u8 = undefined;
+            try game.squareToAlgebraic(best_move.start, &sq_start);
+            try game.squareToAlgebraic(best_move.end, &sq_end);
+
+            _ = state.makeMove(best_move, state.to_move, piece);
+            history.push(state.zobrist_hash);
+            num_moves += 1;
+
+            try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
+            try stdout.print("Move {d}\n", .{num_moves});
+            try stdout.print("{f}\n", .{state});
+            try stdout.print("Engine moved {s} from {s} to {s} (score: {d:.2}, found in {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
+            try stdout.writeAll("Press enter to continue...\n");
+            try stdout.flush();
+
+            _ = blk: {
+                while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
+                    break :blk line;
+                } else |err| return err;
+            };
+            stdin.toss(1);
         } else {
-            // Engine's turn
-            // try stdout.print("Engine thinking (depth {d})...\n", .{depth});
-            // try stdout.flush();
-
-            const start = try std.time.Instant.now();
-            if (try search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
-                const end = try std.time.Instant.now();
-                const elapsed: f64 = @floatFromInt(end.since(start));
-                const best_move = search_res.move;
-                const best_score = search_res.score;
-                const piece = state.pieceAt(best_move.start).?;
-
-                var sq_start: [2]u8 = undefined;
-                var sq_end: [2]u8 = undefined;
-                try game.squareToAlgebraic(best_move.start, &sq_start);
-                try game.squareToAlgebraic(best_move.end, &sq_end);
-
-                _ = state.makeMove(best_move, engine_color, piece);
-                history.push(state.zobrist_hash);
-                num_moves += 1;
-
-                try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
-                try stdout.print("Move {d}\n", .{num_moves});
-                try stdout.print("{f}\n", .{state});
-                try stdout.print("Engine moved {s} from {s} to {s} (score: {d:.2}, found in {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
-                try stdout.writeAll("Press enter to continue...\n");
-                try stdout.flush();
-
-                _ = blk: {
-                    while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
-                        break :blk line;
-                    } else |err| return err;
-                };
-                stdin.toss(1);
-            } else {
-                try stdout.writeAll("Engine has no legal moves!\n");
-                try stdout.flush();
-                break;
-            }
+            try stdout.writeAll("Engine has no legal moves!\n");
+            try stdout.flush();
+            break;
         }
     }
 }

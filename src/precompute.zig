@@ -110,13 +110,13 @@ fn precomputeMagics(alloc: std.mem.Allocator, rng: *std.Random.DefaultPrng) !voi
     try writer.interface.writeAll("const MagicTableEntry = precompute.MagicTableEntry;\n\n");
     try writer.interface.flush();
 
-    const piece_names = [2][]const u8{ "Rook", "Bishop" };
-    const sliders = [2]*const SliderDirections{ &Slider.ROOK_DIRECTIONS, &Slider.BISHOP_DIRECTIONS };
+    const piece_names = [2][]const u8{ "rook", "bishop" };
+    const sliders = [2]*const SliderDirections{ &Slider.rook_directions, &Slider.bishop_directions };
     for (0..2) |i| {
         const piece_name = piece_names[i];
         const slider = sliders[i];
 
-        try writer.interface.print("pub const {s}Magics = [64]MagicTableEntry {{\n", .{piece_name});
+        try writer.interface.print("pub const {s}_magics = [64]MagicTableEntry {{\n", .{piece_name});
         try writer.interface.flush();
         var tbl_len: usize = 0;
 
@@ -137,7 +137,7 @@ fn precomputeMagics(alloc: std.mem.Allocator, rng: *std.Random.DefaultPrng) !voi
         }
 
         try writer.interface.writeAll("};\n");
-        try writer.interface.print("pub const {s}TableSize: usize = {d};\n", .{ piece_name, tbl_len });
+        try writer.interface.print("pub const {s}_table_size: usize = {d};\n", .{ piece_name, tbl_len });
         try writer.interface.flush();
     }
     try writer.interface.flush();
@@ -165,7 +165,7 @@ fn makeMoveTable(alloc: std.mem.Allocator, size: usize, directions: *const Slide
 }
 
 pub fn writeMoveTable(piece_name: []const u8, tbl: *const []Bitboard, writer: *std.Io.Writer) !void {
-    try writer.print("pub const {s}Moves = [{d}]u64 {{\n", .{ piece_name, tbl.len });
+    try writer.print("pub const {s}_moves = [{d}]u64 {{\n", .{ piece_name, tbl.len });
     for (tbl.*) |entry| {
         try writer.print("    0x{x:0>16},\n", .{entry.bits});
         try writer.flush();
@@ -176,7 +176,7 @@ pub fn writeMoveTable(piece_name: []const u8, tbl: *const []Bitboard, writer: *s
 
 pub fn writeMagics(piece_name: []const u8, magics: *const [64]MagicTableEntry, writer: *std.Io.Writer) !void {
     try writer.writeByte('\n');
-    try writer.print("pub const {s}Magics = [64]MagicTableEntry {{\n", .{piece_name});
+    try writer.print("pub const {s}_magics = [64]MagicTableEntry {{\n", .{piece_name});
     try writer.flush();
 
     for (magics) |entry| {
@@ -206,8 +206,8 @@ pub fn main() !void {
     var writer_buf: [8192]u8 = undefined;
     var writer = out_f.writer(io, &writer_buf);
 
-    const rook_tbl = try makeMoveTable(alloc, magics.RookTableSize, &Slider.ROOK_DIRECTIONS, &magics.RookMagics);
-    const bishop_tbl = try makeMoveTable(alloc, magics.BishopTableSize, &Slider.BISHOP_DIRECTIONS, &magics.BishopMagics);
+    const rook_tbl = try makeMoveTable(alloc, magics.rook_table_size, &Slider.rook_directions, &magics.rook_magics);
+    const bishop_tbl = try makeMoveTable(alloc, magics.bishop_table_size, &Slider.bishop_directions, &magics.bishop_magics);
     defer alloc.free(rook_tbl);
     defer alloc.free(bishop_tbl);
 
@@ -215,13 +215,13 @@ pub fn main() !void {
     try writer.interface.writeAll("const precompute = @import(\"precompute.zig\");\n");
     try writer.interface.writeAll("const MagicTableEntry = precompute.MagicTableEntry;\n");
 
-    try writeMagics("Rook", &magics.RookMagics, &writer.interface);
-    try writeMagics("Bishop", &magics.BishopMagics, &writer.interface);
-    try writeMoveTable("Rook", &rook_tbl, &writer.interface);
-    try writeMoveTable("Bishop", &bishop_tbl, &writer.interface);
+    try writeMagics("rook", &magics.rook_magics, &writer.interface);
+    try writeMagics("bishop", &magics.bishop_magics, &writer.interface);
+    try writeMoveTable("rook", &rook_tbl, &writer.interface);
+    try writeMoveTable("bishop", &bishop_tbl, &writer.interface);
 }
 
 test "test blockers for square" {
-    const blockers = blockersForSquare(Squares.e2, &Slider.ROOK_DIRECTIONS);
+    const blockers = blockersForSquare(Squares.e2, &Slider.rook_directions);
     try std.testing.expectEqual(blockers.bits, 0x10101010106e00);
 }

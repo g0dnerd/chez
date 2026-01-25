@@ -115,13 +115,13 @@ pub const Pieces = struct {
 
 pub const Slider = struct {
     pub const SliderDirections = [4][2]i2;
-    pub const ROOK_DIRECTIONS: SliderDirections = .{
+    pub const rook_directions: SliderDirections = .{
         .{ 0, 1 },
         .{ 1, 0 },
         .{ 0, -1 },
         .{ -1, 0 },
     };
-    pub const BISHOP_DIRECTIONS: SliderDirections = .{
+    pub const bishop_directions: SliderDirections = .{
         .{ 1, 1 },
         .{ 1, -1 },
         .{ -1, 1 },
@@ -139,16 +139,16 @@ pub const Colors = struct {
 pub const Castling = struct {
     pub const CastlingRights = u4;
 
-    pub const NoLegal: CastlingRights = 0;
-    pub const WhiteKingside: CastlingRights = 1;
-    pub const WhiteQueenside: CastlingRights = 2;
-    pub const BlackQueenside: CastlingRights = 4;
-    pub const BlackKingside: CastlingRights = 8;
-    pub const BothKingsides: CastlingRights = WhiteKingside | BlackKingside;
-    pub const BothQueensides: CastlingRights = WhiteQueenside | BlackQueenside;
-    pub const WhiteCastling: CastlingRights = WhiteKingside | WhiteQueenside;
-    pub const BlackCastling: CastlingRights = BlackKingside | BlackQueenside;
-    pub const AllLegal: CastlingRights = WhiteCastling | BlackCastling;
+    pub const no_legal: CastlingRights = 0;
+    pub const white_kingside: CastlingRights = 1;
+    pub const white_queenside: CastlingRights = 2;
+    pub const black_queenside: CastlingRights = 4;
+    pub const black_kingside: CastlingRights = 8;
+    pub const both_kingsides: CastlingRights = white_kingside | black_kingside;
+    pub const both_queensides: CastlingRights = white_queenside | black_queenside;
+    pub const white_castling: CastlingRights = white_kingside | white_queenside;
+    pub const black_castling: CastlingRights = black_kingside | black_queenside;
+    pub const all_legal: CastlingRights = white_castling | black_castling;
 };
 
 pub const Direction = enum {
@@ -296,7 +296,7 @@ pub fn getZobristKeys() *const ZobristKeys {
     return &keys_storage;
 }
 
-pub const PIECE_REPR = [2][6]u8{
+pub const piece_repr = [2][6]u8{
     [_]u8{ 'P', 'N', 'B', 'R', 'Q', 'K' },
     [_]u8{ 'p', 'n', 'b', 'r', 'q', 'k' },
 };
@@ -308,31 +308,31 @@ pub const CastleData = struct {
     rights_bit: Castling.CastlingRights,
 };
 
-pub const CASTLE_DATA: [2][2]CastleData = .{
+pub const castle_data: [2][2]CastleData = .{
     // White
     .{
-        .{ .king_end = Squares.g1, .rook_from = Squares.h1, .rook_to = Squares.f1, .rights_bit = Castling.WhiteKingside },
-        .{ .king_end = Squares.c1, .rook_from = Squares.a1, .rook_to = Squares.d1, .rights_bit = Castling.WhiteQueenside },
+        .{ .king_end = Squares.g1, .rook_from = Squares.h1, .rook_to = Squares.f1, .rights_bit = Castling.white_kingside },
+        .{ .king_end = Squares.c1, .rook_from = Squares.a1, .rook_to = Squares.d1, .rights_bit = Castling.white_queenside },
     },
     // Black
     .{
-        .{ .king_end = Squares.g8, .rook_from = Squares.h8, .rook_to = Squares.f8, .rights_bit = Castling.BlackKingside },
-        .{ .king_end = Squares.c8, .rook_from = Squares.a8, .rook_to = Squares.d8, .rights_bit = Castling.BlackQueenside },
+        .{ .king_end = Squares.g8, .rook_from = Squares.h8, .rook_to = Squares.f8, .rights_bit = Castling.black_kingside },
+        .{ .king_end = Squares.c8, .rook_from = Squares.a8, .rook_to = Squares.d8, .rights_bit = Castling.black_queenside },
     },
 };
 
-pub const KING_CASTLING_MASK: [2]Castling.CastlingRights = .{
-    ~Castling.WhiteCastling,
-    ~Castling.BlackCastling,
+pub const king_castling_mask: [2]Castling.CastlingRights = .{
+    ~Castling.white_castling,
+    ~Castling.black_castling,
 };
 
-pub const ROOK_CASTLING_RIGHTS_MASK: [64]Castling.CastlingRights = blk: {
-    var mask: [64]Castling.CastlingRights = @splat(Castling.AllLegal);
+pub const rook_castling_mask: [64]Castling.CastlingRights = blk: {
+    var mask: [64]Castling.CastlingRights = @splat(Castling.all_legal);
 
-    mask[Squares.a1] = ~Castling.WhiteQueenside;
-    mask[Squares.h1] = ~Castling.WhiteKingside;
-    mask[Squares.a8] = ~Castling.BlackQueenside;
-    mask[Squares.h8] = ~Castling.BlackKingside;
+    mask[Squares.a1] = ~Castling.white_queenside;
+    mask[Squares.h1] = ~Castling.white_kingside;
+    mask[Squares.a8] = ~Castling.black_queenside;
+    mask[Squares.h8] = ~Castling.black_kingside;
 
     break :blk mask;
 };
