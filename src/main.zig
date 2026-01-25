@@ -1,4 +1,5 @@
 const std = @import("std");
+const kore = @import("kore");
 const game = @import("game.zig");
 const movegen = @import("movegen.zig");
 const search = @import("search.zig");
@@ -81,7 +82,20 @@ fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool 
 }
 const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
+    // const alloc = std.heap.page_allocator;
+
+    const arg_parser = comptime blk: {
+        var parser = kore.args.ArgParser(3).empty;
+        parser.addArgument(.{ .field_type = ?[]const u8, .name = "engine_color" });
+        parser.addArgument(.{ .field_type = ?u8, .name = "depth" });
+        parser.addArgument(.{ .field_type = ?usize, .name = "num_threads" });
+        break :blk parser;
+    };
+
+    var args_iter = init.args.iterate();
+    const parsed_args = try arg_parser.parse(&args_iter);
+
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
     var stdout_buffer: [512]u8 = undefined;
@@ -112,21 +126,60 @@ pub fn main() !void {
     else
         try State.fromFen(fen);
 
-    var num_moves: u16 = 1;
+    // Initialize position history for repetition detection
+    var history = search.PositionHistory.init();
+    history.push(state.zobrist_hash);
 
-    try stdout.writeAll("Enter search engine depth (max 20):\n");
-    try stdout.flush();
+    const engine_color = blk: {
+        if (parsed_args.engine_color) |c| {
+            if (std.mem.eql(u8, c, "white")) break :blk game.Colors.white;
+            if (std.mem.eql(u8, c, "black")) break :blk game.Colors.black;
+            return error.InvalidColor;
+        } else break :blk state.to_move;
+    };
+    const depth: u8 = parsed_args.depth orelse 6;
+    const num_threads: usize = parsed_args.num_threads orelse 4;
 
-    const depth_input_raw = try stdin_reader.interface.takeDelimiterExclusive('\n');
-    stdin.toss(1);
-    const depth_input = std.mem.trimEnd(u8, depth_input_raw, &std.ascii.whitespace);
-    const depth = try std.fmt.parseInt(u8, depth_input, 10);
-    std.debug.assert(depth <= 20);
+    // while (args.next()) |arg| {
+    //     const arg_lower = try std.ascii.allocLowerString(alloc, arg);
+    //     defer alloc.free(arg_lower);
+    //     if (std.mem.eql(u8, arg_lower, "-c")) {
+    //         const color_arg = args.next() orelse return error.MissingArgument;
+    //         const color_arg_lower = try std.ascii.allocLowerString(alloc, color_arg);
+    //         defer alloc.free(color_arg_lower);
+    //         if (std.mem.eql(u8, color_arg_lower, "white") or std.mem.eql(u8, arg_lower, "w")) {
+    //             engine_color = game.Colors.white;
+    //         } else if (std.mem.eql(u8, color_arg_lower, "black") or std.mem.eql(u8, arg_lower, "b")) {
+    //             engine_color = game.Colors.black;
+    //         } else {
+    //             return error.InvalidColor;
+    //         }
+    //     } else if (std.mem.eql(u8, arg_lower, "-d")) {
+    //         const depth_arg = args.next() orelse return error.MissingArgument;
+    //         depth = std.fmt.parseInt(u8, depth_arg, 10) catch return error.InvalidDepth;
+    //         if (depth >= 10) return error.DepthTooHigh;
+    //     } else if (std.mem.eql(u8, arg_lower, "-t")) {
+    //         const threads_arg = args.next() orelse return error.MissingArgument;
+    //         num_threads = std.fmt.parseInt(usize, threads_arg, 10) catch return error.InvalidNumThreads;
+    //         if (num_threads >= 16) return error.TooManyThreads;
+    //     }
+    // }
 
-    const engine_color = if (fen.len == 0)
-        game.Colors.black
+    const engine_color_str = if (engine_color == game.Colors.white)
+        "white"
     else
-        state.to_move;
+        "black";
+
+    try stdout.print("Engine plays as {s}, depth {d}, {d} threads.\n", .{ engine_color_str, depth, num_threads });
+    try stdout.flush();
+    _ = blk: {
+        while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
+            break :blk line;
+        } else |err| return err;
+    };
+    stdin.toss(1);
+
+    var num_moves: u16 = 1;
 
     while (true) {
         try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
@@ -134,7 +187,7 @@ pub fn main() !void {
         try stdout.print("{f}\n", .{state});
         try stdout.flush();
 
-        if (search.isGameOver(&state)) |res| {
+        if (search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
                 .checkmate => {
                     const winner = switch (res.checkmate) {
@@ -146,6 +199,7 @@ pub fn main() !void {
                 },
                 .stalemate => try stdout.print("\nStalemate! Draw.\n", .{}),
                 .fiftyMoveRule => try stdout.print("\nDraw by 50-move rule.\n", .{}),
+                .threefoldRepetition => try stdout.print("\nDraw by threefold repetition.\n", .{}),
             }
             break;
         }
@@ -187,6 +241,7 @@ pub fn main() !void {
                     if (containsMove(&moves.moves, &user_move)) {
                         const piece = state.pieceAt(user_move.start).?;
                         _ = state.makeMove(user_move, ~engine_color, piece);
+                        history.push(state.zobrist_hash);
                         num_moves += 1;
 
                         var sq_start: [2]u8 = undefined;
@@ -215,7 +270,7 @@ pub fn main() !void {
             // try stdout.flush();
 
             const start = try std.time.Instant.now();
-            if (try search.search(&state, depth)) |search_res| {
+            if (try search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
                 const end = try std.time.Instant.now();
                 const elapsed: f64 = @floatFromInt(end.since(start));
                 const best_move = search_res.move;
@@ -228,6 +283,7 @@ pub fn main() !void {
                 try game.squareToAlgebraic(best_move.end, &sq_end);
 
                 _ = state.makeMove(best_move, engine_color, piece);
+                history.push(state.zobrist_hash);
                 num_moves += 1;
 
                 try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen

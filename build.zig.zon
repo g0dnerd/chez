@@ -1,0 +1,15 @@
+.{
+    .name = .chez,
+    .version = "0.0.1",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+    .dependencies = .{
+        .kore = .{
+            .path = "kore",
+        },
+    },
+    .fingerprint = 0xe6491aa9a662bfdb,
+}

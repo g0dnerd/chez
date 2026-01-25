@@ -10,6 +10,7 @@ pub const GameResult = union(enum) {
     checkmate: Colors.Color,
     stalemate,
     fiftyMoveRule,
+    threefoldRepetition,
 };
 
 pub const Squares = struct {

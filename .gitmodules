@@ -1,0 +1,3 @@
+[submodule "kore"]
+	path = kore
+	url = git:/paul/kore.git
