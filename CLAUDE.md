@@ -100,3 +100,52 @@ Uses `Score` struct with separate middlegame (mg) and endgame (eg) values, inter
 - **En passant pin**: En passant can expose king to horizontal attack by removing two pawns from the same rank. `enPassantExposesKing()` handles this.
 - **Null move restrictions**: Don't use null move pruning when in check or when side has only pawns (zugzwang risk).
 - **Atomic operations**: TT uses `Atomic(u64)` with `.monotonic` ordering. Data races are benign (just cause cache misses).
+
+## AlphaZero Training System
+
+### Setup
+
+```bash
+zig build                              # Build libchez.so
+uv sync                                # Install Python dependencies
+uv run python -m alphazero.bindings    # Test FFI bindings
+uv run python scripts/train.py --config small --iterations 5  # Quick training test
+```
+
+### Architecture
+
+- **FFI Layer**: `src/ffi.zig` exports C-compatible functions, compiled to `zig-out/lib/libchez.so`
+- **Python Bindings**: `alphazero/bindings.py` wraps libchez.so via ctypes with opaque State handles
+- **State is opaque**: Python receives pointers to Zig-allocated State structs. No marshalling overhead.
+- **Encoding in Zig**: `chez_encode_position` and `chez_encode_meta` handle bitboard-to-plane conversion
+
+### Python Modules
+
+- `alphazero/bindings.py` - ctypes FFI wrapper, State class
+- `alphazero/encoding.py` - State encoding (8x8x119 planes), StateEncoder for history
+- `alphazero/policy.py` - Move encoding (8x8x73 planes), legal move masking
+- `alphazero/network.py` - AlphaZeroNetwork (ResNet with policy+value heads)
+- `alphazero/mcts.py` - Monte Carlo Tree Search with neural network guidance
+- `alphazero/selfplay.py` - Self-play game generation
+- `alphazero/replay_buffer.py` - Experience storage for training
+- `alphazero/train.py` - Training loop (self-play + network updates)
+- `alphazero/config.py` - Hyperparameter presets
+
+### FFI Functions
+
+- `chez_create_default() -> *State` - new game at starting position
+- `chez_create_fen(fen) -> ?*State` - new game from FEN (null on invalid)
+- `chez_destroy(state)` - free memory
+- `chez_clone(state) -> *State` - deep copy
+- `chez_legal_moves(state, moves)` - fill CMoveList with legal moves
+- `chez_make_move(state, move)` - apply move in place
+- `chez_game_result(state) -> i32` - 0=ongoing, 1=white wins, 2=black wins, 3=draw
+- `chez_hash(state) -> u64` - Zobrist hash
+- `chez_to_move(state) -> u8` - 0=white, 1=black
+- `chez_encode_position(state, buffer)` - encode 12 piece planes to float buffer
+- `chez_encode_meta(state, buffer)` - encode 7 constant planes to float buffer
+
+### Hardware
+
+- GPU: NVIDIA RTX 5070 (Blackwell, sm_120) - requires PyTorch with CUDA 13.0
+- Falls back to CPU if CUDA is unavailable or incompatible

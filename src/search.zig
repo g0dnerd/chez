@@ -615,14 +615,34 @@ fn workerThread(ctx: *ThreadContext) void {
 // Spawns multiple threads that each do full iterative deepening
 // Threads share TT but run independently (no barriers)
 // game_history: optional history from the actual game (for repetition detection across search boundary)
-pub fn searchParallel(state: *const State, max_depth: u8, num_threads: usize, game_history: ?*const PositionHistory) !?SearchResult {
+pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, game_history: ?*const PositionHistory) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
+
+    var moves = movegen.legalMoves(state, state.to_move);
+    const num_moves = moves.len;
+
+    const actual_max_depth: u8 = blk: {
+        if (max_depth) |d| break :blk d else {
+            if (num_moves <= 30)
+                break :blk 11
+            else if (num_moves <= 38)
+                break :blk 10
+            else if (num_moves <= 46)
+                break :blk 9
+            else if (num_moves <= 54)
+                break :blk 8
+            else
+                break :blk 7;
+        }
+    };
+
+    // std.debug.print(" Using adaptive max depth of {d} ({d} legal moves)\n", .{ actual_max_depth, num_moves });
 
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
     var shared = SharedSearchState{
-        .max_depth = max_depth,
+        .max_depth = actual_max_depth,
     };
 
     // Create thread contexts
@@ -711,7 +731,7 @@ pub fn searchWithThreads(state: *const State, max_depth: u8, num_threads: usize)
 }
 
 // Search with game history for repetition detection
-pub fn searchWithHistory(state: *const State, max_depth: u8, num_threads: usize, history: *const PositionHistory) !?SearchResult {
+pub fn searchWithHistory(state: *const State, max_depth: ?u8, num_threads: usize, history: *const PositionHistory) !?SearchResult {
     return searchParallel(state, max_depth, num_threads, history);
 }
 
@@ -751,8 +771,6 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             }
         }
     }
-
-    std.debug.print("\n", .{});
 
     if (best_move) |m| {
         return .{

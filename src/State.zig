@@ -1,5 +1,4 @@
 const std = @import("std");
-const ffi = @import("ffi.zig");
 const Bitboard = @import("Bitboard.zig");
 const game = @import("game.zig");
 const movegen = @import("movegen.zig");
@@ -45,72 +44,6 @@ const pawn_start_rank: [2]Square = .{ 1, 6 };
 const pawn_double_rank: [2]Square = .{ 3, 4 };
 pub const pawn_promo_rank: [2]Square = .{ 7, 0 };
 const pawn_ep_offset: [2]i8 = .{ -8, 8 };
-
-// Initializes a zig State struct from its C counterpart
-pub fn initCState(c: *const ffi.CState) State {
-    const en_passant: ?Square = if (c.en_passant == -1)
-        null
-    else
-        @as(u6, @intCast(c.en_passant));
-
-    const in_check: ?Color = if (c.in_check == -1)
-        null
-    else
-        @as(u1, @intCast(c.in_check));
-
-    const white_pieces = Bitboard{ .bits = c.colors[0] };
-    const black_pieces = Bitboard{ .bits = c.colors[1] };
-    const all_pieces = [6]Bitboard{
-        .{ .bits = c.pieces[0] },
-        .{ .bits = c.pieces[1] },
-        .{ .bits = c.pieces[2] },
-        .{ .bits = c.pieces[3] },
-        .{ .bits = c.pieces[4] },
-        .{ .bits = c.pieces[5] },
-    };
-
-    var mailbox: [64]?Piece = @splat(null);
-    for (0..6) |piece_idx| {
-        var bb = all_pieces[piece_idx];
-        while (bb.next()) |s| {
-            mailbox[s] = @intCast(piece_idx);
-        }
-    }
-
-    var res: State = .{
-        .colors = .{ white_pieces, black_pieces },
-        .pieces = all_pieces,
-        .to_move = @intCast(c.to_move),
-        .castling_rights = @intCast(c.castling_rights),
-        .en_passant = en_passant,
-        .halfmove_clock = c.halfmove_clock,
-        .fullmove_clock = c.fullmove_clock,
-        .in_check = in_check,
-        .all_pieces = white_pieces.bitOr(black_pieces),
-        .mailbox = mailbox,
-    };
-
-    res.zobrist_hash = res.computeHash();
-    return res;
-}
-
-pub fn toCState(self: *const State, c_state: *ffi.CState) void {
-    inline for (0..6) |piece_idx| c_state.*.pieces[piece_idx] = self.pieces[piece_idx].bits;
-    inline for (0..2) |color_idx| c_state.*.colors[color_idx] = self.colors[color_idx].bits;
-
-    c_state.*.to_move = @intCast(self.to_move);
-    c_state.*.castling_rights = @intCast(self.castling_rights);
-    c_state.*.en_passant = if (self.en_passant) |ep|
-        @intCast(ep)
-    else
-        -1;
-    c_state.*.in_check = if (self.in_check) |c|
-        @intCast(c)
-    else
-        -1;
-    c_state.*.halfmove_clock = self.halfmove_clock;
-    c_state.*.fullmove_clock = self.fullmove_clock;
-}
 
 pub fn defaultPosition() State {
     const pawns = Bitboard{ .bits = 0xff00000000ff00 };
@@ -496,7 +429,7 @@ fn printSpacer(writer: *std.Io.Writer) !void {
 
 pub fn format(self: State, writer: *std.Io.Writer) !void {
     try writer.writeAll("    a  b  c  d  e  f  g  h\n");
-    var rank: Squares.Square = 7;
+    var rank: Square = 7;
     while (true) {
         try writer.print(" {d} ", .{rank + 1});
         var file: u6 = 0;
@@ -815,6 +748,118 @@ pub fn unmakeMove(self: *State, m: game.Move, c: Color, p: Piece, undo: UndoInfo
 
     // Update all_pieces
     self.all_pieces = self.allPieces();
+}
+
+pub fn toFen(self: *const State, buf: []u8) !u8 {
+    var i: u8 = 0;
+
+    var empty_squares: u8 = 0;
+
+    var rank: Square = 7;
+    while (true) {
+        var file: u6 = 0;
+        while (file < 8) {
+            defer file += 1;
+            const square = rank * 8 + file;
+
+            if (self.pieceAt(square)) |piece| {
+                if (empty_squares > 0) {
+                    buf[i] = '0' + empty_squares;
+                    empty_squares = 0;
+                    i += 1;
+                }
+
+                const color = self.colorAt(square);
+
+                buf[i] = switch (piece) {
+                    Pieces.pawn => if (color == Colors.white) 'P' else 'p',
+                    Pieces.knight => if (color == Colors.white) 'N' else 'n',
+                    Pieces.bishop => if (color == Colors.white) 'B' else 'b',
+                    Pieces.rook => if (color == Colors.white) 'R' else 'r',
+                    Pieces.queen => if (color == Colors.white) 'Q' else 'q',
+                    Pieces.king => if (color == Colors.white) 'K' else 'k',
+                    else => unreachable,
+                };
+                i += 1;
+            } else {
+                empty_squares += 1;
+            }
+        }
+
+        if (empty_squares > 0) {
+            buf[i] = '0' + empty_squares;
+            i += 1;
+            empty_squares = 0;
+        }
+
+        if (rank == 0) break;
+
+        buf[i] = '/';
+        i += 1;
+
+        rank -= 1;
+    }
+
+    if (empty_squares > 0) {
+        buf[i] = '0' + empty_squares;
+        i += 1;
+    }
+    buf[i] = ' ';
+    i += 1;
+
+    // Color to move
+    buf[i] = if (self.to_move == Colors.white) 'w' else 'b';
+    i += 1;
+    buf[i] = ' ';
+    i += 1;
+
+    if (self.castling_rights == Castling.no_legal) {
+        buf[i] = '-';
+        i += 1;
+    }
+    if (self.castling_rights & Castling.white_kingside != 0) {
+        buf[i] = 'K';
+        i += 1;
+    }
+    if (self.castling_rights & Castling.white_queenside != 0) {
+        buf[i] = 'Q';
+        i += 1;
+    }
+    if (self.castling_rights & Castling.black_kingside != 0) {
+        buf[i] = 'k';
+        i += 1;
+    }
+    if (self.castling_rights & Castling.black_queenside != 0) {
+        buf[i] = 'q';
+        i += 1;
+    }
+    buf[i] = ' ';
+    i += 1;
+
+    if (self.en_passant) |ep| {
+        var square_buf: [2]u8 = undefined;
+        try game.squareToAlgebraic(ep, &square_buf);
+        buf[i] = square_buf[0];
+        buf[i + 1] = square_buf[1];
+        buf[i + 2] = '-';
+        i += 3;
+    } else {
+        buf[i] = '-';
+        i += 1;
+    }
+
+    buf[i] = ' ';
+    i += 1;
+
+    const hm_slice = try std.fmt.bufPrint(buf[i..], "{d}", .{self.halfmove_clock});
+    i += @intCast(hm_slice.len);
+    buf[i] = ' ';
+    i += 1;
+
+    const fm_slice = try std.fmt.bufPrint(buf[i..], "{d}", .{self.fullmove_clock});
+    i += @intCast(fm_slice.len);
+
+    return i;
 }
 
 test "piece at sanity" {
@@ -1186,26 +1231,13 @@ test "black en passant capture" {
     try expect(state.colorAt(Squares.d3) == Colors.black);
 }
 
-test "c state roundtrip" {
+test "to fen sanity" {
+    const default_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     const default_state = State.defaultPosition();
-    var c_state: ffi.CState = undefined;
-    default_state.toCState(&c_state);
-    const and_back = State.initCState(&c_state);
 
-    for (0..2) |c| {
-        try expectEqual(default_state.colors[c], and_back.colors[c]);
-    }
+    var fen_buf: [128]u8 = undefined;
+    const fen_len = try default_state.toFen(&fen_buf);
 
-    for (0..6) |p| {
-        try expectEqual(default_state.pieces[p], and_back.pieces[p]);
-    }
-
-    try expectEqual(default_state.en_passant, and_back.en_passant);
-    try expectEqual(default_state.castling_rights, and_back.castling_rights);
-    try expectEqual(default_state.to_move, and_back.to_move);
-    try expectEqual(default_state.halfmove_clock, and_back.halfmove_clock);
-    try expectEqual(default_state.fullmove_clock, and_back.fullmove_clock);
-    try expectEqual(default_state.zobrist_hash, and_back.zobrist_hash);
-    try expectEqual(default_state.mailbox, and_back.mailbox);
-    try expectEqual(default_state.all_pieces, and_back.all_pieces);
+    try expectEqual(default_fen.len, fen_len);
+    try expect(std.mem.eql(u8, default_fen, fen_buf[0..fen_len]));
 }

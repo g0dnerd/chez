@@ -1,0 +1,15 @@
+[project]
+name = "chez-alphazero"
+version = "0.1.0"
+description = "AlphaZero-style self-play reinforcement learning for Chez chess engine"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0", "torch>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+# PyTorch nightly for RTX 5070 (Blackwell sm_120) support
+# Blackwell support is experimental - may need to fall back to CPU
+extra-index-url = ["https://download.pytorch.org/whl/cu130"]
