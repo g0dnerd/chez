@@ -689,17 +689,20 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
     var moves = legalMoves(state, state.to_move);
     const num_moves = moves.len;
 
-    const actual_max_depth: u8 = if (max_depth) |d| d else {
-        if (num_moves <= 30)
-            11
-        else if (num_moves <= 38)
-            10
-        else if (num_moves <= 46)
-            9
-        else if (num_moves <= 54)
-            8
-        else
-            7;
+    const actual_max_depth: u8 = blk: {
+        if (max_depth) |d| {
+            break :blk d;
+        } else {
+            if (num_moves <= 30) {
+                break :blk 11;
+            } else if (num_moves <= 38) {
+                break :blk 10;
+            } else if (num_moves <= 46) {
+                break :blk 9;
+            } else if (num_moves <= 54) {
+                break :blk 8;
+            } else break :blk 7;
+        }
     };
 
     // std.debug.print(" Using adaptive max depth of {d} ({d} legal moves)\n", .{ actual_max_depth, num_moves });
