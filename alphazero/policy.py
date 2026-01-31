@@ -12,7 +12,7 @@ The policy is always from the current player's perspective (board flipped if bla
 import numpy as np
 from numpy.typing import NDArray
 
-from .bindings import State, CMove, CMoveList
+from .bindings import State, CMove
 
 # Policy dimensions
 POLICY_PLANES = 73
@@ -21,12 +21,12 @@ POLICY_SIZE = 64 * POLICY_PLANES  # 4672
 # Direction vectors (file_delta, rank_delta) for queen-like moves
 # Order: N, NE, E, SE, S, SW, W, NW
 QUEEN_DIRECTIONS = [
-    (0, 1),   # N
-    (1, 1),   # NE
-    (1, 0),   # E
+    (0, 1),  # N
+    (1, 1),  # NE
+    (1, 0),  # E
     (1, -1),  # SE
     (0, -1),  # S
-    (-1, -1), # SW
+    (-1, -1),  # SW
     (-1, 0),  # W
     (-1, 1),  # NW
 ]
@@ -34,12 +34,12 @@ QUEEN_DIRECTIONS = [
 # Knight move offsets (file_delta, rank_delta)
 # Consistent ordering for planes 56-63
 KNIGHT_MOVES = [
-    (1, 2),   # NNE
-    (2, 1),   # ENE
+    (1, 2),  # NNE
+    (2, 1),  # ENE
     (2, -1),  # ESE
     (1, -2),  # SSE
-    (-1, -2), # SSW
-    (-2, -1), # WSW
+    (-1, -2),  # SSW
+    (-2, -1),  # WSW
     (-2, 1),  # WNW
     (-1, 2),  # NNW
 ]
@@ -209,8 +209,7 @@ def get_legal_move_mask(state: State) -> NDArray[np.float32]:
 
 
 def mask_illegal_moves(
-    policy_logits: NDArray[np.float32],
-    state: State
+    policy_logits: NDArray[np.float32], state: State
 ) -> NDArray[np.float32]:
     """
     Mask illegal moves by setting their logits to -inf.
@@ -231,8 +230,7 @@ def mask_illegal_moves(
 
 
 def policy_to_moves(
-    policy: NDArray[np.float32],
-    state: State
+    policy: NDArray[np.float32], state: State
 ) -> list[tuple[CMove, float]]:
     """
     Convert policy probabilities to a list of (move, probability) pairs.
@@ -262,9 +260,7 @@ def policy_to_moves(
 
 
 def sample_move(
-    policy_logits: NDArray[np.float32],
-    state: State,
-    temperature: float = 1.0
+    policy_logits: NDArray[np.float32], state: State, temperature: float = 1.0
 ) -> CMove:
     """
     Sample a move from the policy distribution.
@@ -282,7 +278,7 @@ def sample_move(
 
     if temperature == 0:
         # Greedy selection
-        idx = np.argmax(flat)
+        idx = int(np.argmax(flat))
     else:
         # Apply temperature and softmax
         scaled = flat / temperature
@@ -330,6 +326,7 @@ if __name__ == "__main__":
 
     for uci, flip in test_cases:
         from .bindings import _parse_move
+
         move = _parse_move(uci)
         idx = move_to_policy_index(move, flip)
         decoded = policy_index_to_move(idx, flip)
@@ -357,6 +354,8 @@ if __name__ == "__main__":
     moves_black = state.legal_moves()
     mask_black = get_legal_move_mask(state)
     assert mask_black.sum() == len(moves_black)
-    print(f"After e4, black has {len(moves_black)} legal moves, mask sum={int(mask_black.sum())}")
+    print(
+        f"After e4, black has {len(moves_black)} legal moves, mask sum={int(mask_black.sum())}"
+    )
 
     print("\nAll policy tests passed!")

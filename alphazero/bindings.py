@@ -10,14 +10,13 @@ from typing import Iterator
 # Find and load the shared library
 _lib_path = Path(__file__).parent.parent / "zig-out" / "lib" / "libchez.so"
 if not _lib_path.exists():
-    raise RuntimeError(
-        f"libchez.so not found at {_lib_path}. Run 'zig build' first."
-    )
+    raise RuntimeError(f"libchez.so not found at {_lib_path}. Run 'zig build' first.")
 _lib = ctypes.CDLL(str(_lib_path))
 
 
 class CMove(Structure):
     """C-compatible move structure."""
+
     _fields_ = [
         ("start", c_uint8),
         ("end", c_uint8),
@@ -45,6 +44,7 @@ class CMove(Structure):
 
 class CMoveList(Structure):
     """C-compatible move list structure."""
+
     _fields_ = [
         ("moves", CMove * 256),
         ("len", c_uint8),
@@ -56,6 +56,25 @@ class CMoveList(Structure):
 
     def __len__(self) -> int:
         return self.len
+
+
+class CUndoInfo(Structure):
+    """C-compatible undo information for make/unmake pattern."""
+
+    _fields_ = [
+        ("captured_piece", c_uint8),  # 0xFF = none
+        ("captured_square", c_uint8),
+        ("castling_rights", c_uint8),
+        ("en_passant", c_uint8),  # 0xFF = none
+        ("halfmove_clock", ctypes.c_uint16),
+        ("in_check", c_uint8),  # 0xFF = none
+        ("zobrist_hash", c_uint64),
+        (
+            "flags",
+            c_uint8,
+        ),  # bit0: was_promotion, bit1: was_castling, bit2: castling_side
+        ("promotion_piece", c_uint8),  # 0xFF = none
+    ]
 
 
 # Function signatures
@@ -76,6 +95,15 @@ _lib.chez_legal_moves.restype = None
 
 _lib.chez_make_move.argtypes = [c_void_p, POINTER(CMove)]
 _lib.chez_make_move.restype = None
+
+_lib.chez_make_move_with_undo.argtypes = [c_void_p, POINTER(CMove), POINTER(CUndoInfo)]
+_lib.chez_make_move_with_undo.restype = None
+
+_lib.chez_unmake_move.argtypes = [c_void_p, POINTER(CMove), POINTER(CUndoInfo)]
+_lib.chez_unmake_move.restype = None
+
+_lib.chez_piece_at.argtypes = [c_void_p, c_uint8]
+_lib.chez_piece_at.restype = c_uint8
 
 _lib.chez_game_result.argtypes = [c_void_p]
 _lib.chez_game_result.restype = c_int32
@@ -113,6 +141,7 @@ def _parse_move(uci: str) -> CMove:
 
 class GameResult:
     """Game result constants."""
+
     ONGOING = 0
     WHITE_WINS = 1
     BLACK_WINS = 2
@@ -130,8 +159,6 @@ class State:
 
     def __init__(self, ptr: c_void_p):
         """Initialize with an opaque pointer. Use class methods to create."""
-        if not ptr:
-            raise ValueError("Null state pointer")
         self._ptr = ptr
 
     def __del__(self):
@@ -172,6 +199,23 @@ class State:
         if isinstance(move, str):
             move = _parse_move(move)
         _lib.chez_make_move(self._ptr, ctypes.byref(move))
+
+    def make_move_with_undo(self, move: CMove | str) -> tuple[CMove, CUndoInfo]:
+        """
+        Apply a move and return undo information for later unmake.
+
+        Returns:
+            Tuple of (move, undo_info) to pass to unmake_move()
+        """
+        if isinstance(move, str):
+            move = _parse_move(move)
+        undo = CUndoInfo()
+        _lib.chez_make_move_with_undo(self._ptr, ctypes.byref(move), ctypes.byref(undo))
+        return move, undo
+
+    def unmake_move(self, move: CMove, undo: CUndoInfo) -> None:
+        """Unmake a move, restoring the previous state."""
+        _lib.chez_unmake_move(self._ptr, ctypes.byref(move), ctypes.byref(undo))
 
     def game_result(self) -> int:
         """
@@ -250,7 +294,9 @@ if __name__ == "__main__":
     assert state.hash() == state2.hash()
 
     # Test FEN
-    state3 = State.from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+    state3 = State.from_fen(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+    )
     assert state.hash() == state3.hash()
 
     # Play a random game

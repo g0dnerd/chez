@@ -5,7 +5,6 @@ Replay buffer for storing self-play training data.
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import Iterator
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,9 +17,10 @@ from .policy import POLICY_SIZE
 @dataclass
 class TrainingExample:
     """Single training example."""
-    state: NDArray[np.float32]   # (119, 8, 8)
+
+    state: NDArray[np.float32]  # (119, 8, 8)
     policy: NDArray[np.float32]  # (4672,)
-    value: float                  # [-1, 1]
+    value: float  # [-1, 1]
 
 
 class ReplayBuffer:
@@ -120,9 +120,7 @@ class ReplayBuffer:
         self._buffer.clear()
         for i in range(len(states)):
             example = TrainingExample(
-                state=states[i],
-                policy=policies[i],
-                value=values[i]
+                state=states[i], policy=policies[i], value=values[i]
             )
             self._buffer.append(example)
 
@@ -138,9 +136,14 @@ if __name__ == "__main__":
     for _ in range(3):
         n_moves = random.randint(10, 20)
         game = GameRecord(
-            states=[np.random.randn(TOTAL_PLANES, 8, 8).astype(np.float32) for _ in range(n_moves)],
-            policies=[np.random.rand(POLICY_SIZE).astype(np.float32) for _ in range(n_moves)],
-            results=[random.choice([-1.0, 0.0, 1.0])] * n_moves
+            states=[
+                np.random.randn(TOTAL_PLANES, 8, 8).astype(np.float32)
+                for _ in range(n_moves)
+            ],
+            policies=[
+                np.random.rand(POLICY_SIZE).astype(np.float32) for _ in range(n_moves)
+            ],
+            results=[random.choice([-1.0, 0.0, 1.0])] * n_moves,
         )
         dummy_games.append(game)
 
@@ -155,7 +158,9 @@ if __name__ == "__main__":
 
     # Test sampling
     states, policies, values = buffer.sample(8)
-    print(f"Sample shapes: states={states.shape}, policies={policies.shape}, values={values.shape}")
+    print(
+        f"Sample shapes: states={states.shape}, policies={policies.shape}, values={values.shape}"
+    )
     assert states.shape == (8, TOTAL_PLANES, 8, 8)
     assert policies.shape == (8, POLICY_SIZE)
     assert values.shape == (8,)

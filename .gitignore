@@ -3,3 +3,7 @@
 /target
 alpha_zero.md
 games.json
+/models
+alphazero/__pycache__
+*.data
+/**/__pycache__

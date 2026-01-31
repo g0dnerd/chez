@@ -88,6 +88,10 @@ def play_game(
 
     # Determine game result
     result = state.game_result()
+
+    # FIXME: isn't this needed?
+    del state
+
     if result == GameResult.DRAW or move_count >= max_moves:
         game_value = 0.0
     elif result == GameResult.WHITE_WINS:
@@ -131,7 +135,12 @@ def generate_games(
     games: list[GameRecord] = []
 
     for i in range(num_games):
-        game = play_game(network, mcts_config, temperature_moves=temperature_moves, max_moves=max_moves)
+        game = play_game(
+            network,
+            mcts_config,
+            temperature_moves=temperature_moves,
+            max_moves=max_moves,
+        )
         games.append(game)
 
         if verbose:
@@ -146,19 +155,22 @@ def generate_games(
 if __name__ == "__main__":
     print("Testing self-play...")
 
-    from .network import create_network, get_device
+    from network import create_network, get_device
+    import time
 
     device = get_device()
     print(f"Using device: {device}")
 
     # Small network and few simulations for quick test
-    network = create_network(num_filters=32, num_blocks=2, device=device)
-    config = MCTSConfig(num_simulations=10)
+    network = create_network(num_filters=256, num_blocks=10, device=device)
+    config = MCTSConfig(num_simulations=800)
 
     # Play a single game
     print("\nPlaying test game...")
+    start = time.time()
     game = play_game(network, config)
-    print(f"Game length: {len(game)} moves")
+    end = time.time()
+    print(f"Game took {end - start:.3f} seconds and {len(game)} moves.")
     print(
         f"Final result (white perspective): {game.results[0] if game.results else 'N/A'}"
     )

@@ -24,6 +24,7 @@ pub const UndoInfo = struct {
     in_check: ?Color,
     zobrist_hash: u64,
     was_promotion: bool,
+    promotion_piece: ?Piece, // Actual promotion piece (not always queen)
     was_castling: bool,
     castling_side: Color, // 0 = kingside, 1 = queenside (only valid if was_castling)
 };
@@ -562,6 +563,7 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
         .in_check = self.in_check,
         .zobrist_hash = self.zobrist_hash,
         .was_promotion = false,
+        .promotion_piece = null,
         .was_castling = false,
         .castling_side = 0,
     };
@@ -664,9 +666,11 @@ pub fn makeMove(self: *State, m: game.Move, c: Color, p: Piece) UndoInfo {
 
     if (m.promotion_piece) |promo_target| {
         undo.was_promotion = true;
+        undo.promotion_piece = promo_target;
         self.*.pieces[Pieces.pawn].bitXorAssign(end);
         self.*.pieces[promo_target].bitOrAssign(end);
-        // XOR in queen at end square (not pawn)
+
+        // XOR in promoted piece at end square (not pawn)
         self.*.zobrist_hash ^= keys.pieces[c][promo_target][end];
         self.*.mailbox[end] = promo_target;
     } else {
@@ -715,8 +719,8 @@ pub fn unmakeMove(self: *State, m: game.Move, c: Color, p: Piece, undo: UndoInfo
     self.*.fullmove_clock -= c; // Undo the increment (only increments when black moves)
     self.*.to_move = c;
 
-    // Handle promotion: piece on end square is queen, but we need to restore pawn
-    const actual_piece = if (undo.was_promotion) Pieces.queen else p;
+    // Handle promotion: piece on end square is promoted piece, but we need to restore pawn
+    const actual_piece = if (undo.was_promotion) undo.promotion_piece.? else p;
 
     // Move piece back from end to start
     self.*.pieces[actual_piece].bitXorAssign(end);
@@ -800,10 +804,6 @@ pub fn toFen(self: *const State, buf: []u8) !u8 {
         rank -= 1;
     }
 
-    if (empty_squares > 0) {
-        buf[i] = '0' + empty_squares;
-        i += 1;
-    }
     buf[i] = ' ';
     i += 1;
 

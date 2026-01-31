@@ -12,8 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from .encoding import TOTAL_PLANES  # 119
-from .policy import POLICY_PLANES  # 73
+from .encoding import TOTAL_PLANES
+from .policy import POLICY_PLANES
 
 
 class ResidualBlock(nn.Module):
@@ -60,9 +60,9 @@ class AlphaZeroNetwork(nn.Module):
         self.bn_input = nn.BatchNorm2d(num_filters)
 
         # Residual tower
-        self.residual_blocks = nn.ModuleList([
-            ResidualBlock(num_filters) for _ in range(num_blocks)
-        ])
+        self.residual_blocks = nn.ModuleList(
+            [ResidualBlock(num_filters) for _ in range(num_blocks)]
+        )
 
         # Policy head
         self.policy_conv = nn.Conv2d(num_filters, 32, 1, bias=False)
@@ -128,7 +128,7 @@ class AlphaZeroNetwork(nn.Module):
 def create_network(
     num_filters: int = 128,
     num_blocks: int = 6,
-    device: str | torch.device | None = None
+    device: str | torch.device | None = None,
 ) -> AlphaZeroNetwork:
     """
     Create and initialize an AlphaZero network.
@@ -162,6 +162,7 @@ def get_device() -> torch.device:
             return torch.device("cuda")
         except RuntimeError as e:
             import warnings
+
             warnings.warn(f"CUDA available but not working, falling back to CPU: {e}")
     return torch.device("cpu")
 
@@ -182,7 +183,7 @@ if __name__ == "__main__":
 
     policy, value = model(x)
     print(f"Policy shape: {policy.shape}")  # (4, 4672)
-    print(f"Value shape: {value.shape}")    # (4, 1)
+    print(f"Value shape: {value.shape}")  # (4, 1)
 
     assert policy.shape == (batch_size, 64 * POLICY_PLANES)
     assert value.shape == (batch_size, 1)
@@ -191,7 +192,9 @@ if __name__ == "__main__":
     # Test predict (inference mode)
     policy_probs, value = model.predict(x)
     assert policy_probs.shape == (batch_size, 64 * POLICY_PLANES)
-    assert torch.allclose(policy_probs.sum(dim=1), torch.ones(batch_size, device=device), atol=1e-5)
+    assert torch.allclose(
+        policy_probs.sum(dim=1), torch.ones(batch_size, device=device), atol=1e-5
+    )
 
     print(f"Policy probs sum: {policy_probs.sum(dim=1)}")  # Should be ~1.0
     print(f"Value range: [{value.min():.3f}, {value.max():.3f}]")
@@ -200,7 +203,6 @@ if __name__ == "__main__":
     print("\nTesting with real position...")
     from .bindings import State
     from .encoding import StateEncoder
-    import numpy as np
 
     encoder = StateEncoder()
     state = State.default()

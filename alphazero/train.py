@@ -10,12 +10,9 @@ from pathlib import Path
 
 import torch
 
-# import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
-# from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# from .network import AlphaZeroNetwork,
 from .network import create_network, get_device, count_parameters
 from .mcts import MCTSConfig
 from .selfplay import generate_games

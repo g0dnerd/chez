@@ -21,7 +21,7 @@ class MCTSConfig:
     c_puct: float = 1.5  # Exploration constant
     dirichlet_alpha: float = 0.3  # Noise parameter (0.3 for chess)
     dirichlet_epsilon: float = 0.25  # Noise weight at root
-    batch_size: int = 16  # Leaves to evaluate in parallel (GPU batching)
+    batch_size: int = 32  # Leaves to evaluate in parallel (GPU batching)
 
 
 @dataclass

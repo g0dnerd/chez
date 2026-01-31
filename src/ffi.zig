@@ -4,7 +4,7 @@ const movegen = @import("movegen.zig");
 const search = @import("search.zig");
 const State = @import("State.zig");
 
-const allocator = std.heap.page_allocator;
+const allocator = std.heap.smp_allocator;
 
 pub const CMove = extern struct {
     start: u8,
@@ -15,6 +15,59 @@ pub const CMove = extern struct {
 pub const CMoveList = extern struct {
     moves: [256]CMove,
     len: u8,
+};
+
+// Undo information for make/unmake pattern.
+// All optional values use 0xFF as sentinel for "none".
+pub const CUndoInfo = extern struct {
+    captured_piece: u8, // 0xFF = none
+    captured_square: u8,
+    castling_rights: u8,
+    en_passant: u8, // 0xFF = none
+    halfmove_clock: u16,
+    in_check: u8, // 0xFF = none
+    zobrist_hash: u64,
+    flags: u8, // bit0: was_promotion, bit1: was_castling, bit2: castling_side
+    promotion_piece: u8, // 0xFF = none
+
+    const flag_was_promotion: u8 = 1 << 0;
+    const flag_was_castling: u8 = 1 << 1;
+    const flag_castling_side: u8 = 1 << 2;
+
+    fn fromUndo(undo: State.UndoInfo) CUndoInfo {
+        var flags: u8 = 0;
+        if (undo.was_promotion) flags |= flag_was_promotion;
+        if (undo.was_castling) flags |= flag_was_castling;
+        if (undo.castling_side == 1) flags |= flag_castling_side;
+
+        return .{
+            .captured_piece = if (undo.captured_piece) |p| p else 0xFF,
+            .captured_square = undo.captured_square,
+            .castling_rights = undo.castling_rights,
+            .en_passant = if (undo.en_passant) |ep| ep else 0xFF,
+            .halfmove_clock = undo.halfmove_clock,
+            .in_check = if (undo.in_check) |c| c else 0xFF,
+            .zobrist_hash = undo.zobrist_hash,
+            .flags = flags,
+            .promotion_piece = if (undo.promotion_piece) |p| p else 0xFF,
+        };
+    }
+
+    fn toUndo(self: CUndoInfo) State.UndoInfo {
+        return .{
+            .captured_piece = if (self.captured_piece == 0xFF) null else @intCast(self.captured_piece),
+            .captured_square = @intCast(self.captured_square),
+            .castling_rights = @intCast(self.castling_rights),
+            .en_passant = if (self.en_passant == 0xFF) null else @intCast(self.en_passant),
+            .halfmove_clock = self.halfmove_clock,
+            .in_check = if (self.in_check == 0xFF) null else @intCast(self.in_check),
+            .zobrist_hash = self.zobrist_hash,
+            .was_promotion = self.flags & flag_was_promotion != 0,
+            .promotion_piece = if (self.promotion_piece == 0xFF) null else @intCast(self.promotion_piece),
+            .was_castling = self.flags & flag_was_castling != 0,
+            .castling_side = @intFromBool(self.flags & flag_castling_side != 0),
+        };
+    }
 };
 
 // Create a new game state initialized to the default position.
@@ -60,6 +113,30 @@ export fn chez_legal_moves(state: *const State, c_moves: *CMoveList) void {
 export fn chez_make_move(state: *State, c_move: *const CMove) void {
     const move: game.Move = .initCMove(c_move);
     _ = state.makeMove(move, state.to_move, state.mailbox[move.start].?);
+}
+
+// Apply a move and return undo information for later unmake.
+export fn chez_make_move_with_undo(state: *State, c_move: *const CMove, c_undo: *CUndoInfo) void {
+    const move: game.Move = .initCMove(c_move);
+    const undo = state.makeMove(move, state.to_move, state.mailbox[move.start].?);
+    c_undo.* = CUndoInfo.fromUndo(undo);
+}
+
+// Unmake a move, restoring the previous state.
+// The color and piece parameters are derived from the current state and move.
+export fn chez_unmake_move(state: *State, c_move: *const CMove, c_undo: *const CUndoInfo) void {
+    const move: game.Move = .initCMove(c_move);
+    const undo = c_undo.toUndo();
+    // After makeMove, to_move was flipped. The color that made the move is the opponent of current.
+    const color = ~state.to_move;
+    // The piece that moved is now at the end square (unless it was a promotion)
+    const piece = if (undo.was_promotion) game.Pieces.pawn else state.mailbox[move.end].?;
+    state.unmakeMove(move, color, piece, undo);
+}
+
+// Return the piece at a square (0-5 for pieces, 0xFF for empty).
+export fn chez_piece_at(state: *const State, square: u8) u8 {
+    return if (state.pieceAt(@intCast(square))) |p| p else 0xFF;
 }
 
 // Return the game result for the state:

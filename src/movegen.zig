@@ -422,14 +422,24 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
                     if (p == Pieces.pawn and end / 8 == State.pawn_promo_rank[c]) {
                         candidate_move.promotion_piece = Pieces.queen;
+                        ret.append(candidate_move);
                         inline for (1..4) |promotion_target| {
                             ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
                         }
+                        continue;
                     }
                     ret.append(candidate_move);
                 }
             } else {
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
+                    if (p == Pieces.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                        candidate_move.promotion_piece = Pieces.queen;
+                        ret.append(candidate_move);
+                        inline for (1..4) |promotion_target| {
+                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                        }
+                        continue;
+                    }
                     ret.append(candidate_move);
                 }
             }
@@ -462,7 +472,7 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
 
             if (!is_capture and !is_promotion) continue;
 
-            const candidate_move = game.Move{ .start = s, .end = end };
+            var candidate_move = game.Move{ .start = s, .end = end };
             if (in_check) {
                 var tmp_state = state.*;
                 _ = tmp_state.makeMove(candidate_move, c, p);
@@ -473,10 +483,26 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
                     king_square;
 
                 if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
+                    if (p == Pieces.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                        candidate_move.promotion_piece = Pieces.queen;
+                        ret.append(candidate_move);
+                        inline for (1..4) |promotion_target| {
+                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                        }
+                        continue;
+                    }
                     ret.append(candidate_move);
                 }
             } else {
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
+                    if (p == Pieces.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                        candidate_move.promotion_piece = Pieces.queen;
+                        ret.append(candidate_move);
+                        inline for (1..4) |promotion_target| {
+                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                        }
+                        continue;
+                    }
                     ret.append(candidate_move);
                 }
             }

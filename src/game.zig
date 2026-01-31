@@ -30,6 +30,19 @@ pub const Move = struct {
         c_move.*.end = self.end;
         c_move.*.promotion_piece = c_promotion_piece;
     }
+
+    pub fn format(self: Move, w: *std.Io.Writer) !void {
+        var end_buf: [2]u8 = undefined;
+        var start_buf: [2]u8 = undefined;
+        squareToAlgebraic(self.start, &start_buf) catch {};
+        squareToAlgebraic(self.end, &end_buf) catch {};
+        if (self.promotion_piece) |p| {
+            try w.print("{s}{s}{c}", .{ start_buf, end_buf, pieceLetter(p) });
+        } else {
+            try w.print("{s}{s}", .{ start_buf, end_buf });
+        }
+        try w.flush();
+    }
 };
 
 pub const GameResult = union(enum) {
@@ -369,6 +382,30 @@ pub fn squareToAlgebraic(square: Squares.Square, buf: []u8) !void {
     const file: u8 = 'a' + @as(u8, square) % 8;
     const rank: u8 = '1' + @as(u8, square) / 8;
     _ = try std.fmt.bufPrint(buf, "{c}{c}", .{ file, rank });
+}
+
+pub fn pieceName(p: Pieces.Piece) []const u8 {
+    return switch (p) {
+        Pieces.pawn => "pawn",
+        Pieces.knight => "knight",
+        Pieces.bishop => "bishop",
+        Pieces.rook => "rook",
+        Pieces.queen => "queen",
+        Pieces.king => "king",
+        else => unreachable,
+    };
+}
+
+pub fn pieceLetter(p: Pieces.Piece) u8 {
+    return switch (p) {
+        Pieces.pawn => 'p',
+        Pieces.knight => 'n',
+        Pieces.bishop => 'b',
+        Pieces.rook => 'r',
+        Pieces.queen => 'q',
+        Pieces.king => 'k',
+        else => unreachable,
+    };
 }
 
 test "test try square offset" {

@@ -29,6 +29,19 @@ fn parseMove(input: []const u8) ?game.Move {
 
     const start = algebraicToSquare(trimmed[0..2]);
     const end = algebraicToSquare(trimmed[2..4]);
+    const promotion_piece = blk: {
+        if (trimmed.len == 5) {
+            break :blk switch (trimmed[4]) {
+                'n' => game.Pieces.knight,
+                'b' => game.Pieces.bishop,
+                'r' => game.Pieces.rook,
+                'q' => game.Pieces.queen,
+                else => unreachable,
+            };
+        } else {
+            break :blk null;
+        }
+    };
 
     if (start == null or end == null) {
         return null;
@@ -37,24 +50,22 @@ fn parseMove(input: []const u8) ?game.Move {
     return .{
         .start = start.?,
         .end = end.?,
+        .promotion_piece = promotion_piece,
     };
 }
 
-fn pieceName(p: game.Pieces.Piece) []const u8 {
-    return switch (p) {
-        game.Pieces.pawn => "pawn",
-        game.Pieces.knight => "knight",
-        game.Pieces.bishop => "bishop",
-        game.Pieces.rook => "rook",
-        game.Pieces.queen => "queen",
-        game.Pieces.king => "king",
-        else => unreachable,
-    };
+fn printLegalMoves(m: movegen.MoveList, w: *std.Io.Writer) !void {
+    for (0..m.len) |i| {
+        const mv = m.moves[i];
+        try w.print("{f}, ", .{mv});
+    }
+    try w.writeByte('\n');
+    try w.flush();
 }
 
 fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool {
     for (haystack) |straw| {
-        if (straw.start == needle.start and straw.end == needle.end) {
+        if (straw.start == needle.start and straw.end == needle.end and straw.promotion_piece == needle.promotion_piece) {
             return true;
         }
     }
@@ -217,6 +228,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const current_color = state.to_move;
         const moves = movegen.legalMoves(&state, current_color);
 
+        try printLegalMoves(moves, stdout);
+
         if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
             try stdout.flush();
@@ -305,9 +318,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.writeByte('\n');
             try writeHeader(stdout, &state, depth, num_threads, nn_mode);
             if (nn_mode) {
-                try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
+                try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
             } else {
-                try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
+                try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
             }
 
             if (search.isGameOverWithHistory(&state, &history)) |res| {

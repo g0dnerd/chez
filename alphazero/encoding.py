@@ -8,7 +8,6 @@ AlphaZero-style encoding: 8x8x119 planes
 Board is always oriented from current player's perspective (flipped if black to move).
 """
 
-import ctypes
 from ctypes import c_void_p, c_float, POINTER
 from typing import Sequence
 
@@ -49,10 +48,7 @@ def encode_position(state: State, buffer: NDArray[np.float32]) -> None:
     """
     assert buffer.dtype == np.float32
     assert buffer.size == PIECE_PLANES_PER_POSITION * 64
-    _lib.chez_encode_position(
-        state._ptr,
-        buffer.ctypes.data_as(POINTER(c_float))
-    )
+    _lib.chez_encode_position(state._ptr, buffer.ctypes.data_as(POINTER(c_float)))
 
 
 def encode_meta(state: State, buffer: NDArray[np.float32]) -> None:
@@ -65,10 +61,7 @@ def encode_meta(state: State, buffer: NDArray[np.float32]) -> None:
     """
     assert buffer.dtype == np.float32
     assert buffer.size == META_PLANES * 64
-    _lib.chez_encode_meta(
-        state._ptr,
-        buffer.ctypes.data_as(POINTER(c_float))
-    )
+    _lib.chez_encode_meta(state._ptr, buffer.ctypes.data_as(POINTER(c_float)))
 
 
 def count_repetitions(current_hash: int, history: Sequence[int]) -> int:
@@ -81,6 +74,7 @@ class StateEncoder:
     Encodes game states for neural network input.
 
     Maintains position history for proper encoding. Call `push` after each move.
+    Caches encoded planes for efficient MCTS encoding.
 
     Example:
         encoder = StateEncoder()
@@ -96,9 +90,9 @@ class StateEncoder:
     """
 
     def __init__(self):
-        # History of (State, hash) tuples for the last HISTORY_LENGTH positions
-        # Most recent first
-        self._history: list[tuple[State, int]] = []
+        # History of (State, hash, encoded_planes) tuples
+        # Most recent first. encoded_planes is (12, 8, 8) piece planes only.
+        self._history: list[tuple[State, int, NDArray[np.float32]]] = []
 
     def reset(self) -> None:
         """Clear history (call when starting a new game)."""
@@ -108,16 +102,22 @@ class StateEncoder:
         """
         Add current position to history (call after each move).
 
+        Encodes immediately and caches for efficient later use.
+
         Args:
             state: Current state (will be cloned for history)
         """
-        self._history.insert(0, (state.clone(), state.hash()))
+        # Encode position immediately
+        piece_planes = np.zeros((PIECE_PLANES_PER_POSITION, 8, 8), dtype=np.float32)
+        encode_position(state, piece_planes.reshape(-1))
+
+        self._history.insert(0, (state.clone(), state.hash(), piece_planes))
+
         # Keep only HISTORY_LENGTH - 1 previous positions
         # (current position is passed to encode() separately)
         if len(self._history) >= HISTORY_LENGTH:
-            # Destroy old states to free memory
             while len(self._history) >= HISTORY_LENGTH:
-                old_state, _ = self._history.pop()
+                self._history.pop()
                 # State.__del__ handles cleanup
 
     def encode(self, state: State) -> NDArray[np.float32]:
@@ -134,44 +134,160 @@ class StateEncoder:
 
         # Collect all hashes for repetition counting
         current_hash = state.hash()
-        all_hashes = [h for _, h in self._history]
+        all_hashes = [h for _, h, _ in self._history]
 
         # Encode current position (timestep 0)
-        self._encode_timestep(state, current_hash, all_hashes, planes, 0)
+        piece_buffer = planes[0:PIECE_PLANES_PER_POSITION].reshape(-1)
+        encode_position(state, piece_buffer)
 
-        # Encode historical positions (timesteps 1-7)
-        for t, (hist_state, hist_hash) in enumerate(self._history[:HISTORY_LENGTH - 1], start=1):
-            # Hashes before this position in history
-            older_hashes = [h for _, h in self._history[t:]]
-            self._encode_timestep(hist_state, hist_hash, older_hashes, planes, t)
+        # Repetition planes for current position
+        rep_count = count_repetitions(current_hash, all_hashes)
+        if rep_count >= 1:
+            planes[12] = 1.0
+        if rep_count >= 2:
+            planes[13] = 1.0
+
+        # Encode historical positions (timesteps 1-7) using cached planes
+        for t, (_, hist_hash, cached_planes) in enumerate(
+            self._history[: HISTORY_LENGTH - 1], start=1
+        ):
+            base = t * PLANES_PER_POSITION
+
+            # Copy cached piece planes
+            planes[base : base + PIECE_PLANES_PER_POSITION] = cached_planes
+
+            # Repetition planes (count positions older than this one)
+            older_hashes = [h for _, h, _ in self._history[t:]]
+            rep_count = count_repetitions(hist_hash, older_hashes)
+            if rep_count >= 1:
+                planes[base + 12] = 1.0
+            if rep_count >= 2:
+                planes[base + 13] = 1.0
 
         # Encode meta planes (based on current state)
-        meta_buffer = planes[HISTORY_LENGTH * PLANES_PER_POSITION:].reshape(-1)
+        meta_buffer = planes[HISTORY_LENGTH * PLANES_PER_POSITION :].reshape(-1)
         encode_meta(state, meta_buffer)
 
         return planes
 
-    def _encode_timestep(
-        self,
-        state: State,
-        state_hash: int,
-        older_hashes: Sequence[int],
-        planes: NDArray[np.float32],
-        timestep: int
-    ) -> None:
-        """Encode a single timestep (12 piece planes + 2 repetition planes)."""
-        base = timestep * PLANES_PER_POSITION
+    def get_history_hashes(self) -> list[int]:
+        """Get list of hashes from history (most recent first)."""
+        return [h for _, h, _ in self._history]
 
-        # Piece planes (12)
-        piece_buffer = planes[base:base + PIECE_PLANES_PER_POSITION].reshape(-1)
+    def get_history_planes(self) -> list[NDArray[np.float32]]:
+        """Get list of cached piece planes from history (most recent first)."""
+        return [p for _, _, p in self._history]
+
+
+class MCTSEncoder:
+    """
+    Efficient encoder for MCTS tree traversal.
+
+    Uses a stack-based approach that can push/pop positions during make/unmake
+    traversal, avoiding redundant re-encoding of the path to root.
+
+    Example:
+        # Create from game encoder's history
+        mcts_enc = MCTSEncoder.from_game_encoder(game_encoder)
+
+        # During tree traversal
+        mcts_enc.push(state)  # After make_move
+        planes = mcts_enc.encode(state)
+        mcts_enc.pop()  # Before unmake_move
+    """
+
+    def __init__(self):
+        # Base history from game (fixed during search)
+        self._base_hashes: list[int] = []
+        self._base_planes: list[NDArray[np.float32]] = []
+
+        # Stack for MCTS traversal (push/pop during make/unmake)
+        self._stack_hashes: list[int] = []
+        self._stack_planes: list[NDArray[np.float32]] = []
+
+    @classmethod
+    def from_game_encoder(cls, encoder: StateEncoder | None) -> "MCTSEncoder":
+        """Create MCTSEncoder initialized with game history."""
+        mcts_enc = cls()
+        if encoder is not None:
+            mcts_enc._base_hashes = encoder.get_history_hashes()
+            mcts_enc._base_planes = encoder.get_history_planes()
+        return mcts_enc
+
+    def push(self, state: State) -> None:
+        """
+        Push current position onto the MCTS stack.
+
+        Call this after applying a move during tree traversal.
+        """
+        piece_planes = np.zeros((PIECE_PLANES_PER_POSITION, 8, 8), dtype=np.float32)
+        encode_position(state, piece_planes.reshape(-1))
+        self._stack_hashes.append(state.hash())
+        self._stack_planes.append(piece_planes)
+
+    def pop(self) -> None:
+        """
+        Pop the last position from the MCTS stack.
+
+        Call this before unmaking a move during tree traversal.
+        """
+        if self._stack_hashes:
+            self._stack_hashes.pop()
+            self._stack_planes.pop()
+
+    def clear_stack(self) -> None:
+        """Clear the MCTS traversal stack (but keep base history)."""
+        self._stack_hashes.clear()
+        self._stack_planes.clear()
+
+    def encode(self, state: State) -> NDArray[np.float32]:
+        """
+        Encode the current state using combined history.
+
+        The history is: MCTS stack (most recent) + base history (older).
+        """
+        planes = np.zeros((TOTAL_PLANES, 8, 8), dtype=np.float32)
+
+        # Combined history: stack (most recent first) + base
+        combined_hashes = list(reversed(self._stack_hashes)) + self._base_hashes
+        combined_planes = list(reversed(self._stack_planes)) + self._base_planes
+
+        # Encode current position (timestep 0)
+        current_hash = state.hash()
+        piece_buffer = planes[0:PIECE_PLANES_PER_POSITION].reshape(-1)
         encode_position(state, piece_buffer)
 
-        # Repetition planes (2)
-        rep_count = count_repetitions(state_hash, older_hashes)
+        # Repetition planes for current position
+        rep_count = count_repetitions(current_hash, combined_hashes)
         if rep_count >= 1:
-            planes[base + 12] = 1.0  # Position seen at least once before
+            planes[12] = 1.0
         if rep_count >= 2:
-            planes[base + 13] = 1.0  # Position seen at least twice before
+            planes[13] = 1.0
+
+        # Encode historical positions (timesteps 1-7)
+        for t in range(1, HISTORY_LENGTH):
+            idx = t - 1  # Index into combined history
+            if idx >= len(combined_planes):
+                break
+
+            base = t * PLANES_PER_POSITION
+            planes[base : base + PIECE_PLANES_PER_POSITION] = combined_planes[idx]
+
+            # Repetition planes
+            older_hashes = (
+                combined_hashes[idx + 1 :] if idx + 1 < len(combined_hashes) else []
+            )
+            rep_count = count_repetitions(combined_hashes[idx], older_hashes)
+            if rep_count >= 1:
+                planes[base + 12] = 1.0
+            if rep_count >= 2:
+                planes[base + 13] = 1.0
+
+        # Encode meta planes
+        meta_buffer = planes[HISTORY_LENGTH * PLANES_PER_POSITION :].reshape(-1)
+        encode_meta(state, meta_buffer)
+
+        return planes
 
 
 def encode_single(state: State) -> NDArray[np.float32]:
@@ -228,15 +344,29 @@ if __name__ == "__main__":
 
     planes = encoder.encode(state)
 
-    # Check meta planes
-    color_plane = planes[112]  # Should be 0 (white to move... wait, after Nf3 it's black's turn)
-    # Actually after e4 e5 Nf3, it's black's turn
-    # Hmm wait, let me re-check. After make_move, to_move changes.
-    # e2e4 -> black's turn (encoded with flip)
-    # e7e5 -> white's turn
-    # g1f3 -> black's turn
-
     print("Basic encoding tests passed!")
+
+    # Test MCTSEncoder
+    print("\nTesting MCTSEncoder...")
+
+    mcts_enc = MCTSEncoder.from_game_encoder(encoder)
+
+    # Simulate MCTS traversal
+    state2 = state.clone()
+    state2.make_move("b8c6")
+    mcts_enc.push(state2)
+
+    planes_mcts = mcts_enc.encode(state2)
+    assert planes_mcts.shape == (119, 8, 8)
+
+    # Pop and verify we can re-encode
+    mcts_enc.pop()
+    state2.make_move("f1b5")
+    mcts_enc.push(state2)
+    planes_mcts2 = mcts_enc.encode(state2)
+    assert planes_mcts2.shape == (119, 8, 8)
+
+    print("MCTSEncoder tests passed!")
 
     # Test that we handle all 8 timesteps
     encoder2 = StateEncoder()
@@ -254,4 +384,4 @@ if __name__ == "__main__":
     t1_pieces = planes2[14:26].sum()
     assert t0_pieces > 0 and t1_pieces > 0, "History should have piece data"
 
-    print("All encoding tests passed!")
+    print("\nAll encoding tests passed!")
