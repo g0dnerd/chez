@@ -50,6 +50,25 @@ pub fn build(b: *std.Build) !void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
 
+    const puzzle_mod = b.addModule("puzzles", .{
+        .root_source_file = b.path("src/puzzles.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const puzzle_test_step = b.step("test-puzzle", "Run puzzle tests");
+    const puzzle_test_filter = [_][]const u8{"puzzles"};
+    const puzzle_tests = b.addTest(.{
+        .name = "puzzle_tests",
+        .test_runner = .{
+            .path = b.path("src/test_runner.zig"),
+            .mode = .simple,
+        },
+        .root_module = puzzle_mod,
+        .filters = &puzzle_test_filter,
+    });
+    const run_puzzle_tests = b.addRunArtifact(puzzle_tests);
+    puzzle_test_step.dependOn(&run_puzzle_tests.step);
+
     b.installArtifact(libchez);
     b.installArtifact(precompute);
     b.installArtifact(tui);

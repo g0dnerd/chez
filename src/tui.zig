@@ -1,41 +1,20 @@
 const std = @import("std");
 const kore = @import("kore");
-const game = @import("game.zig");
-const movegen = @import("movegen.zig");
-const search = @import("search.zig");
-const State = @import("State.zig");
+const chez = @import("chez.zig");
 
-fn algebraicToSquare(s: []const u8) ?game.Squares.Square {
-    if (s.len != 2) {
-        return null;
-    }
-
-    const file = s[0];
-    const rank = s[1];
-
-    if (!(file >= 'a' and file <= 'h') or !(rank >= '1' and rank <= '8')) {
-        return null;
-    }
-
-    const file_idx = file - 'a';
-    const rank_idx = rank - '1';
-
-    return @intCast(rank_idx * 8 + file_idx);
-}
-
-fn parseMove(input: []const u8) ?game.Move {
+fn parseMove(input: []const u8) ?chez.game.Move {
     const trimmed = std.mem.trimEnd(u8, input, &std.ascii.whitespace);
     if (trimmed.len < 4) return null;
 
-    const start = algebraicToSquare(trimmed[0..2]);
-    const end = algebraicToSquare(trimmed[2..4]);
+    const start = chez.game.algebraicToSquare(trimmed[0..2]);
+    const end = chez.game.algebraicToSquare(trimmed[2..4]);
     const promotion_piece = blk: {
         if (trimmed.len == 5) {
             break :blk switch (trimmed[4]) {
-                'n' => game.Pieces.knight,
-                'b' => game.Pieces.bishop,
-                'r' => game.Pieces.rook,
-                'q' => game.Pieces.queen,
+                'n' => chez.game.Pieces.knight,
+                'b' => chez.game.Pieces.bishop,
+                'r' => chez.game.Pieces.rook,
+                'q' => chez.game.Pieces.queen,
                 else => unreachable,
             };
         } else {
@@ -54,7 +33,7 @@ fn parseMove(input: []const u8) ?game.Move {
     };
 }
 
-fn printLegalMoves(m: movegen.MoveList, w: *std.Io.Writer) !void {
+fn printLegalMoves(m: chez.movegen.MoveList, w: *std.Io.Writer) !void {
     for (0..m.len) |i| {
         const mv = m.moves[i];
         try w.print("{f}, ", .{mv});
@@ -63,7 +42,7 @@ fn printLegalMoves(m: movegen.MoveList, w: *std.Io.Writer) !void {
     try w.flush();
 }
 
-fn containsMove(haystack: *const [256]game.Move, needle: *const game.Move) bool {
+fn containsMove(haystack: *const [256]chez.game.Move, needle: *const chez.game.Move) bool {
     for (haystack) |straw| {
         if (straw.start == needle.start and straw.end == needle.end and straw.promotion_piece == needle.promotion_piece) {
             return true;
@@ -120,7 +99,7 @@ const NNEngine = struct {
         _ = self.process.wait(io) catch {};
     }
 
-    fn getMove(self: *NNEngine, io: std.Io, state: *State, buf: []u8) !?game.Move {
+    fn getMove(self: *NNEngine, io: std.Io, state: *chez.State, buf: []u8) !?chez.game.Move {
         // Send FEN to engine (with newline to signal end of input)
         var fen_buf: [128]u8 = undefined;
         const fen_len = try state.toFen(&fen_buf);
@@ -137,7 +116,7 @@ const NNEngine = struct {
     }
 };
 
-fn writeHeader(stdout: *std.Io.Writer, state: *State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
+fn writeHeader(stdout: *std.Io.Writer, state: *chez.State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
     try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
     try stdout.writeAll(" === Chez Paul ===\n");
     if (nn_mode) {
@@ -170,17 +149,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.writeAll("=== Chez Paul ===\n");
 
     var state = blk: {
-        if (parsed_args.fen) |fen| break :blk try State.fromFen(fen) else break :blk State.defaultPosition();
+        if (parsed_args.fen) |fen| break :blk try chez.State.fromFen(fen) else break :blk chez.State.defaultPosition();
     };
 
     // Initialize position history for repetition detection
-    var history = search.PositionHistory.init();
+    var history = chez.search.PositionHistory.init();
     history.push(state.zobrist_hash);
 
     var engine_color = blk: {
         if (parsed_args.engine_color) |c| {
-            if (std.mem.eql(u8, c, "white")) break :blk game.Colors.white;
-            if (std.mem.eql(u8, c, "black")) break :blk game.Colors.black;
+            if (std.mem.eql(u8, c, "white")) break :blk chez.game.Colors.white;
+            if (std.mem.eql(u8, c, "black")) break :blk chez.game.Colors.black;
             return error.InvalidColor;
         } else break :blk state.to_move;
     };
@@ -207,7 +186,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     while (true) {
         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
 
-        if (search.isGameOverWithHistory(&state, &history)) |res| {
+        if (chez.search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
                 .checkmate => {
                     const winner = switch (res.checkmate) {
@@ -226,7 +205,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         const current_color = state.to_move;
-        const moves = movegen.legalMoves(&state, current_color);
+        const moves = chez.movegen.legalMoves(&state, current_color);
 
         try printLegalMoves(moves, stdout);
 
@@ -287,7 +266,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         const start = try std.time.Instant.now();
 
-        var best_move: ?game.Move = null;
+        var best_move: ?chez.game.Move = null;
         var best_score: f64 = 0.0;
 
         if (nn_engine) |*eng| {
@@ -295,8 +274,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             var move_buf: [16]u8 = undefined;
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
-            // Use traditional search
-            if (try search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            // Use traditional chez.search
+            if (try chez.search.chez.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
                 best_move = search_res.move;
                 best_score = search_res.score;
             }
@@ -309,8 +288,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             var sq_start: [2]u8 = undefined;
             var sq_end: [2]u8 = undefined;
-            try game.squareToAlgebraic(move.start, &sq_start);
-            try game.squareToAlgebraic(move.end, &sq_end);
+            try chez.game.squareToAlgebraic(move.start, &sq_start);
+            try chez.game.squareToAlgebraic(move.end, &sq_end);
 
             _ = state.makeMove(move, state.to_move, piece);
             history.push(state.zobrist_hash);
@@ -318,12 +297,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.writeByte('\n');
             try writeHeader(stdout, &state, depth, num_threads, nn_mode);
             if (nn_mode) {
-                try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
+                try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
             } else {
-                try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
+                try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
             }
 
-            if (search.isGameOverWithHistory(&state, &history)) |res| {
+            if (chez.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {
                     .checkmate => {
                         const winner = switch (res.checkmate) {

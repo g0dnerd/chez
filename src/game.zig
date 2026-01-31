@@ -43,6 +43,10 @@ pub const Move = struct {
         }
         try w.flush();
     }
+
+    pub fn eql(self: Move, other: Move) bool {
+        return self.start == other.start and self.end == other.end and self.promotion_piece == other.promotion_piece;
+    }
 };
 
 pub const GameResult = union(enum) {
@@ -291,50 +295,6 @@ pub fn rayBetweenInclusive(from: Squares.Square, to: Squares.Square, d: Directio
     return ray;
 }
 
-pub const ZobristKeys = struct {
-    pieces: [2][6][64]u64, // [color][piece_type][square]
-    side_to_move: u64, // XOR when black to move
-    castling: [16]u64, // One key per castling rights combination
-    en_passant: [8]u64, // One key per file (only file matters for en passant)
-};
-
-var keys_once = std.once(initZobristKeys);
-var keys_storage: ZobristKeys = undefined;
-
-fn initZobristKeys() void {
-    var seed: u64 = undefined;
-    _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0); // catch @panic("getrandom failed");
-    var rng = std.Random.DefaultPrng.init(seed);
-    const random = rng.random();
-
-    // Piece-square keys for each color
-    for (0..2) |color| {
-        for (0..6) |piece_type| {
-            for (0..64) |square| {
-                keys_storage.pieces[color][piece_type][square] = random.int(u64);
-            }
-        }
-    }
-
-    // Side to move key
-    keys_storage.side_to_move = random.int(u64);
-
-    // Castling rights keys
-    for (0..16) |rights| {
-        keys_storage.castling[rights] = random.int(u64);
-    }
-
-    // En passant file keys
-    for (0..8) |file| {
-        keys_storage.en_passant[file] = random.int(u64);
-    }
-}
-
-pub fn getZobristKeys() *const ZobristKeys {
-    keys_once.call();
-    return &keys_storage;
-}
-
 pub const piece_repr = [2][6][]const u8{
     [_][]const u8{ "\u{265F}", "\u{265E}", "\u{265D}", "\u{265C}", "\u{265B}", "\u{265A}" },
     [_][]const u8{ "\u{2659}", "\u{2658}", "\u{2657}", "\u{2656}", "\u{2655}", "\u{2654}" },
@@ -382,6 +342,24 @@ pub fn squareToAlgebraic(square: Squares.Square, buf: []u8) !void {
     const file: u8 = 'a' + @as(u8, square) % 8;
     const rank: u8 = '1' + @as(u8, square) / 8;
     _ = try std.fmt.bufPrint(buf, "{c}{c}", .{ file, rank });
+}
+
+pub fn algebraicToSquare(s: []const u8) ?Squares.Square {
+    if (s.len != 2) {
+        return null;
+    }
+
+    const file = s[0];
+    const rank = s[1];
+
+    if (!(file >= 'a' and file <= 'h') or !(rank >= '1' and rank <= '8')) {
+        return null;
+    }
+
+    const file_idx = file - 'a';
+    const rank_idx = rank - '1';
+
+    return @intCast(rank_idx * 8 + file_idx);
 }
 
 pub fn pieceName(p: Pieces.Piece) []const u8 {

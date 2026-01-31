@@ -1,8 +1,9 @@
 const std = @import("std");
-const game = @import("game.zig");
-const Squares = game.Squares;
-const Square = Squares.Square;
 const expectEqual = std.testing.expectEqual;
+
+const chez = @import("chez.zig");
+const Squares = chez.Squares;
+const Square = chez.Square;
 
 pub const Bitboard = @This();
 bits: u64 = 0,

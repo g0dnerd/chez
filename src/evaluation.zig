@@ -1,10 +1,14 @@
 const std = @import("std");
-const State = @import("State.zig");
-const game = @import("game.zig");
-const movegen = @import("movegen.zig");
-const Colors = game.Colors;
-const Color = Colors.Color;
-const Pieces = game.Pieces;
+
+const chez = @import("chez.zig");
+const State = chez.State;
+// const game = @import("game.zig");
+// const movegen = @import("movegen.zig");
+const Colors = chez.Colors;
+const Color = chez.Color;
+const Pieces = chez.Pieces;
+const Move = chez.Move;
+const MoveList = chez.MoveList;
 
 // Phase weights for tapered evaluation (max phase = 24)
 const phase_weights = [6]i32{ 0, 1, 1, 2, 4, 0 }; // pawn, knight, bishop, rook, queen, king
@@ -394,7 +398,7 @@ fn mobilityScore(state: *const State, c: Color) Score {
     // Knights
     var knights = state.pieceBitboard(Pieces.knight).bitAnd(our_pieces);
     while (knights.next()) |s| {
-        const moves = movegen.knight_move_mask[s].bitAnd(our_pieces.not());
+        const moves = chez.movegen.knight_move_mask[s].bitAnd(our_pieces.not());
         const count: i32 = @intCast(moves.popCount());
         score = score.add(mobility_bonus[Pieces.knight].mul(count));
     }
@@ -402,7 +406,7 @@ fn mobilityScore(state: *const State, c: Color) Score {
     // Bishops
     var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(our_pieces);
     while (bishops.next()) |s| {
-        const moves = movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(our_pieces.not());
+        const moves = chez.movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(our_pieces.not());
         const count: i32 = @intCast(moves.popCount());
         score = score.add(mobility_bonus[Pieces.bishop].mul(count));
     }
@@ -410,7 +414,7 @@ fn mobilityScore(state: *const State, c: Color) Score {
     // Rooks
     var rooks = state.pieceBitboard(Pieces.rook).bitAnd(our_pieces);
     while (rooks.next()) |s| {
-        const moves = movegen.sliderMoves(state, s, Pieces.rook).bitAnd(our_pieces.not());
+        const moves = chez.movegen.sliderMoves(state, s, Pieces.rook).bitAnd(our_pieces.not());
         const count: i32 = @intCast(moves.popCount());
         score = score.add(mobility_bonus[Pieces.rook].mul(count));
     }
@@ -596,7 +600,7 @@ pub fn evaluate(state: *const State) i32 {
     return total.taper(phase);
 }
 
-pub fn scoreMove(ctx: *const movegen.MoveList.SortCtx, m: game.Move) i32 {
+pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     var score: i32 = 0;
 
     // MVV-LVA for captures
@@ -607,7 +611,7 @@ pub fn scoreMove(ctx: *const movegen.MoveList.SortCtx, m: game.Move) i32 {
 
     // Promotion bonus
     const end_rank = m.end / 8;
-    if (ctx.state.pieceAt(m.start) == game.Pieces.pawn and
+    if (ctx.state.pieceAt(m.start) == Pieces.pawn and
         ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black)))
     {
         score += 5000;

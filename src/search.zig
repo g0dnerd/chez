@@ -1,11 +1,15 @@
-const evaluation = @import("evaluation.zig");
-const game = @import("game.zig");
-const movegen = @import("movegen.zig");
-const State = @import("State.zig");
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const Atomic = std.atomic.Value;
+
+const chez = @import("chez.zig");
+const GameResult = chez.GameResult;
+const Move = chez.Move;
+const State = chez.State;
+const Pieces = chez.Pieces;
+const Squares = chez.Squares;
+const legalMoves = chez.legalMoves;
 
 const checkmate_score: i32 = 100000;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
@@ -84,9 +88,9 @@ pub const PositionHistory = struct {
 // Killer move table: stores 2 killer moves per ply
 // Killer moves are quiet moves that caused beta cutoffs
 const KillerTable = struct {
-    moves: [max_ply][2]?game.Move = [_][2]?game.Move{.{ null, null }} ** max_ply,
+    moves: [max_ply][2]?Move = [_][2]?Move{.{ null, null }} ** max_ply,
 
-    fn store(self: *KillerTable, ply: usize, m: game.Move) void {
+    fn store(self: *KillerTable, ply: usize, m: Move) void {
         if (ply >= max_ply) return;
         // Don't store if it's already the first killer
         if (self.moves[ply][0]) |k| {
@@ -97,7 +101,7 @@ const KillerTable = struct {
         self.moves[ply][0] = m;
     }
 
-    fn isKiller(self: *const KillerTable, ply: usize, m: game.Move) bool {
+    fn isKiller(self: *const KillerTable, ply: usize, m: Move) bool {
         if (ply >= max_ply) return false;
         if (self.moves[ply][0]) |k| {
             if (k.start == m.start and k.end == m.end) return true;
@@ -109,7 +113,7 @@ const KillerTable = struct {
     }
 
     fn clear(self: *KillerTable) void {
-        self.moves = [_][2]?game.Move{.{ null, null }} ** max_ply;
+        self.moves = [_][2]?Move{.{ null, null }} ** max_ply;
     }
 };
 
@@ -125,7 +129,7 @@ const TranspositionEntry = struct {
     score: i32 = 0,
     depth: u8 = 0,
     flag: Flag = .empty,
-    best_move: ?game.Move = null,
+    best_move: ?Move = null,
 };
 
 // Lock-free transposition table entry packed into two 64-bit words
@@ -136,7 +140,7 @@ const PackedTTEntry = struct {
     key: Atomic(u64) = Atomic(u64).init(0),
     data: Atomic(u64) = Atomic(u64).init(0),
 
-    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?game.Move) struct { key: u64, data: u64 } {
+    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) struct { key: u64, data: u64 } {
         // Pack data into 64 bits:
         // bits 0-15: score (as u16, offset by 32768 to handle negatives)
         // bits 16-23: depth
@@ -179,7 +183,7 @@ const PackedTTEntry = struct {
             .score = score,
             .depth = depth,
             .flag = flag,
-            .best_move = if (move_valid == 1) game.Move{ .start = move_start, .end = move_end } else null,
+            .best_move = if (move_valid == 1) Move{ .start = move_start, .end = move_end } else null,
         };
     }
 };
@@ -215,7 +219,7 @@ const TranspositionTable = struct {
         return PackedTTEntry.unpack(key, data, hash);
     }
 
-    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?game.Move) void {
+    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) void {
         const idx = hash & tt_mask;
         const entry = &self.entries[idx];
 
@@ -249,7 +253,7 @@ const ThreadContext = struct {
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
     // Each thread reports its best result here
-    best_move: ?game.Move = null,
+    best_move: ?Move = null,
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
 };
@@ -262,7 +266,7 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
 
     // When in check, we must search all evasions, not just captures
     if (in_check) {
-        var moves = movegen.legalMoves(state, to_move);
+        var moves = legalMoves(state, to_move);
 
         if (moves.len == 0) {
             return -checkmate_score;
@@ -292,7 +296,7 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
 
     // Stand pat: evaluate the current position
     // We can always choose not to capture when not in check
-    const stand_pat = evaluation.evaluate(state);
+    const stand_pat = chez.evaluation.evaluate(state);
 
     // Beta cutoff: position is so good opponent wouldn't allow it
     if (stand_pat >= beta) {
@@ -307,7 +311,7 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
     }
 
     // Generate and search captures only
-    var captures = movegen.legalCaptures(state, to_move);
+    var captures = chez.movegen.legalCaptures(state, to_move);
 
     if (captures.len == 0) {
         return stand_pat;
@@ -338,7 +342,7 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
 fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory) i32 {
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
-    var best_move: ?game.Move = null;
+    var best_move: ?Move = null;
 
     // Check for repetition - return draw score (0) if position occurred before
     // We check for twofold since we're in the search tree (implies threefold in game)
@@ -364,7 +368,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     }
 
     const to_move = state.to_move;
-    var moves = movegen.legalMoves(state, to_move);
+    var moves = legalMoves(state, to_move);
 
     if (moves.len == 0) {
         if (state.in_check == to_move) {
@@ -382,7 +386,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     // the position is so good we can prune
     const in_check = state.in_check == to_move;
     if (depth >= 3 and !in_check and state.hasNonPawnMaterial(to_move)) {
-        const keys = game.getZobristKeys();
+        const keys = chez.getZobristKeys();
         // Save state for null move
         const old_to_move = state.to_move;
         const old_ep = state.en_passant;
@@ -414,7 +418,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     }
 
     // Order moves with killer heuristic
-    const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?game.Move{ null, null };
+    const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?Move{ null, null };
     moves.orderWithKillers(state, to_move, ply_killers);
 
     var max_score: i32 = std.math.minInt(i32);
@@ -505,18 +509,18 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 }
 
 pub const SearchResult = struct {
-    move: game.Move,
+    move: Move,
     score: i32,
     depth: u8,
 };
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
-fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?game.Move, history: *PositionHistory) ?SearchResult {
+fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
-    var best_move: ?game.Move = null;
+    var best_move: ?Move = null;
 
     const to_move = state.to_move;
-    var moves = movegen.legalMoves(state, to_move);
+    var moves = legalMoves(state, to_move);
 
     if (moves.len == 0) {
         return null;
@@ -582,7 +586,7 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
 // Each thread does full iterative deepening independently
 // Threads diverge naturally due to TT interactions and timing
 fn workerThread(ctx: *ThreadContext) void {
-    var pv_move: ?game.Move = null;
+    var pv_move: ?Move = null;
 
     // Each thread does iterative deepening up to max_depth
     for (1..ctx.shared.max_depth + 1) |depth_usize| {
@@ -618,7 +622,7 @@ fn workerThread(ctx: *ThreadContext) void {
 pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, game_history: ?*const PositionHistory) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
 
-    var moves = movegen.legalMoves(state, state.to_move);
+    var moves = legalMoves(state, state.to_move);
     const num_moves = moves.len;
 
     const actual_max_depth: u8 = blk: {
@@ -686,7 +690,7 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
     }
 
     // Collect best result from all threads
-    var best_move: ?game.Move = null;
+    var best_move: ?Move = null;
     var best_score: i32 = std.math.minInt(i32);
     var best_depth: u8 = 0;
 
@@ -706,8 +710,8 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
     if (best_move) |m| {
         var sq_start: [2]u8 = undefined;
         var sq_end: [2]u8 = undefined;
-        game.squareToAlgebraic(m.start, &sq_start) catch {};
-        game.squareToAlgebraic(m.end, &sq_end) catch {};
+        chez.game.squareToAlgebraic(m.start, &sq_start) catch {};
+        chez.game.squareToAlgebraic(m.end, &sq_end) catch {};
 
         return .{
             .move = m,
@@ -747,7 +751,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     // Make a mutable copy for the search (make/unmake will restore it)
     var mutable_state = state.*;
 
-    var best_move: ?game.Move = null;
+    var best_move: ?Move = null;
     var best_score: i32 = undefined;
     var best_depth: u8 = 0;
 
@@ -760,8 +764,8 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             best_move = r.move;
             best_score = r.score;
 
-            try game.squareToAlgebraic(best_move.?.start, &sq_start);
-            try game.squareToAlgebraic(best_move.?.end, &sq_end);
+            try chez.game.squareToAlgebraic(best_move.?.start, &sq_start);
+            try chez.game.squareToAlgebraic(best_move.?.end, &sq_end);
 
             best_depth = r.depth;
 
@@ -783,19 +787,19 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     }
 }
 
-pub fn isGameOver(state: *const State) ?game.GameResult {
+pub fn isGameOver(state: *const State) ?GameResult {
     return isGameOverWithHistory(state, null);
 }
 
 // Check for game over with optional position history for threefold repetition
-pub fn isGameOverWithHistory(state: *const State, history: ?*const PositionHistory) ?game.GameResult {
+pub fn isGameOverWithHistory(state: *const State, history: ?*const PositionHistory) ?GameResult {
     const to_move = state.to_move;
-    const hasLegalMoves = movegen.hasAnyLegalMove(state, to_move);
+    const hasLegalMoves = chez.movegen.hasAnyLegalMove(state, to_move);
 
     if (!hasLegalMoves) {
-        const king_square = state.pieceBitboard(game.Pieces.king).bitAnd(state.colorBitboard(to_move)).trailingZeros();
-        if (movegen.isSquareAttackedBy(state, king_square, ~to_move)) {
-            return game.GameResult{ .checkmate = ~to_move };
+        const king_square = state.pieceBitboard(Pieces.king).bitAnd(state.colorBitboard(to_move)).trailingZeros();
+        if (chez.movegen.isSquareAttackedBy(state, king_square, ~to_move)) {
+            return GameResult{ .checkmate = ~to_move };
         } else {
             return .stalemate;
         }
@@ -821,8 +825,8 @@ test "test search finds mate in one" {
 
     const result = try search(&state, 1);
     try expect(result != null);
-    try expectEqual(game.Squares.h5, result.?.move.start);
-    try expectEqual(game.Squares.f7, result.?.move.end);
+    try expectEqual(Squares.h5, result.?.move.start);
+    try expectEqual(Squares.f7, result.?.move.end);
     try expect(result.?.score > 50000);
 }
 
@@ -831,7 +835,7 @@ test "test detects stalemate" {
     const state = try State.fromFen(fen);
 
     const res = isGameOver(&state);
-    try expectEqual(game.GameResult.stalemate, res);
+    try expectEqual(GameResult.stalemate, res);
 }
 
 // Mate in 2 tests
@@ -842,8 +846,8 @@ test "backrank mate in two" {
 
     const result = try search(&state, 4);
     try expect(result != null);
-    try expectEqual(game.Squares.c5, result.?.move.start);
-    try expectEqual(game.Squares.c8, result.?.move.end);
+    try expectEqual(Squares.c5, result.?.move.start);
+    try expectEqual(Squares.c8, result.?.move.end);
 }
 
 test "mate in two" {
@@ -853,8 +857,8 @@ test "mate in two" {
 
     const result = try search(&state, 4);
     try expect(result != null);
-    try expectEqual(game.Squares.d6, result.?.move.start);
-    try expectEqual(game.Squares.h6, result.?.move.end);
+    try expectEqual(Squares.d6, result.?.move.start);
+    try expectEqual(Squares.h6, result.?.move.end);
 }
 
 test "smothered mate pattern" {
@@ -863,8 +867,8 @@ test "smothered mate pattern" {
 
     const result = try search(&state, 4);
     try expect(result != null);
-    try expectEqual(game.Squares.g5, result.?.move.start);
-    try expectEqual(game.Squares.f7, result.?.move.end);
+    try expectEqual(Squares.g5, result.?.move.start);
+    try expectEqual(Squares.f7, result.?.move.end);
 }
 
 // Mate in 3 tests

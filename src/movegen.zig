@@ -208,16 +208,14 @@ pub const MoveList = struct {
 };
 
 pub fn pawnAttacks(s: Square, c: Color) Bitboard {
-    const rank = @as(usize, s / 8);
-    if (rank == State.pawn_promo_rank[c]) {
-        return Bitboard.empty;
-    }
+    const rank = s / 8;
+    if (rank == State.pawn_promo_rank[c]) return Bitboard.empty;
 
-    const file = @as(usize, s % 8);
+    const file = s % 8;
 
-    const rank_idx: u6 = switch (c) {
-        Colors.white => @intCast(rank),
-        Colors.black => @intCast(rank - 1),
+    const rank_idx = switch (c) {
+        Colors.white => rank,
+        Colors.black => rank - 1,
     };
 
     return pawn_attack_mask[c][file].shl(8 * rank_idx);
@@ -235,30 +233,37 @@ pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
 
     // Check if the square one ahead is within bounds
     var offs = game.trySquareOffset(s, 0, direction);
-    if (offs != null and state.isSquareEmpty(offs.?)) {
-        ret.bitOrAssign(offs.?);
-        const rank = s / 8;
-        if ((rank == 1 and c == Colors.white) or (rank == 6 and c == Colors.black)) {
-            const two_ahead: u6 = @intCast(@as(i8, s) + 16 * @as(i8, direction));
-            if (state.isSquareEmpty(two_ahead)) {
-                ret.bitOrAssign(two_ahead);
+    if (offs) |o| {
+        if (state.isSquareEmpty(o)) {
+            ret.bitOrAssign(o);
+            const rank = s / 8;
+            if ((rank == 1 and c == Colors.white) or (rank == 6 and c == Colors.black)) {
+                const two_ahead: u6 = @intCast(@as(i8, s) + 16 * @as(i8, direction));
+                if (state.isSquareEmpty(two_ahead)) {
+                    ret.bitOrAssign(two_ahead);
+                }
             }
         }
     }
 
     // Check for captures
     offs = game.trySquareOffset(s, -1, direction);
-    if (offs != null and (!state.isSquareEmpty(offs.?) or state.en_passant == offs)) {
-        ret.bitOrAssign(offs.?);
+    if (offs) |o| {
+        if (!state.isSquareEmpty(o) or state.en_passant == offs) {
+            ret.bitOrAssign(o);
+        }
     }
     offs = game.trySquareOffset(s, 1, direction);
-    if (offs != null and (!state.isSquareEmpty(offs.?) or state.en_passant == offs)) {
-        ret.bitOrAssign(offs.?);
+    if (offs) |o| {
+        if (!state.isSquareEmpty(o) or state.en_passant == offs) {
+            ret.bitOrAssign(o);
+        }
     }
 
     return ret;
 }
 
+// Gets the blockers for a slider piece from precomputed magic tables.
 fn blockersFromState(state: *const State, s: Square, p: Piece) Bitboard {
     const blockers = switch (p) {
         Pieces.rook => Bitboard{ .bits = magics.rook_magics[s].mask },

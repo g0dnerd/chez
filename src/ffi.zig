@@ -1,10 +1,12 @@
 const std = @import("std");
-const game = @import("game.zig");
-const movegen = @import("movegen.zig");
-const search = @import("search.zig");
-const State = @import("State.zig");
-
 const allocator = std.heap.smp_allocator;
+
+const chez = @import("chez.zig");
+const Colors = chez.Colors;
+const Castling = chez.Castling;
+const Pieces = chez.Pieces;
+const Move = chez.Move;
+const State = chez.State;
 
 pub const CMove = extern struct {
     start: u8,
@@ -105,19 +107,19 @@ export fn chez_clone(state: *const State) ?*State {
 
 // Write all legal moves for the state into the move list.
 export fn chez_legal_moves(state: *const State, c_moves: *CMoveList) void {
-    var moves = movegen.legalMoves(state, state.to_move);
+    var moves = chez.legalMoves(state, state.to_move);
     moves.toCMoves(c_moves);
 }
 
 // Apply a move to the state.
 export fn chez_make_move(state: *State, c_move: *const CMove) void {
-    const move: game.Move = .initCMove(c_move);
+    const move: Move = .initCMove(c_move);
     _ = state.makeMove(move, state.to_move, state.mailbox[move.start].?);
 }
 
 // Apply a move and return undo information for later unmake.
 export fn chez_make_move_with_undo(state: *State, c_move: *const CMove, c_undo: *CUndoInfo) void {
-    const move: game.Move = .initCMove(c_move);
+    const move: Move = .initCMove(c_move);
     const undo = state.makeMove(move, state.to_move, state.mailbox[move.start].?);
     c_undo.* = CUndoInfo.fromUndo(undo);
 }
@@ -125,12 +127,12 @@ export fn chez_make_move_with_undo(state: *State, c_move: *const CMove, c_undo: 
 // Unmake a move, restoring the previous state.
 // The color and piece parameters are derived from the current state and move.
 export fn chez_unmake_move(state: *State, c_move: *const CMove, c_undo: *const CUndoInfo) void {
-    const move: game.Move = .initCMove(c_move);
+    const move: Move = .initCMove(c_move);
     const undo = c_undo.toUndo();
     // After makeMove, to_move was flipped. The color that made the move is the opponent of current.
     const color = ~state.to_move;
     // The piece that moved is now at the end square (unless it was a promotion)
-    const piece = if (undo.was_promotion) game.Pieces.pawn else state.mailbox[move.end].?;
+    const piece = if (undo.was_promotion) Pieces.pawn else state.mailbox[move.end].?;
     state.unmakeMove(move, color, piece, undo);
 }
 
@@ -145,7 +147,7 @@ export fn chez_piece_at(state: *const State, square: u8) u8 {
 //   2 = black wins
 //   3 = draw
 export fn chez_game_result(state: *const State) i32 {
-    const res = search.isGameOverWithHistory(state, null) orelse return 0;
+    const res = chez.search.isGameOverWithHistory(state, null) orelse return 0;
     return switch (res) {
         .checkmate => |c| @as(i32, c) + 1,
         else => 3,
@@ -165,9 +167,6 @@ export fn chez_to_move(state: *const State) u8 {
 // ============================================================================
 // Neural Network Encoding
 // ============================================================================
-
-const Colors = game.Colors;
-const Castling = game.Castling;
 
 // Encode position to 12 planes (6 P1 pieces + 6 P2 pieces).
 // P1 = current player to move, P2 = opponent.

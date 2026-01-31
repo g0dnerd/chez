@@ -1,10 +1,12 @@
 const std = @import("std");
-const Bitboard = @import("Bitboard.zig");
-const game = @import("game.zig");
-const Slider = game.Slider;
+
+const chez = @import("chez.zig");
+const Bitboard = chez.Bitboard;
+const Squares = chez.Squares;
+const Square = chez.Square;
+const Slider = chez.game.Slider;
 const SliderDirections = Slider.SliderDirections;
-const Squares = game.Squares;
-const Square = Squares.Square;
+const trySquareOffset = chez.game.trySquareOffset;
 
 pub const MagicTableEntry = struct { magic: u64, mask: u64, shift: u6, offset: u32 };
 
@@ -19,7 +21,7 @@ fn blockersForSquare(s: Square, directions: *const SliderDirections) Bitboard {
 
         var ray = s;
         while (true) {
-            const offs = game.trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
+            const offs = trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
             blockers.bitOrAssign(ray);
             ray = offs;
         }
@@ -37,7 +39,7 @@ fn sliderMoves(s: Square, blockers: *const Bitboard, directions: *const SliderDi
         var ray = s;
 
         while (!blockers.contains(ray)) {
-            const offs = game.trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
+            const offs = trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
             ray = offs;
             moves.bitOrAssign(ray);
         }
