@@ -183,15 +183,21 @@ pub const MoveList = struct {
         state: *const State,
         color: Color,
         killers: [2]?game.Move,
+        history: ?*const evaluation.HistoryTable,
     };
 
     pub fn order(self: *MoveList, state: *const State, color: Color) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = .{ null, null } };
+        var ctx = SortCtx{ .state = state, .color = color, .killers = .{ null, null }, .history = null };
         std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
     }
 
     pub fn orderWithKillers(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = killers };
+        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = null };
+        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
+    }
+
+    pub fn orderWithHistory(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move, history: *const evaluation.HistoryTable) void {
+        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = history };
         std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
     }
 

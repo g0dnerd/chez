@@ -42,6 +42,10 @@ fullmove_clock: u16 = 1,
 zobrist_hash: u64 = 0,
 all_pieces: Bitboard,
 mailbox: [64]?Piece,
+// Incremental evaluation scores
+material_score: [2]chez.evaluation.Score = .{ chez.evaluation.Score.zero, chez.evaluation.Score.zero },
+pst_score: [2]chez.evaluation.Score = .{ chez.evaluation.Score.zero, chez.evaluation.Score.zero },
+phase: i32 = 0,
 
 const pawn_start_rank: [2]Square = .{ 1, 6 };
 const pawn_double_rank: [2]Square = .{ 3, 4 };

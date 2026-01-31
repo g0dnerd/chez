@@ -52,7 +52,7 @@ pub const Score = packed struct {
 };
 
 // Piece values: (middlegame, endgame)
-const piece_values = [6]Score{
+pub const piece_values = [6]Score{
     Score.init(100, 120), // pawn - more valuable in endgame
     Score.init(305, 290), // knight - slightly weaker in endgame
     Score.init(333, 350), // bishop - stronger in endgame
@@ -62,7 +62,7 @@ const piece_values = [6]Score{
 };
 
 // For MVV-LVA move ordering (uses middlegame values)
-const piece_values_mg = [6]i32{ 100, 305, 333, 563, 950, 20000 };
+pub const piece_values_mg = [6]i32{ 100, 305, 333, 563, 950, 20000 };
 
 // Passed pawn bonus by rank (from pawn's perspective, rank 1-6 relevant)
 const passed_pawn_bonus = [8]Score{
@@ -93,6 +93,9 @@ const rook_semi_open = Score.init(15, 10);
 const rook_on_seventh = Score.init(20, 40); // Much stronger in endgame
 const isolated_pawn = Score.init(-15, -20); // Worse in endgame
 const doubled_pawn = Score.init(-10, -20); // Worse in endgame
+const connected_pawn = Score.init(7, 10); // Pawns side-by-side or on adjacent files
+const protected_passed_pawn = Score.init(15, 30); // Passed pawn defended by another pawn
+const blocked_passed_pawn = Score.init(-10, -20); // Passed pawn blocked by a piece
 const knight_outpost_defended = Score.init(25, 15); // Less relevant in endgame
 const knight_outpost_undefended = Score.init(10, 5);
 const pawn_shield = Score.init(15, 0); // Only matters in middlegame
@@ -108,7 +111,7 @@ const file_masks: [8]u64 = blk: {
 };
 
 // Adjacent file masks for isolated pawn detection
-const ADJACENT_FILES: [8]u64 = blk: {
+const adjacent_files: [8]u64 = blk: {
     var masks: [8]u64 = undefined;
     for (0..8) |file| {
         var mask: u64 = 0;
@@ -120,7 +123,7 @@ const ADJACENT_FILES: [8]u64 = blk: {
 };
 
 // Piece-square tables: [piece][square] -> Score(mg, eg)
-const pst = [6][64]Score{
+pub const pst = [6][64]Score{
     // Pawns
     blk: {
         const mg = [64]i16{
@@ -324,12 +327,13 @@ fn positionalScore(state: *const State, c: Color) Score {
         defer piece += 1;
 
         while (pieces.next()) |s| {
+            const rank = s / 8;
+            const file = s % 8;
             // Mirror square for black (flip rank)
-            const sq: u6 = if (c == Colors.black) blk: {
-                const rank = s / 8;
-                const file = s % 8;
-                break :blk @intCast((7 - rank) * 8 + file);
-            } else s;
+            const sq: u6 = if (c == Colors.black)
+                @intCast((7 - rank) * 8 + file)
+            else
+                s;
 
             score = score.add(pst[piece][sq]);
         }
@@ -341,11 +345,32 @@ fn pawnStructureScore(state: *const State, c: Color) Score {
     var score = Score.zero;
     const all_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
     const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
+    const occupied = state.all_pieces.bits;
     var pawns = all_pawns;
 
     while (pawns.next()) |s| {
         const file: u6 = s % 8;
         const rank: u6 = s / 8;
+
+        // Connected pawn bonus: pawn on adjacent file, same rank or one rank behind
+        const connected = blk: {
+            var mask: u64 = 0;
+            // Same rank, adjacent files
+            if (file > 0) mask |= @as(u64, 1) << (s - 1);
+            if (file < 7) mask |= @as(u64, 1) << (s + 1);
+            // One rank behind (supporting), adjacent files
+            if (c == Colors.white and rank > 0) {
+                if (file > 0) mask |= @as(u64, 1) << (s - 9);
+                if (file < 7) mask |= @as(u64, 1) << (s - 7);
+            } else if (c == Colors.black and rank < 7) {
+                if (file > 0) mask |= @as(u64, 1) << (s + 7);
+                if (file < 7) mask |= @as(u64, 1) << (s + 9);
+            }
+            break :blk (all_pawns.bits & mask) != 0;
+        };
+        if (connected) {
+            score = score.add(connected_pawn);
+        }
 
         // Passed pawn detection
         const ahead_mask = computePassedPawnMask(c, file, rank);
@@ -354,6 +379,35 @@ fn pawnStructureScore(state: *const State, c: Color) Score {
             // It's a passed pawn - use rank from pawn's perspective
             const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
             score = score.add(passed_pawn_bonus[passed_rank]);
+
+            // Protected passed pawn: defended by another pawn
+            const protected = blk: {
+                var def_mask: u64 = 0;
+                if (c == Colors.white and rank > 0) {
+                    if (file > 0) def_mask |= @as(u64, 1) << (s - 9);
+                    if (file < 7) def_mask |= @as(u64, 1) << (s - 7);
+                } else if (c == Colors.black and rank < 7) {
+                    if (file > 0) def_mask |= @as(u64, 1) << (s + 7);
+                    if (file < 7) def_mask |= @as(u64, 1) << (s + 9);
+                }
+                break :blk (all_pawns.bits & def_mask) != 0;
+            };
+            if (protected) {
+                score = score.add(protected_passed_pawn);
+            }
+
+            // Blocked passed pawn: piece directly in front
+            const blocked = blk: {
+                if (c == Colors.white and rank < 7) {
+                    break :blk (occupied & (@as(u64, 1) << (s + 8))) != 0;
+                } else if (c == Colors.black and rank > 0) {
+                    break :blk (occupied & (@as(u64, 1) << (s - 8))) != 0;
+                }
+                break :blk false;
+            };
+            if (blocked) {
+                score = score.add(blocked_passed_pawn);
+            }
         }
 
         // Doubled pawn penalty
@@ -363,7 +417,7 @@ fn pawnStructureScore(state: *const State, c: Color) Score {
         }
 
         // Isolated pawn penalty
-        if ((all_pawns.bits & ADJACENT_FILES[file]) == 0) {
+        if ((all_pawns.bits & adjacent_files[file]) == 0) {
             score = score.add(isolated_pawn);
         }
     }
@@ -511,8 +565,8 @@ fn knightOutposts(state: *const State, c: Color) Score {
 
         // Check if enemy pawns can attack this square
         const can_be_attacked = blk: {
-            if (ADJACENT_FILES[file] == 0) break :blk false;
-            const adjacent_file_mask = ADJACENT_FILES[file];
+            if (adjacent_files[file] == 0) break :blk false;
+            const adjacent_file_mask = adjacent_files[file];
 
             const rank_u6: u6 = rank;
             const attack_ranks: u64 = if (c == Colors.white)
@@ -600,6 +654,30 @@ pub fn evaluate(state: *const State) i32 {
     return total.taper(phase);
 }
 
+// History heuristic table: [color][from_square][to_square] -> score
+// Tracks which quiet moves have caused beta cutoffs
+pub const HistoryTable = struct {
+    table: [2][64][64]i32 = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2,
+
+    pub fn get(self: *const HistoryTable, color: Color, from: u6, to: u6) i32 {
+        return self.table[color][from][to];
+    }
+
+    pub fn update(self: *HistoryTable, color: Color, from: u6, to: u6, depth: u8) void {
+        // Bonus proportional to depth squared (deeper cutoffs are more valuable)
+        const bonus: i32 = @as(i32, depth) * @as(i32, depth);
+        self.table[color][from][to] += bonus;
+        // Prevent overflow - cap at reasonable value
+        if (self.table[color][from][to] > 10000) {
+            self.table[color][from][to] = 10000;
+        }
+    }
+
+    pub fn clear(self: *HistoryTable) void {
+        self.table = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2;
+    }
+};
+
 pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     var score: i32 = 0;
 
@@ -626,6 +704,15 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     if (ctx.killers[1]) |k| {
         if (k.start == m.start and k.end == m.end) {
             score += 800;
+        }
+    }
+
+    // History heuristic for quiet moves (non-captures, non-promotions)
+    if (ctx.state.pieceAt(m.end) == null and ctx.history != null) {
+        const is_promotion = ctx.state.pieceAt(m.start) == Pieces.pawn and
+            ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
+        if (!is_promotion) {
+            score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 10);
         }
     }
 

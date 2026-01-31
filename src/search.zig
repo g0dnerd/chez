@@ -267,6 +267,7 @@ const ThreadContext = struct {
     state: State,
     killers: KillerTable,
     history: PositionHistory,
+    history_table: chez.evaluation.HistoryTable,
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
@@ -275,6 +276,9 @@ const ThreadContext = struct {
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
 };
+
+// Delta pruning margin - captures unlikely to improve alpha if below this threshold
+const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
@@ -340,6 +344,16 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
     for (0..captures.len) |i| {
         const m = captures.moves[i];
         const p = state.pieceAt(m.start).?;
+
+        // Delta pruning: skip captures that can't possibly improve alpha
+        // Check if even capturing the most valuable piece (queen) + margin would improve alpha
+        if (state.pieceAt(m.end)) |captured_piece| {
+            const capture_value = chez.evaluation.piece_values_mg[captured_piece];
+            if (stand_pat + capture_value + delta_margin < alpha) {
+                continue; // Skip hopeless captures
+            }
+        }
+
         const undo = state.makeMove(m, to_move, p);
 
         const score = -quiescence(state, -beta, -alpha);
@@ -357,7 +371,10 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
     return alpha;
 }
 
-fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory) i32 {
+// Futility pruning margins by depth
+const futility_margins = [_]i32{ 0, 200, 500 };
+
+fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) i32 {
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -400,9 +417,19 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         return quiescence(state, alpha, beta);
     }
 
+    const in_check = state.in_check == to_move;
+
+    // Futility pruning setup: at shallow depths, if static eval is far below alpha,
+    // we can skip quiet moves that are unlikely to improve
+    var can_futility_prune = false;
+    var static_eval: i32 = 0;
+    if (depth <= 2 and !in_check) {
+        static_eval = chez.evaluation.evaluate(state);
+        can_futility_prune = static_eval + futility_margins[depth] <= alpha;
+    }
+
     // Null move pruning: if giving opponent a free move still results in beta cutoff,
     // the position is so good we can prune
-    const in_check = state.in_check == to_move;
     if (depth >= 3 and !in_check and state.hasNonPawnMaterial(to_move)) {
         const keys = chez.getZobristKeys();
         // Save state for null move
@@ -422,7 +449,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
-        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, tbl, killers, history);
+        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, tbl, killers, history, history_table);
 
         // Unmake null move
         state.*.to_move = old_to_move;
@@ -435,9 +462,9 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         }
     }
 
-    // Order moves with killer heuristic
+    // Order moves with killer and history heuristics
     const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?Move{ null, null };
-    moves.orderWithKillers(state, to_move, ply_killers);
+    moves.orderWithHistory(state, to_move, ply_killers, history_table);
 
     var max_score: i32 = std.math.minInt(i32);
 
@@ -448,18 +475,36 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         // Check if this is a capture before making the move (for LMR decision)
         const is_capture = state.pieceAt(m.end) != null;
 
+        // Futility pruning: skip quiet moves at shallow depths when hopeless
+        if (can_futility_prune and !is_capture and i > 0) {
+            // Don't prune promotions
+            const end_rank = m.end / 8;
+            const is_promotion = p == chez.Pieces.pawn and
+                ((end_rank == 7 and to_move == chez.Colors.white) or (end_rank == 0 and to_move == chez.Colors.black));
+            if (!is_promotion) {
+                continue;
+            }
+        }
+
         const undo = state.makeMove(m, to_move, p);
         history.push(state.zobrist_hash);
 
         // Check extension: extend search by 1 ply when giving check
         const gives_check = state.in_check != null;
+
+        // Skip futility pruned moves that give check (we want to search those)
+        // This is a second check after makeMove to see if it gives check
+        if (can_futility_prune and !is_capture and gives_check) {
+            // Continue searching - don't prune checking moves
+        }
+
         const extension: u8 = if (gives_check) 1 else 0;
         const new_depth = depth - 1 + extension;
 
         var score: i32 = undefined;
         if (i == 0) {
             // First move: search with full window
-            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history);
+            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table);
         } else {
             // Late Move Reductions (LMR):
             // Moves ordered later are likely worse, so search with reduced depth first.
@@ -479,16 +524,16 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
             }
 
             // PVS with LMR: search with reduced depth and null window
-            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, tbl, killers, history);
+            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
 
             // Re-search at full depth if reduced search improved alpha
             if (score > alpha and reduction > 0) {
-                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, tbl, killers, history);
+                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
             }
 
             // Re-search with full window if null window failed high
             if (score > alpha and score < beta) {
-                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history);
+                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table);
             }
         }
 
@@ -505,9 +550,10 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         alpha = @max(alpha, score);
 
         if (alpha >= beta) {
-            // Beta cutoff - store killer if this is a quiet move (not a capture)
+            // Beta cutoff - store killer and update history for quiet moves
             if (!was_capture) {
                 killers.store(ply, m);
+                history_table.update(to_move, m.start, m.end, depth);
             }
             break;
         }
@@ -533,7 +579,7 @@ pub const SearchResult = struct {
 };
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
-fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory) ?SearchResult {
+fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
 
@@ -578,7 +624,7 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
             }
         }
 
-        const score = -negamax(state, depth - 1, 1, -beta_init, -alpha_init, tbl, killers, history);
+        const score = -negamax(state, depth - 1, 1, -beta_init, -alpha_init, tbl, killers, history, history_table);
 
         history.pop();
         state.unmakeMove(m, to_move, p, undo);
@@ -616,7 +662,7 @@ fn workerThread(ctx: *ThreadContext) void {
         const tt_move = if (ctx.tbl.probe(ctx.state.zobrist_hash)) |entry| entry.best_move else null;
         const hint = pv_move orelse tt_move;
 
-        const result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history);
+        const result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
 
         if (result) |r| {
             ctx.best_move = r.move;
@@ -643,19 +689,17 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
     var moves = legalMoves(state, state.to_move);
     const num_moves = moves.len;
 
-    const actual_max_depth: u8 = blk: {
-        if (max_depth) |d| break :blk d else {
-            if (num_moves <= 30)
-                break :blk 11
-            else if (num_moves <= 38)
-                break :blk 10
-            else if (num_moves <= 46)
-                break :blk 9
-            else if (num_moves <= 54)
-                break :blk 8
-            else
-                break :blk 7;
-        }
+    const actual_max_depth: u8 = if (max_depth) |d| d else {
+        if (num_moves <= 30)
+            11
+        else if (num_moves <= 38)
+            10
+        else if (num_moves <= 46)
+            9
+        else if (num_moves <= 54)
+            8
+        else
+            7;
     };
 
     // std.debug.print(" Using adaptive max depth of {d} ({d} legal moves)\n", .{ actual_max_depth, num_moves });
@@ -684,6 +728,7 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
             .state = state.*,
             .killers = KillerTable{},
             .history = history,
+            .history_table = chez.evaluation.HistoryTable{},
             .thread_id = i,
             .tbl = &tbl,
             .shared = &shared,
@@ -764,6 +809,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
 
     var killers = KillerTable{};
     var history = PositionHistory.init();
+    var history_table = chez.evaluation.HistoryTable{};
     history.push(state.zobrist_hash);
 
     // Make a mutable copy for the search (make/unmake will restore it)
@@ -777,7 +823,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var sq_end: [2]u8 = undefined;
 
     for (1..max_depth + 1) |depth| {
-        const result = searchAtDepth(&mutable_state, @intCast(depth), &tbl, &killers, best_move, &history);
+        const result = searchAtDepth(&mutable_state, @intCast(depth), &tbl, &killers, best_move, &history, &history_table);
         if (result) |r| {
             best_move = r.move;
             best_score = r.score;
