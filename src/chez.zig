@@ -34,7 +34,15 @@ var keys_storage: ZobristKeys = undefined;
 
 fn initZobristKeys() void {
     var seed: u64 = undefined;
-    _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0); // catch @panic("getrandom failed");
+    const builtin = @import("builtin");
+    if (builtin.target.os.tag == .freestanding) {
+        // Fixed seed for WASM - deterministic behavior
+        seed = 0x4d595f5345454421;
+    } else if (builtin.target.os.tag == .linux) {
+        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
+    } else {
+        std.crypto.random.bytes(std.mem.asBytes(&seed));
+    }
     var rng = std.Random.DefaultPrng.init(seed);
     const random = rng.random();
 

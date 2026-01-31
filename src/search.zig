@@ -136,9 +136,27 @@ const TranspositionEntry = struct {
 // This allows atomic read/write without locks (Stockfish-style)
 // Word 1: hash XOR data (for validation)
 // Word 2: data (score:16, depth:8, flag:2, move_start:6, move_end:6, move_valid:1 = 39 bits)
+//
+// On 32-bit platforms (WASM), we use non-atomic access since search is single-threaded.
+const builtin = @import("builtin");
+const is_wasm = builtin.target.cpu.arch == .wasm32;
+
+const TTWord = if (is_wasm) struct {
+    raw: u64 = 0,
+    fn init(v: u64) @This() {
+        return .{ .raw = v };
+    }
+    fn load(self: *const @This(), _: std.builtin.AtomicOrder) u64 {
+        return self.raw;
+    }
+    fn store(self: *@This(), v: u64, _: std.builtin.AtomicOrder) void {
+        self.raw = v;
+    }
+} else Atomic(u64);
+
 const PackedTTEntry = struct {
-    key: Atomic(u64) = Atomic(u64).init(0),
-    data: Atomic(u64) = Atomic(u64).init(0),
+    key: TTWord = TTWord.init(0),
+    data: TTWord = TTWord.init(0),
 
     fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) struct { key: u64, data: u64 } {
         // Pack data into 64 bits:
@@ -209,7 +227,7 @@ const TranspositionTable = struct {
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
-        const idx = hash & tt_mask;
+        const idx: usize = @intCast(hash & tt_mask);
         const entry = &self.entries[idx];
 
         // Lock-free read with atomic loads
@@ -220,7 +238,7 @@ const TranspositionTable = struct {
     }
 
     fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) void {
-        const idx = hash & tt_mask;
+        const idx: usize = @intCast(hash & tt_mask);
         const entry = &self.entries[idx];
 
         // Check replacement policy: only replace if new depth >= existing

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chez Chess Engine</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Chez Paul</h1>
+      </header>
+
+      <main>
+        <div class="game-area">
+          <div class="board-container">
+            <div class="board" id="board"></div>
+            <div class="file-labels">
+              <span>a</span><span>b</span><span>c</span><span>d</span
+              ><span>e</span><span>f</span><span>g</span><span>h</span>
+            </div>
+          </div>
+          <div class="rank-labels">
+            <span>8</span><span>7</span><span>6</span><span>5</span
+            ><span>4</span><span>3</span><span>2</span><span>1</span>
+          </div>
+        </div>
+
+        <aside class="info-panel">
+          <div class="status" id="status">Loading...</div>
+
+          <div class="game-info">
+            <div class="info-row">
+              <span class="label">Move:</span>
+              <span id="move-number">1</span>
+            </div>
+            <div class="info-row">
+              <span class="label">Turn:</span>
+              <span id="turn">White</span>
+            </div>
+          </div>
+
+          <div class="controls">
+            <div class="control-row">
+              <label for="depth">Engine Depth:</label>
+              <select id="depth">
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5" selected>5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+                <option value="9">9</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <label for="player-color">Play as:</label>
+              <select id="player-color">
+                <option value="white" selected>White</option>
+                <option value="black">Black</option>
+              </select>
+            </div>
+            <button id="new-game" class="btn">New Game</button>
+          </div>
+
+          <div class="move-history">
+            <h3>Move History</h3>
+            <div id="history" class="history-list"></div>
+          </div>
+        </aside>
+      </main>
+
+      <!-- Promotion modal -->
+      <div class="modal" id="promotion-modal">
+        <div class="modal-content">
+          <h3>Promote pawn to:</h3>
+          <div class="promotion-choices">
+            <button class="promo-btn" data-piece="4">&#9813;</button>
+            <button class="promo-btn" data-piece="3">&#9814;</button>
+            <button class="promo-btn" data-piece="2">&#9815;</button>
+            <button class="promo-btn" data-piece="1">&#9816;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

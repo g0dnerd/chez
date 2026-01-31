@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez.zig");
@@ -275,7 +276,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
             // Use traditional chez.search
-            if (try chez.search.chez.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
                 best_move = search_res.move;
                 best_score = search_res.score;
             }

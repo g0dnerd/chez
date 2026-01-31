@@ -550,7 +550,7 @@ pub fn hasNonPawnMaterial(self: *const State, c: Color) bool {
     return !color_pieces.bitAnd(non_pawn_pieces).isEmpty();
 }
 
-pub fn makeMove(self: *State, m: .Move, c: Color, p: Piece) UndoInfo {
+pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     const keys = chez.getZobristKeys();
     const start = m.start;
     const end = m.end;
