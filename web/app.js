@@ -1,14 +1,6 @@
 // Chez Chess Engine - Web Interface
 
-const PIECES = {
-  0: { white: "\u2659", black: "\u265F" }, // pawn
-  1: { white: "\u2658", black: "\u265E" }, // knight
-  2: { white: "\u2657", black: "\u265D" }, // bishop
-  3: { white: "\u2656", black: "\u265C" }, // rook
-  4: { white: "\u2655", black: "\u265B" }, // queen
-  5: { white: "\u2654", black: "\u265A" }, // king
-};
-
+const FULL_PIECE_NAMES = ["pawn", "knight", "bishop", "rook", "queen", "king"];
 const PIECE_NAMES = ["", "N", "B", "R", "Q", "K"];
 const FILES = "abcdefgh";
 
@@ -122,13 +114,9 @@ function renderBoard() {
       const piece = wasm.wasm_piece_at(square);
       if (piece !== 255) {
         const color = wasm.wasm_color_at(square);
-        if (color === 1) {
-          div.style = "color: black;";
-        } else {
-          div.style =
-            "text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;";
-        }
-        div.textContent = PIECES[piece]["black"];
+        const colorName = color === 0 ? "white" : "black";
+        const assetName = `${FULL_PIECE_NAMES[piece]}_${colorName}.svg`;
+        div.style = `background-image: url(${assetName})`;
       }
       div.addEventListener("click", () => onSquareClick(square));
       board.appendChild(div);

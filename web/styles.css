@@ -93,7 +93,7 @@ main {
 }
 
 .square.selected {
-  background: var(--highlight-selected) !important;
+  background: var(--highlight-selected);
 }
 
 .square.last-move {
