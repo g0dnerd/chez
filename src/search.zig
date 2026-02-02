@@ -579,9 +579,11 @@ pub const SearchResult = struct {
 };
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
-fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) ?SearchResult {
+// alpha_bound and beta_bound allow aspiration windows when not at full window
+fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable, alpha_bound: i32, beta_bound: i32) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
+    var alpha = alpha_bound;
 
     const to_move = state.to_move;
     var moves = legalMoves(state, to_move);
@@ -624,7 +626,18 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
             }
         }
 
-        const score = -negamax(state, depth - 1, 1, -beta_init, -alpha_init, tbl, killers, history, history_table);
+        var score: i32 = undefined;
+        if (i == 0) {
+            // First move: full window search
+            score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table);
+        } else {
+            // PVS: null window search first
+            score = -negamax(state, depth - 1, 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
+            // Re-search with full window if failed high
+            if (score > alpha and score < beta_bound) {
+                score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table);
+            }
+        }
 
         history.pop();
         state.unmakeMove(m, to_move, p, undo);
@@ -632,6 +645,12 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
         if (score > best_score) {
             best_move = m;
             best_score = score;
+        }
+        if (score > alpha) {
+            alpha = score;
+        }
+        if (alpha >= beta_bound) {
+            break; // Beta cutoff
         }
     }
 
@@ -646,11 +665,20 @@ fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *K
     }
 }
 
+// Search at a specific depth with full window
+fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) ?SearchResult {
+    return searchAtDepthWithBounds(state, depth, tbl, killers, pv_move, history, history_table, alpha_init, beta_init);
+}
+
+// Aspiration window initial size (centipawns)
+const aspiration_window: i32 = 25;
+
 // Worker thread function for Lazy SMP
 // Each thread does full iterative deepening independently
 // Threads diverge naturally due to TT interactions and timing
 fn workerThread(ctx: *ThreadContext) void {
     var pv_move: ?Move = null;
+    var prev_score: i32 = 0;
 
     // Each thread does iterative deepening up to max_depth
     for (1..ctx.shared.max_depth + 1) |depth_usize| {
@@ -662,13 +690,53 @@ fn workerThread(ctx: *ThreadContext) void {
         const tt_move = if (ctx.tbl.probe(ctx.state.zobrist_hash)) |entry| entry.best_move else null;
         const hint = pv_move orelse tt_move;
 
-        const result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
+        var result: ?SearchResult = null;
+
+        // Use aspiration windows after depth 1
+        if (depth > 1) {
+            var window: i32 = aspiration_window;
+            var alpha = prev_score - window;
+            var beta = prev_score + window;
+            var attempts: u8 = 0;
+
+            while (attempts < 3) : (attempts += 1) {
+                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, alpha, beta);
+
+                if (result) |r| {
+                    if (r.score <= alpha) {
+                        // Fail low: widen alpha
+                        window *= 4;
+                        alpha = prev_score - window;
+                    } else if (r.score >= beta) {
+                        // Fail high: widen beta
+                        window *= 4;
+                        beta = prev_score + window;
+                    } else {
+                        // Score within window, we're done
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // If still failing after 3 attempts, do full window search
+            if (result) |r| {
+                if (r.score <= alpha or r.score >= beta) {
+                    result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
+                }
+            }
+        } else {
+            // Depth 1: always use full window
+            result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
+        }
 
         if (result) |r| {
             ctx.best_move = r.move;
             ctx.best_score = r.score;
             ctx.best_depth = depth;
             pv_move = r.move;
+            prev_score = r.score;
 
             // Early exit if checkmate found
             if (r.score >= checkmate_score - 100) {

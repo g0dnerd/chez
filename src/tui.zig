@@ -206,9 +206,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         const current_color = state.to_move;
+        var last_move: ?chez.Move = null;
         const moves = chez.movegen.legalMoves(&state, current_color);
 
-        try printLegalMoves(moves, stdout);
+        // try printLegalMoves(moves, stdout);
 
         if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
@@ -243,10 +244,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     return;
                 }
 
-                if (parseMove(move)) |user_move| {
-                    if (containsMove(&moves.moves, &user_move)) {
+                if (parseMove(move)) |*user_move| {
+                    if (containsMove(&moves.moves, user_move)) {
+                        last_move = user_move.*;
                         const piece = state.pieceAt(user_move.start).?;
-                        _ = state.makeMove(user_move, ~engine_color, piece);
+                        _ = state.makeMove(user_move.*, ~engine_color, piece);
                         history.push(state.zobrist_hash);
                         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
                         break;
@@ -265,7 +267,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try stdout.writeAll(" Thinking... ");
         try stdout.flush();
 
-        const start = try std.time.Instant.now();
+        // const start = try std.time.Instant.now();
 
         var best_move: ?chez.game.Move = null;
         var best_score: f64 = 0.0;
@@ -275,16 +277,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
             var move_buf: [16]u8 = undefined;
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
-            // Use traditional chez.search
-            if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            // FIXME: lul
+            if (state.fullmove_clock == 1 and last_move.?.eql(chez.Move{ .start = chez.Squares.e2, .end = chez.Squares.e4, .promotion_piece = null })) {
+                best_move = chez.Move{ .start = chez.Squares.e7, .end = chez.Squares.e5, .promotion_piece = null };
+                best_score = 69.420;
+            } else if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+                // Use traditional search
                 best_move = search_res.move;
                 best_score = search_res.score;
             }
         }
 
         if (best_move) |move| {
-            const end = try std.time.Instant.now();
-            const elapsed: f64 = @floatFromInt(end.since(start));
+            // const end = try std.time.Instant.now();
+            // const elapsed: f64 = @floatFromInt(end.since(start));
             const piece = state.pieceAt(move.start).?;
 
             var sq_start: [2]u8 = undefined;
@@ -297,11 +303,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             try stdout.writeByte('\n');
             try writeHeader(stdout, &state, depth, num_threads, nn_mode);
-            if (nn_mode) {
-                try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
-            } else {
-                try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
-            }
+            // if (nn_mode) {
+            //     try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
+            // } else {
+            //     try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
+            // }
 
             if (chez.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {
@@ -321,15 +327,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 break;
             }
 
-            try stdout.writeAll(" Press enter to continue... ");
-            try stdout.flush();
-
-            _ = blk: {
-                while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
-                    break :blk line;
-                } else |err| return err;
-            };
-            stdin.toss(1);
+            // try stdout.writeAll(" Press enter to continue... ");
+            // try stdout.flush();
+            //
+            // _ = blk: {
+            //     while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
+            //         break :blk line;
+            //     } else |err| return err;
+            // };
+            // stdin.toss(1);
         } else {
             try stdout.writeAll(" Engine has no legal moves!\n");
             try stdout.flush();
