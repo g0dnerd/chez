@@ -374,6 +374,10 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
 // Futility pruning margins by depth
 const futility_margins = [_]i32{ 0, 200, 500 };
 
+// Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
+// More conservative: 5 + depth^2
+const lmp_thresholds = [4]u8{ 5, 6, 9, 14 }; // depth 0, 1, 2, 3
+
 fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) i32 {
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
@@ -474,14 +478,22 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 
         // Check if this is a capture before making the move (for LMR decision)
         const is_capture = state.pieceAt(m.end) != null;
+        const end_rank = m.end / 8;
+        const is_promotion = p == chez.Pieces.pawn and
+            ((end_rank == 7 and to_move == chez.Colors.white) or (end_rank == 0 and to_move == chez.Colors.black));
+        const is_killer = killers.isKiller(ply, m);
 
         // Futility pruning: skip quiet moves at shallow depths when hopeless
         if (can_futility_prune and !is_capture and i > 0) {
             // Don't prune promotions
-            const end_rank = m.end / 8;
-            const is_promotion = p == chez.Pieces.pawn and
-                ((end_rank == 7 and to_move == chez.Colors.white) or (end_rank == 0 and to_move == chez.Colors.black));
             if (!is_promotion) {
+                continue;
+            }
+        }
+
+        // Late Move Pruning: at shallow depths, skip late quiet moves
+        if (depth <= 3 and !in_check and i >= lmp_thresholds[depth]) {
+            if (!is_capture and !is_promotion and !is_killer) {
                 continue;
             }
         }
