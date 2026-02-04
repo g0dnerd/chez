@@ -117,6 +117,29 @@ const KillerTable = struct {
     }
 };
 
+// Countermove table: stores the move that refuted the opponent's previous move
+// Indexed by [from_square][to_square] of the previous move
+pub const CountermoveTable = struct {
+    table: [64][64]?Move = [_][64]?Move{[_]?Move{null} ** 64} ** 64,
+
+    pub fn store(self: *CountermoveTable, prev_move: Move, counter: Move) void {
+        self.table[prev_move.start][prev_move.end] = counter;
+    }
+
+    pub fn get(self: *const CountermoveTable, prev_move: Move) ?Move {
+        return self.table[prev_move.start][prev_move.end];
+    }
+
+    pub fn isCountermove(self: *const CountermoveTable, prev_move: ?Move, m: Move) bool {
+        if (prev_move) |pm| {
+            if (self.table[pm.start][pm.end]) |cm| {
+                return cm.start == m.start and cm.end == m.end;
+            }
+        }
+        return false;
+    }
+};
+
 const Flag = enum(u2) {
     empty = 0,
     exact = 1,
@@ -268,6 +291,7 @@ const ThreadContext = struct {
     killers: KillerTable,
     history: PositionHistory,
     history_table: chez.evaluation.HistoryTable,
+    countermoves: CountermoveTable,
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
@@ -378,7 +402,7 @@ const futility_margins = [_]i32{ 0, 200, 500 };
 // More conservative: 5 + depth^2
 const lmp_thresholds = [4]u8{ 5, 6, 9, 14 }; // depth 0, 1, 2, 3
 
-fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) i32 {
+fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable, countermoves: *CountermoveTable, prev_move: ?Move) i32 {
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -426,9 +450,8 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     // Futility pruning setup: at shallow depths, if static eval is far below alpha,
     // we can skip quiet moves that are unlikely to improve
     var can_futility_prune = false;
-    var static_eval: i32 = 0;
     if (depth <= 2 and !in_check) {
-        static_eval = chez.evaluation.evaluate(state);
+        const static_eval = chez.evaluation.evaluate(state);
         can_futility_prune = static_eval + futility_margins[depth] <= alpha;
     }
 
@@ -453,7 +476,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
-        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, tbl, killers, history, history_table);
+        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, tbl, killers, history, history_table, countermoves, null);
 
         // Unmake null move
         state.*.to_move = old_to_move;
@@ -466,9 +489,10 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         }
     }
 
-    // Order moves with killer and history heuristics
+    // Order moves with killer, countermove, and history heuristics
     const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?Move{ null, null };
-    moves.orderWithHistory(state, to_move, ply_killers, history_table);
+    const countermove = if (prev_move) |pm| countermoves.get(pm) else null;
+    moves.orderWithCountermove(state, to_move, ply_killers, history_table, countermove);
 
     var max_score: i32 = std.math.minInt(i32);
 
@@ -484,19 +508,12 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         const is_killer = killers.isKiller(ply, m);
 
         // Futility pruning: skip quiet moves at shallow depths when hopeless
-        if (can_futility_prune and !is_capture and i > 0) {
-            // Don't prune promotions
-            if (!is_promotion) {
-                continue;
-            }
-        }
+        // Note: we need to make the move first to check if it gives check
+        const should_futility_prune = can_futility_prune and !is_capture and i > 0 and !is_promotion;
 
-        // Late Move Pruning: at shallow depths, skip late quiet moves
-        if (depth <= 3 and !in_check and i >= lmp_thresholds[depth]) {
-            if (!is_capture and !is_promotion and !is_killer) {
-                continue;
-            }
-        }
+        // Late Move Pruning flag: at shallow depths, consider skipping late quiet moves
+        const should_lmp = depth <= 3 and !in_check and i >= lmp_thresholds[depth] and
+            !is_capture and !is_promotion and !is_killer;
 
         const undo = state.makeMove(m, to_move, p);
         history.push(state.zobrist_hash);
@@ -504,10 +521,18 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         // Check extension: extend search by 1 ply when giving check
         const gives_check = state.in_check != null;
 
-        // Skip futility pruned moves that give check (we want to search those)
-        // This is a second check after makeMove to see if it gives check
-        if (can_futility_prune and !is_capture and gives_check) {
-            // Continue searching - don't prune checking moves
+        // Apply pruning only if the move doesn't give check
+        if (!gives_check) {
+            if (should_futility_prune) {
+                history.pop();
+                state.unmakeMove(m, to_move, p, undo);
+                continue;
+            }
+            if (should_lmp) {
+                history.pop();
+                state.unmakeMove(m, to_move, p, undo);
+                continue;
+            }
         }
 
         const extension: u8 = if (gives_check) 1 else 0;
@@ -516,7 +541,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         var score: i32 = undefined;
         if (i == 0) {
             // First move: search with full window
-            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table);
+            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table, countermoves, m);
         } else {
             // Late Move Reductions (LMR):
             // Moves ordered later are likely worse, so search with reduced depth first.
@@ -536,16 +561,16 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
             }
 
             // PVS with LMR: search with reduced depth and null window
-            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
+            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
 
             // Re-search at full depth if reduced search improved alpha
             if (score > alpha and reduction > 0) {
-                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
+                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
             }
 
             // Re-search with full window if null window failed high
             if (score > alpha and score < beta) {
-                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table);
+                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table, countermoves, m);
             }
         }
 
@@ -562,10 +587,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         alpha = @max(alpha, score);
 
         if (alpha >= beta) {
-            // Beta cutoff - store killer and update history for quiet moves
+            // Beta cutoff - store killer, countermove, and update history for quiet moves
             if (!was_capture) {
                 killers.store(ply, m);
                 history_table.update(to_move, m.start, m.end, depth);
+                // Store countermove: this move refutes opponent's previous move
+                if (prev_move) |pm| {
+                    countermoves.store(pm, m);
+                }
             }
             break;
         }
@@ -592,7 +621,7 @@ pub const SearchResult = struct {
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
 // alpha_bound and beta_bound allow aspiration windows when not at full window
-fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable, alpha_bound: i32, beta_bound: i32) ?SearchResult {
+fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable, countermoves: *CountermoveTable, alpha_bound: i32, beta_bound: i32) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
     var alpha = alpha_bound;
@@ -641,13 +670,13 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
         var score: i32 = undefined;
         if (i == 0) {
             // First move: full window search
-            score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table);
+            score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table, countermoves, m);
         } else {
             // PVS: null window search first
-            score = -negamax(state, depth - 1, 1, -alpha - 1, -alpha, tbl, killers, history, history_table);
+            score = -negamax(state, depth - 1, 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
             // Re-search with full window if failed high
             if (score > alpha and score < beta_bound) {
-                score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table);
+                score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table, countermoves, m);
             }
         }
 
@@ -678,8 +707,8 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
 }
 
 // Search at a specific depth with full window
-fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable) ?SearchResult {
-    return searchAtDepthWithBounds(state, depth, tbl, killers, pv_move, history, history_table, alpha_init, beta_init);
+fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *chez.evaluation.HistoryTable, countermoves: *CountermoveTable) ?SearchResult {
+    return searchAtDepthWithBounds(state, depth, tbl, killers, pv_move, history, history_table, countermoves, alpha_init, beta_init);
 }
 
 // Aspiration window initial size (centipawns)
@@ -712,7 +741,7 @@ fn workerThread(ctx: *ThreadContext) void {
             var attempts: u8 = 0;
 
             while (attempts < 3) : (attempts += 1) {
-                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, alpha, beta);
+                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves, alpha, beta);
 
                 if (result) |r| {
                     if (r.score <= alpha) {
@@ -735,12 +764,12 @@ fn workerThread(ctx: *ThreadContext) void {
             // If still failing after 3 attempts, do full window search
             if (result) |r| {
                 if (r.score <= alpha or r.score >= beta) {
-                    result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
+                    result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves);
                 }
             }
         } else {
             // Depth 1: always use full window
-            result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table);
+            result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves);
         }
 
         if (result) |r| {
@@ -812,6 +841,7 @@ pub fn searchParallel(state: *const State, max_depth: ?u8, num_threads: usize, g
             .killers = KillerTable{},
             .history = history,
             .history_table = chez.evaluation.HistoryTable{},
+            .countermoves = CountermoveTable{},
             .thread_id = i,
             .tbl = &tbl,
             .shared = &shared,
@@ -893,6 +923,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var killers = KillerTable{};
     var history = PositionHistory.init();
     var history_table = chez.evaluation.HistoryTable{};
+    var countermoves = CountermoveTable{};
     history.push(state.zobrist_hash);
 
     // Make a mutable copy for the search (make/unmake will restore it)
@@ -906,7 +937,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var sq_end: [2]u8 = undefined;
 
     for (1..max_depth + 1) |depth| {
-        const result = searchAtDepth(&mutable_state, @intCast(depth), &tbl, &killers, best_move, &history, &history_table);
+        const result = searchAtDepth(&mutable_state, @intCast(depth), &tbl, &killers, best_move, &history, &history_table, &countermoves);
         if (result) |r| {
             best_move = r.move;
             best_score = r.score;

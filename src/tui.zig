@@ -278,10 +278,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
             // FIXME: lul
-            if (state.fullmove_clock == 1 and last_move.?.eql(chez.Move{ .start = chez.Squares.e2, .end = chez.Squares.e4, .promotion_piece = null })) {
-                best_move = chez.Move{ .start = chez.Squares.e7, .end = chez.Squares.e5, .promotion_piece = null };
-                best_score = 69.420;
-            } else if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            // if (state.fullmove_clock == 1 and last_move.?.eql(chez.Move{ .start = chez.Squares.e2, .end = chez.Squares.e4, .promotion_piece = null })) {
+            //     best_move = chez.Move{ .start = chez.Squares.e7, .end = chez.Squares.e5, .promotion_piece = null };
+            //     best_score = 69.420;
+            // } else
+            if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
                 // Use traditional search
                 best_move = search_res.move;
                 best_score = search_res.score;

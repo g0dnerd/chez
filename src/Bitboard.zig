@@ -50,30 +50,30 @@ pub fn next(self: *Bitboard) ?Square {
 }
 
 pub fn bitOr(self: *const Bitboard, rhs: anytype) Bitboard {
-    switch (@TypeOf(rhs)) {
-        Square => return Bitboard{ .bits = self.bits | @as(u64, 1) << rhs },
-        u64 => return Bitboard{ .bits = self.bits | rhs },
-        Bitboard => return Bitboard{ .bits = self.bits | rhs.bits },
+    return switch (@TypeOf(rhs)) {
+        Square => Bitboard{ .bits = self.bits | @as(u64, 1) << rhs },
+        u64 => Bitboard{ .bits = self.bits | rhs },
+        Bitboard => Bitboard{ .bits = self.bits | rhs.bits },
         else => unreachable,
-    }
+    };
 }
 
 pub fn bitAnd(self: *const Bitboard, rhs: anytype) Bitboard {
-    switch (@TypeOf(rhs)) {
-        Square => return Bitboard{ .bits = self.bits & @as(u64, 1) << rhs },
-        u64 => return Bitboard{ .bits = self.bits & rhs },
-        Bitboard => return Bitboard{ .bits = self.bits & rhs.bits },
+    return switch (@TypeOf(rhs)) {
+        Square => Bitboard{ .bits = self.bits & @as(u64, 1) << rhs },
+        u64 => Bitboard{ .bits = self.bits & rhs },
+        Bitboard => Bitboard{ .bits = self.bits & rhs.bits },
         else => unreachable,
-    }
+    };
 }
 
 pub fn bitXor(self: *const Bitboard, rhs: anytype) Bitboard {
-    switch (@TypeOf(rhs)) {
-        Square => return Bitboard{ .bits = self.bits ^ @as(u64, 1) << rhs },
-        u64 => return Bitboard{ .bits = self.bits ^ rhs },
-        Bitboard => return Bitboard{ .bits = self.bits ^ rhs.bits },
+    return switch (@TypeOf(rhs)) {
+        Square => Bitboard{ .bits = self.bits ^ @as(u64, 1) << rhs },
+        u64 => Bitboard{ .bits = self.bits ^ rhs },
+        Bitboard => Bitboard{ .bits = self.bits ^ rhs.bits },
         else => unreachable,
-    }
+    };
 }
 
 pub fn bitOrAssign(self: *Bitboard, rhs: anytype) void {

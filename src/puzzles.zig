@@ -72,7 +72,7 @@ test "puzzles" {
 
             // Engine's move
             if (i % 2 == 0) {
-                if (try chez.search.searchParallel(&state, 8, num_threads, &history)) |res| {
+                if (try chez.search.searchParallel(&state, 11, num_threads, &history)) |res| {
                     const eng_mv = res.move;
                     const is_move_correct = eng_mv.eql(parsed_move);
                     if (!is_move_correct) {

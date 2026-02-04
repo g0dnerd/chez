@@ -103,7 +103,7 @@ pub const knight_move_mask = [64]Bitboard{
     Bitboard{ .bits = 0x20400000000000 },
 };
 
-const king_move_mask = [64]Bitboard{
+pub const king_move_mask = [64]Bitboard{
     Bitboard{ .bits = 0x302 },
     Bitboard{ .bits = 0x705 },
     Bitboard{ .bits = 0xE0A },
@@ -184,6 +184,7 @@ pub const MoveList = struct {
         color: Color,
         killers: [2]?game.Move,
         history: ?*const evaluation.HistoryTable,
+        countermove: ?game.Move = null,
     };
 
     pub fn order(self: *MoveList, state: *const State, color: Color) void {
@@ -198,6 +199,11 @@ pub const MoveList = struct {
 
     pub fn orderWithHistory(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move, history: *const evaluation.HistoryTable) void {
         var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = history };
+        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
+    }
+
+    pub fn orderWithCountermove(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move, history: *const evaluation.HistoryTable, countermove: ?game.Move) void {
+        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = history, .countermove = countermove };
         std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
     }
 
@@ -911,4 +917,191 @@ test "en passant illegal when pinned" {
         }
     }
     try std.testing.expect(!found_en_passant);
+}
+
+// Static Exchange Evaluation (SEE)
+// Returns the material gain/loss from a capture sequence on a square
+// Positive = winning exchange, negative = losing exchange
+pub const see_piece_values = [6]i32{ 100, 320, 330, 500, 900, 20000 };
+
+pub fn staticExchangeEvaluation(state: *const State, m: game.Move) i32 {
+    const target_sq = m.end;
+    const attacker_sq = m.start;
+    const attacker_color = state.colorAt(attacker_sq) orelse return 0;
+    const attacker_piece = state.pieceAt(attacker_sq) orelse return 0;
+
+    // Get the initial captured piece value
+    var gain: [32]i32 = undefined;
+    var depth: usize = 0;
+
+    // Handle initial capture (including en passant)
+    const initial_victim = if (state.pieceAt(target_sq)) |p|
+        see_piece_values[p]
+    else if (attacker_piece == Pieces.pawn and state.en_passant == target_sq)
+        see_piece_values[Pieces.pawn]
+    else
+        return 0; // No capture
+
+    gain[depth] = initial_victim;
+
+    // Track occupied squares
+    var occupied = state.all_pieces;
+    occupied.bitAndAssign(Bitboard.fromSquare(attacker_sq).not());
+
+    // For en passant, also remove the captured pawn
+    if (attacker_piece == Pieces.pawn and state.en_passant == target_sq) {
+        const captured_pawn_sq: Square = if (attacker_color == Colors.white)
+            target_sq - 8
+        else
+            target_sq + 8;
+        occupied.bitAndAssign(Bitboard.fromSquare(captured_pawn_sq).not());
+    }
+
+    // Track the value of the piece on the target square
+    var piece_on_target = attacker_piece;
+
+    // Handle promotion - attacker becomes queen
+    if (attacker_piece == Pieces.pawn) {
+        const promo_rank: u6 = if (attacker_color == Colors.white) 7 else 0;
+        if (target_sq / 8 == promo_rank) {
+            piece_on_target = Pieces.queen;
+            gain[depth] += see_piece_values[Pieces.queen] - see_piece_values[Pieces.pawn];
+        }
+    }
+
+    var side_to_move = ~attacker_color;
+
+    // Simulate the exchange
+    while (depth < 31) {
+        // Find the least valuable attacker for side_to_move
+        const next_attacker = getLeastValuableAttacker(state, target_sq, side_to_move, occupied);
+        if (next_attacker == null) break;
+
+        depth += 1;
+
+        // Negamax: gain from this capture is victim value minus what opponent can gain
+        gain[depth] = see_piece_values[piece_on_target] - gain[depth - 1];
+
+        const next_sq = next_attacker.?.sq;
+        const next_piece = next_attacker.?.piece;
+
+        // Remove attacker from occupied
+        occupied.bitAndAssign(Bitboard.fromSquare(next_sq).not());
+
+        // Update piece on target
+        piece_on_target = next_piece;
+
+        // Handle promotion
+        if (next_piece == Pieces.pawn) {
+            const promo_rank: u6 = if (side_to_move == Colors.white) 7 else 0;
+            if (target_sq / 8 == promo_rank) {
+                piece_on_target = Pieces.queen;
+                gain[depth] += see_piece_values[Pieces.queen] - see_piece_values[Pieces.pawn];
+            }
+        }
+
+        side_to_move = ~side_to_move;
+    }
+
+    // Minimax the gain array (from the end, each side chooses optimally)
+    while (depth > 0) {
+        depth -= 1;
+        gain[depth] = -@max(-gain[depth], gain[depth + 1]);
+    }
+
+    return gain[0];
+}
+
+const AttackerInfo = struct {
+    sq: Square,
+    piece: Piece,
+};
+
+fn getLeastValuableAttacker(state: *const State, target_sq: Square, color: Color, occupied: Bitboard) ?AttackerInfo {
+    const color_pieces = state.colorBitboard(color).bitAnd(occupied);
+
+    // Check pawns first (least valuable)
+    var pawn_attackers = pawnAttacks(target_sq, ~color).bitAnd(state.pieceBitboard(Pieces.pawn)).bitAnd(color_pieces);
+    if (pawn_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.pawn };
+    }
+
+    // Knights
+    var knight_attackers = knight_move_mask[target_sq].bitAnd(state.pieceBitboard(Pieces.knight)).bitAnd(color_pieces);
+    if (knight_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.knight };
+    }
+
+    // Bishops (and diagonal queens)
+    const bishop_attacks = sliderMovesWithOccupancy(target_sq, Pieces.bishop, occupied);
+    var bishop_attackers = bishop_attacks.bitAnd(state.pieceBitboard(Pieces.bishop)).bitAnd(color_pieces);
+    if (bishop_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.bishop };
+    }
+
+    // Rooks (and orthogonal queens)
+    const rook_attacks = sliderMovesWithOccupancy(target_sq, Pieces.rook, occupied);
+    var rook_attackers = rook_attacks.bitAnd(state.pieceBitboard(Pieces.rook)).bitAnd(color_pieces);
+    if (rook_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.rook };
+    }
+
+    // Queens (check both diagonal and orthogonal)
+    const queen_attacks = bishop_attacks.bitOr(rook_attacks);
+    var queen_attackers = queen_attacks.bitAnd(state.pieceBitboard(Pieces.queen)).bitAnd(color_pieces);
+    if (queen_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.queen };
+    }
+
+    // King (only if no other attackers - king captures last)
+    var king_attackers = king_move_mask[target_sq].bitAnd(state.pieceBitboard(Pieces.king)).bitAnd(color_pieces);
+    if (king_attackers.next()) |sq| {
+        return .{ .sq = sq, .piece = Pieces.king };
+    }
+
+    return null;
+}
+
+// Slider moves with custom occupancy (for SEE x-ray attacks)
+fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) Bitboard {
+    return switch (p) {
+        Pieces.rook => blk: {
+            const mask = Bitboard{ .bits = magics.rook_magics[s].mask };
+            const blockers = mask.bitAnd(occupied);
+            break :blk Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], &blockers)] };
+        },
+        Pieces.bishop => blk: {
+            const mask = Bitboard{ .bits = magics.bishop_magics[s].mask };
+            const blockers = mask.bitAnd(occupied);
+            break :blk Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], &blockers)] };
+        },
+        else => unreachable,
+    };
+}
+
+test "SEE winning capture" {
+    // White pawn captures black pawn - positive exchange
+    const fen = "8/8/8/3p4/4P3/8/8/4K2k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const m = game.Move{ .start = Squares.e4, .end = Squares.d5 };
+    const score = staticExchangeEvaluation(&state, m);
+    try std.testing.expectEqual(@as(i32, 100), score); // Win a pawn
+}
+
+test "SEE queen takes defended pawn" {
+    // Queen takes pawn defended by pawn - bad capture
+    const fen = "8/8/3p4/2p5/1Q6/8/8/4K2k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const m = game.Move{ .start = Squares.b4, .end = Squares.c5 };
+    const score = staticExchangeEvaluation(&state, m);
+    try std.testing.expect(score < 0); // Queen for pawn is bad
+}
+
+test "SEE x-ray attack" {
+    // Rook takes rook, but there's another rook behind
+    const fen = "3r3r/8/8/8/8/8/3R4/3R1K1k w - - 0 1";
+    const state = try State.fromFen(fen);
+    const m = game.Move{ .start = Squares.d1, .end = Squares.d8 };
+    const score = staticExchangeEvaluation(&state, m);
+    try std.testing.expectEqual(@as(i32, 500), score); // Win the rook (x-ray from a1 rook)
 }
