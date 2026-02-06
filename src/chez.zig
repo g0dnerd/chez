@@ -2,77 +2,110 @@ const std = @import("std");
 
 pub const Bitboard = @import("Bitboard.zig");
 pub const State = @import("State.zig");
+pub const castling = @import("castling.zig");
 pub const evaluation = @import("evaluation.zig");
+pub const ffi = @import("ffi.zig");
 pub const game = @import("game.zig");
 pub const movegen = @import("movegen.zig");
+pub const piece = @import("piece.zig");
+pub const square = @import("square.zig");
 pub const precompute = @import("precompute.zig");
 pub const search = @import("search.zig");
 
-pub const GameResult = game.GameResult;
-pub const Squares = game.Squares;
-pub const Square = Squares.Square;
-pub const Pieces = game.Pieces;
-pub const Piece = Pieces.Piece;
-pub const Castling = game.Castling;
-pub const CastlingRights = Castling.CastlingRights;
-pub const Colors = game.Colors;
-pub const Color = Colors.Color;
-pub const Move = game.Move;
+pub const Piece = piece.Piece;
+pub const Square = square.Square;
 pub const MoveList = movegen.MoveList;
-
 pub const legalMoves = movegen.legalMoves;
 
-pub const ZobristKeys = struct {
-    pieces: [2][6][64]u64, // [color][piece_type][square]
-    side_to_move: u64, // XOR when black to move
-    castling: [16]u64, // One key per castling rights combination
-    en_passant: [8]u64, // One key per file (only file matters for en passant)
+pub const Move = struct {
+    start: Square,
+    end: Square,
+    promotion_piece: ?Piece = null,
+
+    pub fn initCMove(c: *const ffi.CMove) Move {
+        const promotion_piece: ?Piece = if (c.promotion_piece == 0)
+            null
+        else
+            @as(Piece, @intCast(c.promotion_piece));
+
+        return .{
+            .start = @intCast(c.start),
+            .end = @intCast(c.end),
+            .promotion_piece = promotion_piece,
+        };
+    }
+
+    pub fn toCMove(self: *const Move, c_move: *ffi.CMove) void {
+        const c_promotion_piece: u8 = if (self.promotion_piece) |p|
+            @as(u8, @intCast(p))
+        else
+            0;
+
+        c_move.*.start = self.start;
+        c_move.*.end = self.end;
+        c_move.*.promotion_piece = c_promotion_piece;
+    }
+
+    pub fn format(self: Move, w: *std.Io.Writer) !void {
+        var end_buf: [2]u8 = undefined;
+        var start_buf: [2]u8 = undefined;
+        square.toAlgebraic(self.start, &start_buf) catch {};
+        square.toAlgebraic(self.end, &end_buf) catch {};
+        if (self.promotion_piece) |p| {
+            try w.print("{s}{s}{c}", .{ start_buf, end_buf, piece.pieceLetter(p) });
+        } else {
+            try w.print("{s}{s}", .{ start_buf, end_buf });
+        }
+        try w.flush();
+    }
+
+    pub fn eql(self: Move, other: Move) bool {
+        return self.start == other.start and self.end == other.end and self.promotion_piece == other.promotion_piece;
+    }
 };
 
-var keys_once = std.once(initZobristKeys);
-var keys_storage: ZobristKeys = undefined;
+pub const Direction = enum {
+    horizontal,
+    vertical,
+    diagonal,
+    antiDiagonal,
+    none,
 
-fn initZobristKeys() void {
-    var seed: u64 = undefined;
-    const builtin = @import("builtin");
-    if (builtin.target.os.tag == .freestanding) {
-        // Fixed seed for WASM - deterministic behavior
-        seed = 0x4d595f5345454421;
-    } else if (builtin.target.os.tag == .linux) {
-        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
-    } else {
-        std.crypto.random.bytes(std.mem.asBytes(&seed));
-    }
-    var rng = std.Random.DefaultPrng.init(seed);
-    const random = rng.random();
+    pub fn fromSquares(from: Square, to: Square) Direction {
+        const from_file = from % 8;
+        const from_rank = from / 8;
+        const to_file = to % 8;
+        const to_rank = to / 8;
 
-    // Piece-square keys for each color
-    for (0..2) |color| {
-        for (0..6) |piece_type| {
-            for (0..64) |square| {
-                keys_storage.pieces[color][piece_type][square] = random.int(u64);
+        if (from_rank == to_rank) {
+            return Direction.horizontal;
+        } else if (from_file == to_file) {
+            return Direction.vertical;
+        } else if (square.absDiff(from_rank, to_rank) == square.absDiff(from_file, to_file)) {
+            const rank_diff = @as(i8, to_rank) - @as(i8, from_rank);
+            const file_diff = @as(i8, to_file) - @as(i8, from_file);
+
+            if (std.math.sign(rank_diff) == std.math.sign(file_diff)) {
+                return Direction.diagonal;
+            } else {
+                return Direction.antiDiagonal;
             }
+        } else {
+            return Direction.none;
         }
     }
+};
 
-    // Side to move key
-    keys_storage.side_to_move = random.int(u64);
+pub const GameResult = union(enum) {
+    checkmate: Color,
+    stalemate,
+    fiftyMoveRule,
+    threefoldRepetition,
+};
 
-    // Castling rights keys
-    for (0..16) |rights| {
-        keys_storage.castling[rights] = random.int(u64);
-    }
-
-    // En passant file keys
-    for (0..8) |file| {
-        keys_storage.en_passant[file] = random.int(u64);
-    }
-}
-
-pub fn getZobristKeys() *const ZobristKeys {
-    keys_once.call();
-    return &keys_storage;
-}
+pub const Color = u1;
+pub const white: Color = 0;
+pub const black: Color = 1;
 
 test {
     std.testing.refAllDecls(@This());

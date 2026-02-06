@@ -14,7 +14,7 @@ const Colors = chez.Colors;
 const Color = chez.Color;
 const Move = chez.Move;
 
-pub const State = @This();
+const State = @This();
 
 // Information needed to unmake a move
 pub const UndoInfo = struct {
@@ -862,6 +862,58 @@ pub fn toFen(self: *const State, buf: []u8) !u8 {
     i += @intCast(fm_slice.len);
 
     return i;
+}
+
+pub const ZobristKeys = struct {
+    pieces: [2][6][64]u64, // [color][piece_type][square]
+    side_to_move: u64, // XOR when black to move
+    castling: [16]u64, // One key per castling rights combination
+    en_passant: [8]u64, // One key per file (only file matters for en passant)
+};
+
+var keys_once = std.once(initZobristKeys);
+var keys_storage: ZobristKeys = undefined;
+
+fn initZobristKeys() void {
+    var seed: u64 = undefined;
+    const builtin = @import("builtin");
+    if (builtin.target.os.tag == .freestanding) {
+        // Fixed seed for WASM - deterministic behavior
+        seed = 0x4d595f5345454421;
+    } else if (builtin.target.os.tag == .linux) {
+        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
+    } else {
+        std.crypto.random.bytes(std.mem.asBytes(&seed));
+    }
+    var rng = std.Random.DefaultPrng.init(seed);
+    const random = rng.random();
+
+    // Piece-square keys for each color
+    for (0..2) |color| {
+        for (0..6) |piece_type| {
+            for (0..64) |square| {
+                keys_storage.pieces[color][piece_type][square] = random.int(u64);
+            }
+        }
+    }
+
+    // Side to move key
+    keys_storage.side_to_move = random.int(u64);
+
+    // Castling rights keys
+    for (0..16) |rights| {
+        keys_storage.castling[rights] = random.int(u64);
+    }
+
+    // En passant file keys
+    for (0..8) |file| {
+        keys_storage.en_passant[file] = random.int(u64);
+    }
+}
+
+pub fn getZobristKeys() *const ZobristKeys {
+    keys_once.call();
+    return &keys_storage;
 }
 
 test "piece at sanity" {
