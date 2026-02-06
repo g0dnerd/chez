@@ -25,7 +25,7 @@ fn blockersForSquare(s: Square, directions: *const SliderDirections) Bitboard {
         }
     }
 
-    return blockers.bitAnd(Bitboard.fromSquare(s).not());
+    return blockers.bitAnd(Bitboard.initSquare(s).not());
 }
 
 fn sliderMoves(s: Square, blockers: *const Bitboard, directions: *const SliderDirections) Bitboard {

@@ -35,138 +35,138 @@ pub const pawn_attack_mask = [2][8]u64{ [_]u64{
     0x40,
 } };
 
-pub const knight_move_mask = [64]Bitboard{
-    Bitboard{ .bits = 0x20400 },
-    Bitboard{ .bits = 0x50800 },
-    Bitboard{ .bits = 0xa1100 },
-    Bitboard{ .bits = 0x142200 },
-    Bitboard{ .bits = 0x284400 },
-    Bitboard{ .bits = 0x508800 },
-    Bitboard{ .bits = 0xa01000 },
-    Bitboard{ .bits = 0x402000 },
-    Bitboard{ .bits = 0x2040004 },
-    Bitboard{ .bits = 0x5080008 },
-    Bitboard{ .bits = 0xa110011 },
-    Bitboard{ .bits = 0x14220022 },
-    Bitboard{ .bits = 0x28440044 },
-    Bitboard{ .bits = 0x50880088 },
-    Bitboard{ .bits = 0xa0100010 },
-    Bitboard{ .bits = 0x40200020 },
-    Bitboard{ .bits = 0x204000402 },
-    Bitboard{ .bits = 0x508000805 },
-    Bitboard{ .bits = 0xa1100110a },
-    Bitboard{ .bits = 0x1422002214 },
-    Bitboard{ .bits = 0x2844004428 },
-    Bitboard{ .bits = 0x5088008850 },
-    Bitboard{ .bits = 0xa0100010a0 },
-    Bitboard{ .bits = 0x4020002040 },
-    Bitboard{ .bits = 0x20400040200 },
-    Bitboard{ .bits = 0x50800080500 },
-    Bitboard{ .bits = 0xa1100110a00 },
-    Bitboard{ .bits = 0x142200221400 },
-    Bitboard{ .bits = 0x284400442800 },
-    Bitboard{ .bits = 0x508800885000 },
-    Bitboard{ .bits = 0xa0100010a000 },
-    Bitboard{ .bits = 0x402000204000 },
-    Bitboard{ .bits = 0x2040004020000 },
-    Bitboard{ .bits = 0x5080008050000 },
-    Bitboard{ .bits = 0xa1100110a0000 },
-    Bitboard{ .bits = 0x14220022140000 },
-    Bitboard{ .bits = 0x28440044280000 },
-    Bitboard{ .bits = 0x50880088500000 },
-    Bitboard{ .bits = 0xa0100010a00000 },
-    Bitboard{ .bits = 0x40200020400000 },
-    Bitboard{ .bits = 0x204000402000000 },
-    Bitboard{ .bits = 0x508000805000000 },
-    Bitboard{ .bits = 0xa1100110a000000 },
-    Bitboard{ .bits = 0x1422002214000000 },
-    Bitboard{ .bits = 0x2844004428000000 },
-    Bitboard{ .bits = 0x5088008850000000 },
-    Bitboard{ .bits = 0xa0100010a0000000 },
-    Bitboard{ .bits = 0x4020002040000000 },
-    Bitboard{ .bits = 0x400040200000000 },
-    Bitboard{ .bits = 0x800080500000000 },
-    Bitboard{ .bits = 0x1100110a00000000 },
-    Bitboard{ .bits = 0x2200221400000000 },
-    Bitboard{ .bits = 0x4400442800000000 },
-    Bitboard{ .bits = 0x8800885000000000 },
-    Bitboard{ .bits = 0x100010a000000000 },
-    Bitboard{ .bits = 0x2000204000000000 },
-    Bitboard{ .bits = 0x4020000000000 },
-    Bitboard{ .bits = 0x8050000000000 },
-    Bitboard{ .bits = 0x110a0000000000 },
-    Bitboard{ .bits = 0x22140000000000 },
-    Bitboard{ .bits = 0x44280000000000 },
-    Bitboard{ .bits = 0x88500000000000 },
-    Bitboard{ .bits = 0x10a00000000000 },
-    Bitboard{ .bits = 0x20400000000000 },
+pub const knight_move_mask = [64]u64{
+    0x20400,
+    0x50800,
+    0xa1100,
+    0x142200,
+    0x284400,
+    0x508800,
+    0xa01000,
+    0x402000,
+    0x2040004,
+    0x5080008,
+    0xa110011,
+    0x14220022,
+    0x28440044,
+    0x50880088,
+    0xa0100010,
+    0x40200020,
+    0x204000402,
+    0x508000805,
+    0xa1100110a,
+    0x1422002214,
+    0x2844004428,
+    0x5088008850,
+    0xa0100010a0,
+    0x4020002040,
+    0x20400040200,
+    0x50800080500,
+    0xa1100110a00,
+    0x142200221400,
+    0x284400442800,
+    0x508800885000,
+    0xa0100010a000,
+    0x402000204000,
+    0x2040004020000,
+    0x5080008050000,
+    0xa1100110a0000,
+    0x14220022140000,
+    0x28440044280000,
+    0x50880088500000,
+    0xa0100010a00000,
+    0x40200020400000,
+    0x204000402000000,
+    0x508000805000000,
+    0xa1100110a000000,
+    0x1422002214000000,
+    0x2844004428000000,
+    0x5088008850000000,
+    0xa0100010a0000000,
+    0x4020002040000000,
+    0x400040200000000,
+    0x800080500000000,
+    0x1100110a00000000,
+    0x2200221400000000,
+    0x4400442800000000,
+    0x8800885000000000,
+    0x100010a000000000,
+    0x2000204000000000,
+    0x4020000000000,
+    0x8050000000000,
+    0x110a0000000000,
+    0x22140000000000,
+    0x44280000000000,
+    0x88500000000000,
+    0x10a00000000000,
+    0x20400000000000,
 };
 
-pub const king_move_mask = [64]Bitboard{
-    Bitboard{ .bits = 0x302 },
-    Bitboard{ .bits = 0x705 },
-    Bitboard{ .bits = 0xE0A },
-    Bitboard{ .bits = 0x1C14 },
-    Bitboard{ .bits = 0x3828 },
-    Bitboard{ .bits = 0x7050 },
-    Bitboard{ .bits = 0xE0A0 },
-    Bitboard{ .bits = 0xC040 },
-    Bitboard{ .bits = 0x30203 },
-    Bitboard{ .bits = 0x70507 },
-    Bitboard{ .bits = 0xE0A0E },
-    Bitboard{ .bits = 0x1C141C },
-    Bitboard{ .bits = 0x382838 },
-    Bitboard{ .bits = 0x705070 },
-    Bitboard{ .bits = 0xE0A0E0 },
-    Bitboard{ .bits = 0xC040C0 },
-    Bitboard{ .bits = 0x3020300 },
-    Bitboard{ .bits = 0x7050700 },
-    Bitboard{ .bits = 0xE0A0E00 },
-    Bitboard{ .bits = 0x1C141C00 },
-    Bitboard{ .bits = 0x38283800 },
-    Bitboard{ .bits = 0x70507000 },
-    Bitboard{ .bits = 0xE0A0E000 },
-    Bitboard{ .bits = 0xC040C000 },
-    Bitboard{ .bits = 0x302030000 },
-    Bitboard{ .bits = 0x705070000 },
-    Bitboard{ .bits = 0xE0A0E0000 },
-    Bitboard{ .bits = 0x1C141C0000 },
-    Bitboard{ .bits = 0x3828380000 },
-    Bitboard{ .bits = 0x7050700000 },
-    Bitboard{ .bits = 0xE0A0E00000 },
-    Bitboard{ .bits = 0xC040C00000 },
-    Bitboard{ .bits = 0x30203000000 },
-    Bitboard{ .bits = 0x70507000000 },
-    Bitboard{ .bits = 0xE0A0E000000 },
-    Bitboard{ .bits = 0x1C141C000000 },
-    Bitboard{ .bits = 0x382838000000 },
-    Bitboard{ .bits = 0x705070000000 },
-    Bitboard{ .bits = 0xE0A0E0000000 },
-    Bitboard{ .bits = 0xC040C0000000 },
-    Bitboard{ .bits = 0x3020300000000 },
-    Bitboard{ .bits = 0x7050700000000 },
-    Bitboard{ .bits = 0xE0A0E00000000 },
-    Bitboard{ .bits = 0x1C141C00000000 },
-    Bitboard{ .bits = 0x38283800000000 },
-    Bitboard{ .bits = 0x70507000000000 },
-    Bitboard{ .bits = 0xE0A0E000000000 },
-    Bitboard{ .bits = 0xC040C000000000 },
-    Bitboard{ .bits = 0x302030000000000 },
-    Bitboard{ .bits = 0x705070000000000 },
-    Bitboard{ .bits = 0xE0A0E0000000000 },
-    Bitboard{ .bits = 0x1C141C0000000000 },
-    Bitboard{ .bits = 0x3828380000000000 },
-    Bitboard{ .bits = 0x7050700000000000 },
-    Bitboard{ .bits = 0xE0A0E00000000000 },
-    Bitboard{ .bits = 0xC040C00000000000 },
-    Bitboard{ .bits = 0x203000000000000 },
-    Bitboard{ .bits = 0x507000000000000 },
-    Bitboard{ .bits = 0xA0E000000000000 },
-    Bitboard{ .bits = 0x141C000000000000 },
-    Bitboard{ .bits = 0x2838000000000000 },
-    Bitboard{ .bits = 0x5070000000000000 },
-    Bitboard{ .bits = 0xA0E0000000000000 },
-    Bitboard{ .bits = 0x40C0000000000000 },
+pub const king_move_mask = [64]u64{
+    0x302,
+    0x705,
+    0xE0A,
+    0x1C14,
+    0x3828,
+    0x7050,
+    0xE0A0,
+    0xC040,
+    0x30203,
+    0x70507,
+    0xE0A0E,
+    0x1C141C,
+    0x382838,
+    0x705070,
+    0xE0A0E0,
+    0xC040C0,
+    0x3020300,
+    0x7050700,
+    0xE0A0E00,
+    0x1C141C00,
+    0x38283800,
+    0x70507000,
+    0xE0A0E000,
+    0xC040C000,
+    0x302030000,
+    0x705070000,
+    0xE0A0E0000,
+    0x1C141C0000,
+    0x3828380000,
+    0x7050700000,
+    0xE0A0E00000,
+    0xC040C00000,
+    0x30203000000,
+    0x70507000000,
+    0xE0A0E000000,
+    0x1C141C000000,
+    0x382838000000,
+    0x705070000000,
+    0xE0A0E0000000,
+    0xC040C0000000,
+    0x3020300000000,
+    0x7050700000000,
+    0xE0A0E00000000,
+    0x1C141C00000000,
+    0x38283800000000,
+    0x70507000000000,
+    0xE0A0E000000000,
+    0xC040C000000000,
+    0x302030000000000,
+    0x705070000000000,
+    0xE0A0E0000000000,
+    0x1C141C0000000000,
+    0x3828380000000000,
+    0x7050700000000000,
+    0xE0A0E00000000000,
+    0xC040C00000000000,
+    0x203000000000000,
+    0x507000000000000,
+    0xA0E000000000000,
+    0x141C000000000000,
+    0x2838000000000000,
+    0x5070000000000000,
+    0xA0E0000000000000,
+    0x40C0000000000000,
 };
 
 pub const MoveList = struct {
@@ -224,10 +224,10 @@ pub const MoveList = struct {
     }
 };
 
-pub fn pawnAttacks(s: Square, c: Color) Bitboard {
+pub fn pawnAttacks(s: Square, c: Color) u64 {
     const rank = s / 8;
     if (rank == State.pawn_promo_rank[c]) {
-        return .empty;
+        return 0;
     }
 
     const file = s % 8;
@@ -237,13 +237,13 @@ pub fn pawnAttacks(s: Square, c: Color) Bitboard {
         Colors.black => rank - 1,
     };
 
-    return .{ .bits = pawn_attack_mask[c][file] << (8 * rank_idx) };
+    return pawn_attack_mask[c][file] << (8 * rank_idx);
 }
 
 // Possible pawn moves that do not check positional legality (e.g. whether or not your king would
 // be left in check after making a move).
-pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
-    var ret = Bitboard.empty;
+pub fn pawnMoves(state: *const State, s: Square, c: Color) u64 {
+    var ret: u64 = 0;
 
     const direction: i3 = switch (c) {
         Colors.white => 1,
@@ -254,12 +254,12 @@ pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
     var offs = square.trySquareOffset(s, 0, direction);
     if (offs) |o| {
         if (state.isSquareEmpty(o)) {
-            ret.bitOrAssign(o);
+            ret |= (@as(u64, 1) << o);
             const rank = s / 8;
             if ((rank == 1 and c == Colors.white) or (rank == 6 and c == Colors.black)) {
                 const two_ahead: u6 = @intCast(@as(i8, s) + 16 * @as(i8, direction));
                 if (state.isSquareEmpty(two_ahead)) {
-                    ret.bitOrAssign(two_ahead);
+                    ret |= (@as(u64, 1) << two_ahead);
                 }
             }
         }
@@ -269,72 +269,83 @@ pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
     offs = square.trySquareOffset(s, -1, direction);
     if (offs) |o| {
         if (!state.isSquareEmpty(o) or state.en_passant == offs) {
-            ret.bitOrAssign(o);
+            ret |= (@as(u64, 1) << o);
         }
     }
     offs = square.trySquareOffset(s, 1, direction);
     if (offs) |o| {
         if (!state.isSquareEmpty(o) or state.en_passant == offs) {
-            ret.bitOrAssign(o);
+            ret |= (@as(u64, 1) << o);
         }
     }
 
     return ret;
 }
 
-pub fn sliderMoves(state: *const State, s: Square, p: Piece) Bitboard {
+pub fn sliderMoves(state: *const State, s: Square, p: Piece) u64 {
     // Pass all_pieces directly - magicTableIndex applies the entry's mask internally,
     // so pre-masking in a separate blockersFromState was redundant.
     const all = state.all_pieces;
 
     return blk: switch (p) {
-        piece.rook => break :blk Bitboard{ .bits = moves.rook_moves[magics.rook_magics[s].magicTableIndex(all)] },
-        piece.bishop => break :blk Bitboard{ .bits = moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(all)] },
+        piece.rook => break :blk moves.rook_moves[magics.rook_magics[s].magicTableIndex(all)],
+        piece.bishop => break :blk moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(all)],
         piece.queen => {
-            const rookMoves = Bitboard{ .bits = moves.rook_moves[magics.rook_magics[s].magicTableIndex(all)] };
-            const bishopMoves = Bitboard{ .bits = moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(all)] };
-            break :blk rookMoves.bitOr(bishopMoves);
+            const rookMoves = moves.rook_moves[magics.rook_magics[s].magicTableIndex(all)];
+            const bishopMoves = moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(all)];
+            break :blk rookMoves | bishopMoves;
         },
         else => unreachable,
     };
 }
 
-pub fn kingMoves(state: *const State, s: Square, c: Color) Bitboard {
+pub fn kingMoves(state: *const State, s: Square, c: Color) u64 {
     var ret = king_move_mask[s];
 
     if (state.in_check == null) {
         const castling_rights = state.castling_rights;
         switch (c) {
             Colors.white => {
-                if (castling_rights & castling.white_kingside != 0 and state.isSquareEmpty(square.f1) and state.isSquareEmpty(square.g1) and state.colorBitboard(Colors.white).contains(square.h1) and state.pieceBitboard(piece.rook).contains(square.h1)) {
-                    ret.bitOrAssign(square.g1);
+                if (castling_rights & castling.white_kingside != 0 and
+                    state.isSquareEmpty(square.f1) and
+                    state.isSquareEmpty(square.g1) and
+                    state.colorBitboard(Colors.white).contains(square.h1) and
+                    state.pieceBitboard(piece.rook).contains(square.h1))
+                {
+                    ret |= (@as(u64, 1) << square.g1);
                 }
-                if (castling_rights & castling.white_queenside != 0 and state.isSquareEmpty(square.b1) and state.isSquareEmpty(square.c1) and state.isSquareEmpty(square.d1) and state.colorBitboard(Colors.white).contains(square.a1) and state.pieceBitboard(piece.rook).contains(square.a1)) {
-                    ret.bitOrAssign(square.c1);
+                if (castling_rights & castling.white_queenside != 0 and
+                    state.isSquareEmpty(square.b1) and
+                    state.isSquareEmpty(square.c1) and
+                    state.isSquareEmpty(square.d1) and
+                    state.colorBitboard(Colors.white).contains(square.a1) and
+                    state.pieceBitboard(piece.rook).contains(square.a1))
+                {
+                    ret |= (@as(u64, 1) << square.c1);
                 }
             },
             Colors.black => {
                 if (castling_rights & castling.black_kingside != 0 and state.isSquareEmpty(square.f8) and state.isSquareEmpty(square.g8) and state.colorBitboard(Colors.black).contains(square.h8) and state.pieceBitboard(piece.rook).contains(square.h8)) {
-                    ret.bitOrAssign(square.g8);
+                    ret |= (@as(u64, 1) << square.g8);
                 }
                 if (castling_rights & castling.black_queenside != 0 and state.isSquareEmpty(square.b8) and state.isSquareEmpty(square.c8) and state.isSquareEmpty(square.d8) and state.colorBitboard(Colors.black).contains(square.a8) and state.pieceBitboard(piece.rook).contains(square.a8)) {
-                    ret.bitOrAssign(square.c8);
+                    ret |= (@as(u64, 1) << square.c8);
                 }
             },
         }
     }
 
-    var opp_king_mask = state.pieceBitboard(piece.king).bitAnd(state.colorBitboard(~c));
-    const opp_king_square = opp_king_mask.trailingZeros();
-    opp_king_mask.bitOrAssign(king_move_mask[opp_king_square]);
+    var opp_king_mask = state.pieceBitboard(piece.king).bits & state.colorBitboard(~c).bits;
+    const opp_king_square: Square = @intCast(@ctz(opp_king_mask));
+    opp_king_mask |= king_move_mask[opp_king_square];
 
-    return ret.bitAnd(opp_king_mask.not());
+    return ret & ~opp_king_mask;
 }
 
-pub fn pseudolegalForPiece(state: *const State, s: Square, c: Color, p: Piece) Bitboard {
+pub fn pseudolegalForPiece(state: *const State, s: Square, c: Color, p: Piece) u64 {
     return switch (p) {
         // Keep only pawn attacks that point at an opposing piece
-        piece.pawn => pawnAttacks(s, c).bitAnd(state.colorBitboard(~c)).bitOr(pawnMoves(state, s, c)),
+        piece.pawn => pawnAttacks(s, c) & state.colorBitboard(~c).bits | pawnMoves(state, s, c),
         piece.knight => knight_move_mask[s],
         piece.bishop, piece.rook, piece.queen => sliderMoves(state, s, p),
         piece.king => kingMoves(state, s, c),
@@ -343,34 +354,33 @@ pub fn pseudolegalForPiece(state: *const State, s: Square, c: Color, p: Piece) B
 }
 
 pub fn isSquareAttackedBy(state: *const State, s: Square, by_color: Color) bool {
-    const attackers = state.colorBitboard(by_color);
+    const attackers = state.colorBitboard(by_color).bits;
 
-    const pawn_attackers = pawnAttacks(s, ~by_color).bitAnd(state.pieceBitboard(piece.pawn)).bitAnd(attackers);
-    if (!pawn_attackers.isEmpty()) return true;
+    const pawn_attackers = pawnAttacks(s, ~by_color) & state.pieceBitboard(piece.pawn).bits & attackers;
+    if (pawn_attackers != 0) return true;
 
-    const knight_attackers = knight_move_mask[s].bitAnd(state.pieceBitboard(piece.knight)).bitAnd(attackers);
-    if (!knight_attackers.isEmpty()) return true;
+    const knight_attackers = knight_move_mask[s] & state.pieceBitboard(piece.knight).bits & attackers;
+    if (knight_attackers != 0) return true;
 
     const king_square = state.pieceBitboard(piece.king).bitAnd(attackers).trailingZeros();
-    if (king_move_mask[king_square].contains(s)) return true;
+    if (Bitboard.contains_u64(king_move_mask[king_square], s)) return true;
 
     // Check slider attacks (bishops, rooks, queens)
-    const queens = state.pieceBitboard(piece.queen);
+    const queens = state.pieceBitboard(piece.queen).bits;
 
     const bishop_attacks = sliderMoves(state, s, piece.bishop);
-    const bishop_attackers = bishop_attacks.bitAnd(state.pieceBitboard(piece.bishop).bitOr(queens)).bitAnd(attackers);
-    if (!bishop_attackers.isEmpty()) return true;
+    const bishop_attackers = bishop_attacks & (state.pieceBitboard(piece.bishop).bits | queens) & attackers;
+    if (bishop_attackers != 0) return true;
 
     const rook_attacks = sliderMoves(state, s, piece.rook);
-    const rook_attackers = rook_attacks.bitAnd(state.pieceBitboard(piece.rook).bitOr(queens)).bitAnd(attackers);
-    if (!rook_attackers.isEmpty()) return true;
+    const rook_attackers = rook_attacks & (state.pieceBitboard(piece.rook).bits | queens) & attackers;
+    if (rook_attackers != 0) return true;
 
     return false;
 }
 
-pub fn movesForPiece(state: *const State, s: Square, c: Color, p: Piece) Bitboard {
-    const ret = pseudolegalForPiece(state, s, c, p);
-    return ret.bitAnd(state.colorBitboard(c).not());
+pub fn movesForPiece(state: *const State, s: Square, c: Color, p: Piece) u64 {
+    return pseudolegalForPiece(state, s, c, p) & ~state.colorBitboard(c).bits;
 }
 
 pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
@@ -381,7 +391,7 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
 
     while (pieces.next()) |s| {
         const p = state.pieceAt(s).?;
-        var piece_moves = movesForPiece(state, s, c, p);
+        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
         while (piece_moves.next()) |end| {
             const candidate_move = Move{ .start = s, .end = end };
@@ -418,7 +428,7 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
 
     while (pieces.next()) |s| {
         const p = state.pieceAt(s) orelse unreachable;
-        var piece_moves = movesForPiece(state, s, c, p);
+        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
         while (piece_moves.next()) |end| {
             var candidate_move = Move{ .start = s, .end = end };
@@ -474,7 +484,7 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
 
     while (pieces.next()) |s| {
         const p = state.pieceAt(s) orelse unreachable;
-        var piece_moves = movesForPiece(state, s, c, p);
+        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
         // Filter to only captures (landing on enemy piece) or promotions
         const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
@@ -631,7 +641,7 @@ fn enPassantExposesKing(state: *const State, m: Move, c: Color, king_square: Squ
         m.end + 8;
 
     // Temporarily remove both pawns and check for attacks
-    const all_pieces = state.all_pieces.bitAnd(Bitboard.fromSquare(m.start).not()).bitAnd(Bitboard.fromSquare(captured_pawn_square).not());
+    const all_pieces = state.all_pieces.bitAnd(Bitboard.initSquare(m.start).not()).bitAnd(Bitboard.initSquare(captured_pawn_square).not());
 
     // Check for enemy rooks/queens on the same rank
     const enemy_pieces = state.colorBitboard(~c);
@@ -653,30 +663,30 @@ fn enPassantExposesKing(state: *const State, m: Move, c: Color, king_square: Squ
 
 test "test get pawn attacks" {
     const atx_white = pawnAttacks(square.e2, Colors.white);
-    try std.testing.expectEqual(atx_white.bits, 0x280000);
+    try std.testing.expectEqual(atx_white, 0x280000);
 
     const atx_black = pawnAttacks(square.e7, Colors.black);
-    try std.testing.expectEqual(atx_black.bits, 0x280000000000);
+    try std.testing.expectEqual(atx_black, 0x280000000000);
 }
 
 test "test pawn moves" {
     const state = State.defaultPosition();
 
     const moves_e2 = pawnMoves(&state, square.e2, Colors.white);
-    try std.testing.expectEqual(moves_e2.bits, 0x10100000);
+    try std.testing.expectEqual(moves_e2, 0x10100000);
 
     const moves_e7 = pawnMoves(&state, square.e7, Colors.black);
-    try std.testing.expectEqual(moves_e7.bits, 0x101000000000);
+    try std.testing.expectEqual(moves_e7, 0x101000000000);
 }
 
 test "test slider moves" {
     const state = State.defaultPosition();
 
     const moves_bishop_c1 = sliderMoves(&state, square.c1, piece.bishop);
-    try std.testing.expectEqual(2560, moves_bishop_c1.bits);
+    try std.testing.expectEqual(2560, moves_bishop_c1);
 
     const moves_rook_h8 = sliderMoves(&state, square.h8, piece.rook);
-    try std.testing.expectEqual(0x4080000000000000, moves_rook_h8.bits);
+    try std.testing.expectEqual(0x4080000000000000, moves_rook_h8);
 }
 
 test "test legal moves from default" {
@@ -942,7 +952,7 @@ pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
 
     // Track occupied squares
     var occupied = state.all_pieces;
-    occupied.bitAndAssign(Bitboard.fromSquare(attacker_sq).not());
+    occupied.bits &= ~(@as(u64, 1) << attacker_sq);
 
     // For en passant, also remove the captured pawn
     if (attacker_piece == piece.pawn and state.en_passant == target_sq) {
@@ -950,7 +960,7 @@ pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
             target_sq - 8
         else
             target_sq + 8;
-        occupied.bitAndAssign(Bitboard.fromSquare(captured_pawn_sq).not());
+        occupied.bits &= ~(@as(u64, 1) << captured_pawn_sq);
     }
 
     // Track the value of the piece on the target square
@@ -982,7 +992,7 @@ pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
         const next_piece = next_attacker.?.piece;
 
         // Remove attacker from occupied
-        occupied.bitAndAssign(Bitboard.fromSquare(next_sq).not());
+        occupied.bits &= ~(@as(u64, 1) << next_sq);
 
         // Update piece on target
         piece_on_target = next_piece;
@@ -1014,43 +1024,43 @@ const AttackerInfo = struct {
 };
 
 fn getLeastValuableAttacker(state: *const State, target_sq: Square, color: Color, occupied: Bitboard) ?AttackerInfo {
-    const color_pieces = state.colorBitboard(color).bitAnd(occupied);
+    const color_pieces = state.colorBitboard(color).bits & occupied.bits;
 
     // Check pawns first (least valuable)
-    var pawn_attackers = pawnAttacks(target_sq, ~color).bitAnd(state.pieceBitboard(piece.pawn)).bitAnd(color_pieces);
+    var pawn_attackers = Bitboard{ .bits = pawnAttacks(target_sq, ~color) & state.pieceBitboard(piece.pawn).bits & color_pieces };
     if (pawn_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.pawn };
     }
 
     // Knights
-    var knight_attackers = knight_move_mask[target_sq].bitAnd(state.pieceBitboard(piece.knight)).bitAnd(color_pieces);
+    var knight_attackers = Bitboard{ .bits = knight_move_mask[target_sq] & state.pieceBitboard(piece.knight).bits & color_pieces };
     if (knight_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.knight };
     }
 
     // Bishops (and diagonal queens)
     const bishop_attacks = sliderMovesWithOccupancy(target_sq, piece.bishop, occupied);
-    var bishop_attackers = bishop_attacks.bitAnd(state.pieceBitboard(piece.bishop)).bitAnd(color_pieces);
+    var bishop_attackers = Bitboard{ .bits = bishop_attacks & state.pieceBitboard(piece.bishop).bits & color_pieces };
     if (bishop_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.bishop };
     }
 
     // Rooks (and orthogonal queens)
     const rook_attacks = sliderMovesWithOccupancy(target_sq, piece.rook, occupied);
-    var rook_attackers = rook_attacks.bitAnd(state.pieceBitboard(piece.rook)).bitAnd(color_pieces);
+    var rook_attackers = Bitboard{ .bits = rook_attacks & state.pieceBitboard(piece.rook).bits & color_pieces };
     if (rook_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.rook };
     }
 
     // Queens (check both diagonal and orthogonal)
-    const queen_attacks = bishop_attacks.bitOr(rook_attacks);
-    var queen_attackers = queen_attacks.bitAnd(state.pieceBitboard(piece.queen)).bitAnd(color_pieces);
+    const queen_attacks = bishop_attacks | rook_attacks;
+    var queen_attackers = Bitboard{ .bits = queen_attacks & state.pieceBitboard(piece.queen).bits & color_pieces };
     if (queen_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.queen };
     }
 
     // King (only if no other attackers - king captures last)
-    var king_attackers = king_move_mask[target_sq].bitAnd(state.pieceBitboard(piece.king)).bitAnd(color_pieces);
+    var king_attackers = Bitboard{ .bits = king_move_mask[target_sq] & state.pieceBitboard(piece.king).bits & color_pieces };
     if (king_attackers.next()) |sq| {
         return .{ .sq = sq, .piece = piece.king };
     }
@@ -1059,10 +1069,10 @@ fn getLeastValuableAttacker(state: *const State, target_sq: Square, color: Color
 }
 
 // Slider moves with custom occupancy (for SEE x-ray attacks)
-fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) Bitboard {
+fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) u64 {
     return switch (p) {
-        piece.rook => Bitboard{ .bits = moves.rook_moves[magics.rook_magics[s].magicTableIndex(occupied)] },
-        piece.bishop => Bitboard{ .bits = moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(occupied)] },
+        piece.rook => moves.rook_moves[magics.rook_magics[s].magicTableIndex(occupied)],
+        piece.bishop => moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(occupied)],
         else => unreachable,
     };
 }

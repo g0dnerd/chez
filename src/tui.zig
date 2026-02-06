@@ -82,7 +82,6 @@ const NNEngine = struct {
                 checkpoint,
                 "--simulations",
                 std.fmt.bufPrint(&sim_buf, "{d}", .{simulations}) catch "400",
-                    // "--debug",
             },
             .stdin = .pipe,
             .stdout = .pipe,
@@ -185,7 +184,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         nn_engine = try NNEngine.init(io, checkpoint, parsed_args.nn_simulations orelse 400);
     }
 
-    while (true) {
+    var undo_info: [2]engine.State.UndoInfo = undefined;
+    var undo_moves: [2]engine.Move = undefined;
+    var undo_pieces: [2]engine.piece.Piece = undefined;
+
+    outer: while (true) {
         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
 
         if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
@@ -210,8 +213,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var last_move: ?engine.Move = null;
         const moves = engine.movegen.legalMoves(&state, current_color);
 
-        // try printLegalMoves(moves, stdout);
-
         if (moves.len == 0) {
             try stdout.writeAll("No legal moves!\n");
             try stdout.flush();
@@ -220,7 +221,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         if (current_color != engine_color) {
             // Human's turn
-
             while (true) {
                 try stdout.writeAll(" Your turn: ");
                 try stdout.flush();
@@ -235,6 +235,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 if (move_raw.len == 0) {
                     engine_color = ~engine_color;
                     break;
+                } else if (move_raw.len == 1 and move_raw[0] == 'u') {
+                    // Undo move
+                    state.unmakeMove(undo_moves[0], state.to_move, undo_pieces[0], undo_info[0]);
+                    state.unmakeMove(undo_moves[1], ~state.to_move, undo_pieces[1], undo_info[1]);
+                    state.to_move = ~state.to_move;
+                    undo_moves = undefined;
+                    undo_pieces = undefined;
+                    undo_info = undefined;
+                    continue :outer;
                 }
 
                 const move = std.mem.trimEnd(u8, move_raw, &std.ascii.whitespace);
@@ -249,7 +258,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     if (containsMove(&moves.moves, user_move)) {
                         last_move = user_move.*;
                         const piece = state.pieceAt(user_move.start).?;
-                        _ = state.makeMove(user_move.*, ~engine_color, piece);
+                        const ui = state.makeMove(user_move.*, ~engine_color, piece);
+                        undo_info[0] = ui;
+                        undo_pieces[0] = piece;
+                        undo_moves[0] = user_move.*;
                         history.push(state.zobrist_hash);
                         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
                         break;
@@ -268,8 +280,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try stdout.writeAll(" Thinking... ");
         try stdout.flush();
 
-        // const start = try std.time.Instant.now();
-
         var best_move: ?engine.Move = null;
         var best_score: f64 = 0.0;
 
@@ -286,8 +296,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         if (best_move) |move| {
-            // const end = try std.time.Instant.now();
-            // const elapsed: f64 = @floatFromInt(end.since(start));
             const piece = state.pieceAt(move.start).?;
 
             var sq_start: [2]u8 = undefined;
@@ -295,7 +303,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try engine.square.toAlgebraic(move.start, &sq_start);
             try engine.square.toAlgebraic(move.end, &sq_end);
 
-            _ = state.makeMove(move, state.to_move, piece);
+            const ui = state.makeMove(move, state.to_move, piece);
+            undo_info[1] = ui;
+            undo_pieces[1] = piece;
+            undo_moves[1] = move;
             history.push(state.zobrist_hash);
 
             try stdout.writeByte('\n');
@@ -318,16 +329,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 try stdout.flush();
                 break;
             }
-
-            // try stdout.writeAll(" Press enter to continue... ");
-            // try stdout.flush();
-            //
-            // _ = blk: {
-            //     while (stdin_reader.interface.takeDelimiterExclusive('\n')) |line| {
-            //         break :blk line;
-            //     } else |err| return err;
-            // };
-            // stdin.toss(1);
         } else {
             try stdout.writeAll(" Engine has no legal moves!\n");
             try stdout.flush();

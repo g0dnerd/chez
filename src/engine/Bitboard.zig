@@ -10,12 +10,16 @@ bits: u64 = 0,
 
 pub const empty = Bitboard{ .bits = 0 };
 
-pub fn fromSquare(s: Square) Bitboard {
+pub fn initSquare(s: Square) Bitboard {
     return .{ .bits = @as(u64, 1) << s };
 }
 
 pub fn contains(self: *const Bitboard, s: Square) bool {
     return self.bits & @as(u64, 1) << s != 0;
+}
+
+pub fn contains_u64(self: u64, s: Square) bool {
+    return self & @as(u64, 1) << s != 0;
 }
 
 pub fn isEmpty(self: *const Bitboard) bool {
@@ -124,14 +128,14 @@ pub fn not(self: *const Bitboard) Bitboard {
 }
 
 test "bitboard contains sanity" {
-    const bb = Bitboard.fromSquare(square.e2);
+    const bb = Bitboard.initSquare(square.e2);
     try std.testing.expect(bb.contains(square.e2));
 }
 
 test "bitboard square bitwise sanity" {
     var bb1 = Bitboard.empty;
     bb1.bitOrAssign(square.e2);
-    const bb1_from_square = Bitboard.fromSquare(square.e2);
+    const bb1_from_square = Bitboard.initSquare(square.e2);
     try expectEqual(bb1.bits, 4096);
     try expectEqual(bb1, bb1_from_square);
 
@@ -141,10 +145,10 @@ test "bitboard square bitwise sanity" {
     try expectEqual(bb2.bits, 0);
     try expectEqual(bb2, bb2_from_square);
 
-    var bb3 = Bitboard.fromSquare(square.d2);
+    var bb3 = Bitboard.initSquare(square.d2);
     bb3.bitOrAssign(square.e2);
     bb3.bitXorAssign(square.d2);
-    const bb3_from_square = Bitboard.fromSquare(square.e2);
+    const bb3_from_square = Bitboard.initSquare(square.e2);
     try expectEqual(bb3.bits, 4096);
     try expectEqual(bb3, bb3_from_square);
 }

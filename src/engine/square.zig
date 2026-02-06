@@ -128,7 +128,7 @@ pub fn betweenSquares(from: Square, to: Square) Bitboard {
     }
 
     const ray = rayBetweenInclusive(from, to, direction);
-    return ray.bitAnd(Bitboard.fromSquare(from).not()).bitAnd(Bitboard.fromSquare(to).not());
+    return ray.bitAnd(Bitboard.initSquare(from).not()).bitAnd(Bitboard.initSquare(to).not());
 }
 
 pub fn rayBetweenInclusive(from: Square, to: Square, d: Direction) Bitboard {
