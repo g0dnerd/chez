@@ -1,6 +1,5 @@
-const Bitboard = @import("Bitboard.zig");
-const precompute = @import("precompute.zig");
-const MagicTableEntry = precompute.MagicTableEntry;
+const Bitboard = @import("../Bitboard.zig");
+const MagicTableEntry = @import("../engine.zig").MagicTableEntry;
 
 pub const rook_magics = [64]MagicTableEntry {
     MagicTableEntry {

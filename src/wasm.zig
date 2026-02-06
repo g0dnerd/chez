@@ -1,28 +1,22 @@
 // WASM interface for the Chez chess engine
 // Uses global state pattern - single game instance, no dynamic allocation needed
 
-const chez = @import("chez.zig");
-const State = chez.State;
-const Move = chez.Move;
-const MoveList = chez.MoveList;
-const Pieces = chez.Pieces;
-const Colors = chez.Colors;
-const search = chez.search;
+const engine = @import("chez.zig").engine;
 
 // Global game state
-var game_state: State = undefined;
-var move_list: MoveList = undefined;
+var game_state: engine.State = undefined;
+var move_list: engine.movegen.MoveList = undefined;
 
 // Initialize a new game at starting position
 export fn wasm_init_default() void {
-    game_state = State.defaultPosition();
+    game_state = engine.State.defaultPosition();
 }
 
 // Initialize from FEN string
 // Returns true on success, false on invalid FEN
 export fn wasm_init_fen(ptr: [*]const u8, len: usize) bool {
     const fen = ptr[0..len];
-    game_state = State.fromFen(fen) catch return false;
+    game_state = engine.State.fromFen(fen) catch return false;
     return true;
 }
 
@@ -31,7 +25,7 @@ export fn wasm_init_fen(ptr: [*]const u8, len: usize) bool {
 // Returns 255 if square is empty
 export fn wasm_piece_at(square: u8) u8 {
     if (square > 63) return 255;
-    const sq: chez.Square = @intCast(square);
+    const sq: engine.square.Square = @intCast(square);
     if (game_state.pieceAt(sq)) |piece| {
         return piece;
     }
@@ -42,7 +36,7 @@ export fn wasm_piece_at(square: u8) u8 {
 // Returns 0 for white, 1 for black, 255 if empty
 export fn wasm_color_at(square: u8) u8 {
     if (square > 63) return 255;
-    const sq: chez.Square = @intCast(square);
+    const sq: engine.square.Square = @intCast(square);
     if (game_state.colorAt(sq)) |color| {
         return color;
     }
@@ -57,7 +51,7 @@ export fn wasm_to_move() u8 {
 // Generate legal moves for current position
 // Returns the number of legal moves
 export fn wasm_generate_moves() u8 {
-    move_list = chez.legalMoves(&game_state, game_state.to_move);
+    move_list = engine.movegen.legalMoves(&game_state, game_state.to_move);
     return move_list.len;
 }
 
@@ -76,8 +70,8 @@ export fn wasm_get_move(index: u8) u32 {
 export fn wasm_make_move(start: u8, end: u8, promo: u8) bool {
     if (start > 63 or end > 63) return false;
 
-    const start_sq: chez.Square = @intCast(start);
-    const end_sq: chez.Square = @intCast(end);
+    const start_sq: engine.square.Square = @intCast(start);
+    const end_sq: engine.square.Square = @intCast(end);
 
     // Get the piece at the start square
     const piece = game_state.pieceAt(start_sq) orelse return false;
@@ -87,15 +81,15 @@ export fn wasm_make_move(start: u8, end: u8, promo: u8) bool {
     if (color != game_state.to_move) return false;
 
     // Construct the move
-    const promotion_piece: ?chez.Piece = if (promo == 0) null else @intCast(promo);
-    const move = Move{
+    const promotion_piece: ?engine.piece.Piece = if (promo == 0) null else @intCast(promo);
+    const move = engine.Move{
         .start = start_sq,
         .end = end_sq,
         .promotion_piece = promotion_piece,
     };
 
     // Verify move is legal
-    const legal_moves = chez.legalMoves(&game_state, game_state.to_move);
+    const legal_moves = engine.movegen.legalMoves(&game_state, game_state.to_move);
     var is_legal = false;
     for (0..legal_moves.len) |i| {
         if (legal_moves.moves[i].eql(move)) {
@@ -113,9 +107,9 @@ export fn wasm_make_move(start: u8, end: u8, promo: u8) bool {
 // Get game result
 // Returns: 0=ongoing, 1=white wins, 2=black wins, 3=draw
 export fn wasm_game_result() i32 {
-    const result = search.isGameOver(&game_state) orelse return 0;
+    const result = engine.search.isGameOver(&game_state) orelse return 0;
     return switch (result) {
-        .checkmate => |winner| if (winner == Colors.white) 1 else 2,
+        .checkmate => |winner| if (winner == engine.Colors.white) 1 else 2,
         .stalemate, .fiftyMoveRule, .threefoldRepetition => 3,
     };
 }
@@ -124,7 +118,7 @@ export fn wasm_game_result() i32 {
 // Returns packed int: (start << 16) | (end << 8) | promo
 // Returns 0 if no legal moves
 export fn wasm_get_best_move(depth: u8) u32 {
-    const result = search.searchSingleThreaded(&game_state, depth) catch return 0;
+    const result = engine.search.searchSingleThreaded(&game_state, depth) catch return 0;
     if (result) |r| {
         const m = r.move;
         const promo: u8 = if (m.promotion_piece) |p| p else 0;

@@ -1,13 +1,14 @@
 const std = @import("std");
 
-const chez = @import("chez.zig");
-const Bitboard = chez.Bitboard;
-const State = chez.State;
-const Colors = chez.Colors;
-const Color = chez.Color;
-const Pieces = chez.Pieces;
-const Move = chez.Move;
-const MoveList = chez.MoveList;
+const Bitboard = @import("Bitboard.zig");
+const State = @import("State.zig");
+const engine = @import("engine.zig");
+const Move = engine.Move;
+const movegen = @import("movegen.zig");
+const MoveList = movegen.MoveList;
+const Color = engine.Color;
+const Colors = engine.Colors;
+const piece = @import("piece.zig");
 
 // Phase weights for tapered evaluation (max phase = 24)
 const phase_weights = [6]i32{ 0, 1, 1, 2, 4, 0 }; // pawn, knight, bishop, rook, queen, king
@@ -326,7 +327,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
     {
         var pawns = our_pawns_bb;
         const pawn_count: i32 = @intCast(pawns.popCount());
-        score = score.add(piece_values[Pieces.pawn].mul(pawn_count));
+        score = score.add(piece_values[piece.pawn].mul(pawn_count));
 
         while (pawns.next()) |s| {
             const file: u6 = s % 8;
@@ -334,7 +335,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
             // PST
             const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            score = score.add(pst[Pieces.pawn][sq]);
+            score = score.add(pst[piece.pawn][sq]);
 
             // Connected pawn
             const connected = blk: {
@@ -404,10 +405,10 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
     // --- Knights: material + PST + mobility + outposts ---
     {
-        var knights = state.pieceBitboard(Pieces.knight).bitAnd(our_pieces);
+        var knights = state.pieceBitboard(piece.knight).bitAnd(our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
-        score = score.add(piece_values[Pieces.knight].mul(knight_count));
-        phase += knight_count * phase_weights[Pieces.knight];
+        score = score.add(piece_values[piece.knight].mul(knight_count));
+        phase += knight_count * phase_weights[piece.knight];
 
         while (knights.next()) |s| {
             const file: u3 = @intCast(s % 8);
@@ -415,12 +416,12 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
             // PST
             const sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - rank) * 8 + file) else s;
-            score = score.add(pst[Pieces.knight][sq]);
+            score = score.add(pst[piece.knight][sq]);
 
             // Mobility
-            const moves = chez.movegen.knight_move_mask[s].bitAnd(our_pieces_not);
+            const moves = movegen.knight_move_mask[s].bitAnd(our_pieces_not);
             const move_count: i32 = @intCast(moves.popCount());
-            score = score.add(mobility_bonus[Pieces.knight].mul(move_count));
+            score = score.add(mobility_bonus[piece.knight].mul(move_count));
 
             // Outpost check
             const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
@@ -465,10 +466,10 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
     // --- Bishops: material + PST + mobility + bishop pair ---
     {
-        var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(our_pieces);
+        var bishops = state.pieceBitboard(piece.bishop).bitAnd(our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
-        score = score.add(piece_values[Pieces.bishop].mul(bishop_count));
-        phase += bishop_count * phase_weights[Pieces.bishop];
+        score = score.add(piece_values[piece.bishop].mul(bishop_count));
+        phase += bishop_count * phase_weights[piece.bishop];
 
         if (bishop_count >= 2) {
             score = score.add(bishop_pair);
@@ -480,21 +481,21 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
             // PST
             const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            score = score.add(pst[Pieces.bishop][sq]);
+            score = score.add(pst[piece.bishop][sq]);
 
             // Mobility
-            const moves = chez.movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(our_pieces_not);
+            const moves = movegen.sliderMoves(state, s, piece.bishop).bitAnd(our_pieces_not);
             const move_count: i32 = @intCast(moves.popCount());
-            score = score.add(mobility_bonus[Pieces.bishop].mul(move_count));
+            score = score.add(mobility_bonus[piece.bishop].mul(move_count));
         }
     }
 
     // --- Rooks: material + PST + mobility + open file + 7th rank ---
     {
-        var rooks = state.pieceBitboard(Pieces.rook).bitAnd(our_pieces);
+        var rooks = state.pieceBitboard(piece.rook).bitAnd(our_pieces);
         const rook_count: i32 = @intCast(rooks.popCount());
-        score = score.add(piece_values[Pieces.rook].mul(rook_count));
-        phase += rook_count * phase_weights[Pieces.rook];
+        score = score.add(piece_values[piece.rook].mul(rook_count));
+        phase += rook_count * phase_weights[piece.rook];
 
         const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
 
@@ -504,12 +505,12 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
             // PST
             const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            score = score.add(pst[Pieces.rook][sq]);
+            score = score.add(pst[piece.rook][sq]);
 
             // Mobility
-            const moves = chez.movegen.sliderMoves(state, s, Pieces.rook).bitAnd(our_pieces_not);
+            const moves = movegen.sliderMoves(state, s, piece.rook).bitAnd(our_pieces_not);
             const move_count: i32 = @intCast(moves.popCount());
-            score = score.add(mobility_bonus[Pieces.rook].mul(move_count));
+            score = score.add(mobility_bonus[piece.rook].mul(move_count));
 
             // Open/semi-open file
             const fmask = file_masks[file];
@@ -530,29 +531,29 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces
 
     // --- Queens: material + PST ---
     {
-        var queens = state.pieceBitboard(Pieces.queen).bitAnd(our_pieces);
+        var queens = state.pieceBitboard(piece.queen).bitAnd(our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
-        score = score.add(piece_values[Pieces.queen].mul(queen_count));
-        phase += queen_count * phase_weights[Pieces.queen];
+        score = score.add(piece_values[piece.queen].mul(queen_count));
+        phase += queen_count * phase_weights[piece.queen];
 
         while (queens.next()) |s| {
             const rank: u6 = s / 8;
             const file: u6 = s % 8;
             const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            score = score.add(pst[Pieces.queen][sq]);
+            score = score.add(pst[piece.queen][sq]);
         }
     }
 
     // --- King: PST + king safety ---
     {
-        const king_bb = state.pieceBitboard(Pieces.king).bitAnd(our_pieces);
+        const king_bb = state.pieceBitboard(piece.king).bitAnd(our_pieces);
         const king_sq: u6 = @intCast(@ctz(king_bb.bits));
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
 
         // PST
         const pst_sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - king_rank) * 8 + king_file) else king_sq;
-        score = score.add(pst[Pieces.king][pst_sq]);
+        score = score.add(pst[piece.king][pst_sq]);
 
         // King safety: pawn shield (only when king on back ranks)
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
@@ -584,7 +585,7 @@ pub fn evaluate(state: *const State) i32 {
     // Extract bitboards once for both colors
     const our_pieces = state.colorBitboard(to_move);
     const opp_pieces = state.colorBitboard(opp);
-    const pawn_bb = state.pieceBitboard(Pieces.pawn);
+    const pawn_bb = state.pieceBitboard(piece.pawn);
     const our_pawns = pawn_bb.bitAnd(our_pieces);
     const opp_pawns = pawn_bb.bitAnd(opp_pieces);
 
@@ -632,7 +633,7 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
 
     // Promotion bonus
     const end_rank = m.end / 8;
-    if (ctx.state.pieceAt(m.start) == Pieces.pawn and
+    if (ctx.state.pieceAt(m.start) == piece.pawn and
         ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black)))
     {
         score += 5000;
@@ -659,7 +660,7 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
 
     // History heuristic for quiet moves (non-captures, non-promotions)
     if (ctx.state.pieceAt(m.end) == null and ctx.history != null) {
-        const is_promotion = ctx.state.pieceAt(m.start) == Pieces.pawn and
+        const is_promotion = ctx.state.pieceAt(m.start) == piece.pawn and
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
             score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 10);

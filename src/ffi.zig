@@ -2,11 +2,12 @@ const std = @import("std");
 const allocator = std.heap.smp_allocator;
 
 const chez = @import("chez.zig");
-const Colors = chez.Colors;
-const Castling = chez.Castling;
-const Pieces = chez.Pieces;
-const Move = chez.Move;
-const State = chez.State;
+const engine = chez.engine;
+const Colors = engine.Colors;
+const Move = engine.Move;
+const State = engine.State;
+const piece = engine.piece;
+const castling = engine.castling;
 
 pub const CMove = extern struct {
     start: u8,
@@ -107,7 +108,7 @@ export fn chez_clone(state: *const State) ?*State {
 
 // Write all legal moves for the state into the move list.
 export fn chez_legal_moves(state: *const State, c_moves: *CMoveList) void {
-    var moves = chez.legalMoves(state, state.to_move);
+    var moves = chez.engine.movegen.legalMoves(state, state.to_move);
     moves.toCMoves(c_moves);
 }
 
@@ -132,8 +133,8 @@ export fn chez_unmake_move(state: *State, c_move: *const CMove, c_undo: *const C
     // After makeMove, to_move was flipped. The color that made the move is the opponent of current.
     const color = ~state.to_move;
     // The piece that moved is now at the end square (unless it was a promotion)
-    const piece = if (undo.was_promotion) Pieces.pawn else state.mailbox[move.end].?;
-    state.unmakeMove(move, color, piece, undo);
+    const p = if (undo.was_promotion) piece.pawn else state.mailbox[move.end].?;
+    state.unmakeMove(move, color, p, undo);
 }
 
 // Return the piece at a square (0-5 for pieces, 0xFF for empty).
@@ -147,7 +148,7 @@ export fn chez_piece_at(state: *const State, square: u8) u8 {
 //   2 = black wins
 //   3 = draw
 export fn chez_game_result(state: *const State) i32 {
-    const res = chez.search.isGameOverWithHistory(state, null) orelse return 0;
+    const res = chez.engine.search.isGameOverWithHistory(state, null) orelse return 0;
     return switch (res) {
         .checkmate => |c| @as(i32, c) + 1,
         else => 3,
@@ -178,15 +179,15 @@ export fn chez_encode_position(state: *const State, buffer: [*]f32) void {
     const p2 = ~p1;
 
     // P1 pieces (planes 0-5: pawn, knight, bishop, rook, queen, king)
-    inline for (0..6) |piece| {
-        const bb = state.pieces[piece].bitAnd(state.colors[p1]);
-        bitboardToPlane(bb.bits, buffer + piece * 64, flip);
+    inline for (0..6) |p| {
+        const bb = state.pieces[p].bitAnd(state.colors[p1]);
+        bitboardToPlane(bb.bits, buffer + p * 64, flip);
     }
 
     // P2 pieces (planes 6-11)
-    inline for (0..6) |piece| {
-        const bb = state.pieces[piece].bitAnd(state.colors[p2]);
-        bitboardToPlane(bb.bits, buffer + (6 + piece) * 64, flip);
+    inline for (0..6) |p| {
+        const bb = state.pieces[p].bitAnd(state.colors[p2]);
+        bitboardToPlane(bb.bits, buffer + (6 + p) * 64, flip);
     }
 }
 
@@ -207,26 +208,26 @@ export fn chez_encode_meta(state: *const State, buffer: [*]f32) void {
 
     // Planes 2-3: P1 castling rights (kingside, queenside)
     const p1_kingside = if (p1 == Colors.white)
-        state.castling_rights & Castling.white_kingside != 0
+        state.castling_rights & castling.white_kingside != 0
     else
-        state.castling_rights & Castling.black_kingside != 0;
+        state.castling_rights & castling.black_kingside != 0;
     const p1_queenside = if (p1 == Colors.white)
-        state.castling_rights & Castling.white_queenside != 0
+        state.castling_rights & castling.white_queenside != 0
     else
-        state.castling_rights & Castling.black_queenside != 0;
+        state.castling_rights & castling.black_queenside != 0;
 
     if (p1_kingside) fillPlane(buffer + 2 * 64, 1.0);
     if (p1_queenside) fillPlane(buffer + 3 * 64, 1.0);
 
     // Planes 4-5: P2 castling rights (kingside, queenside)
     const p2_kingside = if (p2 == Colors.white)
-        state.castling_rights & Castling.white_kingside != 0
+        state.castling_rights & castling.white_kingside != 0
     else
-        state.castling_rights & Castling.black_kingside != 0;
+        state.castling_rights & castling.black_kingside != 0;
     const p2_queenside = if (p2 == Colors.white)
-        state.castling_rights & Castling.white_queenside != 0
+        state.castling_rights & castling.white_queenside != 0
     else
-        state.castling_rights & Castling.black_queenside != 0;
+        state.castling_rights & castling.black_queenside != 0;
 
     if (p2_kingside) fillPlane(buffer + 4 * 64, 1.0);
     if (p2_queenside) fillPlane(buffer + 5 * 64, 1.0);

@@ -1,5 +1,4 @@
-const precompute = @import("precompute.zig");
-const MagicTableEntry = precompute.MagicTableEntry;
+const MagicTableEntry = @import("../engine.zig").MagicTableEntry;
 
 pub const rook_magics = [64]MagicTableEntry{
     MagicTableEntry{ .mask = 0x000101010101017e, .magic = 0x4080004000166182, .shift = 52, .offset = 0 },

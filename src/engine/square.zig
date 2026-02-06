@@ -1,7 +1,6 @@
 const std = @import("std");
-const chez = @import("chez.zig");
-const Bitboard = chez.Bitboard;
-const Direction = chez.Direction;
+const Bitboard = @import("Bitboard.zig");
+const Direction = @import("engine.zig").Direction;
 
 pub const Square = u6;
 

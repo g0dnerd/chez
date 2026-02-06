@@ -2,20 +2,21 @@ const builtin = @import("builtin");
 const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez.zig");
+const engine = chez.engine;
 
-fn parseMove(input: []const u8) ?chez.game.Move {
+fn parseMove(input: []const u8) ?engine.Move {
     const trimmed = std.mem.trimEnd(u8, input, &std.ascii.whitespace);
     if (trimmed.len < 4) return null;
 
-    const start = chez.game.algebraicToSquare(trimmed[0..2]);
-    const end = chez.game.algebraicToSquare(trimmed[2..4]);
+    const start = engine.square.algebraicToSquare(trimmed[0..2]);
+    const end = engine.square.algebraicToSquare(trimmed[2..4]);
     const promotion_piece = blk: {
         if (trimmed.len == 5) {
             break :blk switch (trimmed[4]) {
-                'n' => chez.game.Pieces.knight,
-                'b' => chez.game.Pieces.bishop,
-                'r' => chez.game.Pieces.rook,
-                'q' => chez.game.Pieces.queen,
+                'n' => engine.piece.knight,
+                'b' => engine.piece.bishop,
+                'r' => engine.piece.rook,
+                'q' => engine.piece.queen,
                 else => unreachable,
             };
         } else {
@@ -34,7 +35,7 @@ fn parseMove(input: []const u8) ?chez.game.Move {
     };
 }
 
-fn printLegalMoves(m: chez.movegen.MoveList, w: *std.Io.Writer) !void {
+fn printLegalMoves(m: engine.movegen.MoveList, w: *std.Io.Writer) !void {
     for (0..m.len) |i| {
         const mv = m.moves[i];
         try w.print("{f}, ", .{mv});
@@ -43,7 +44,7 @@ fn printLegalMoves(m: chez.movegen.MoveList, w: *std.Io.Writer) !void {
     try w.flush();
 }
 
-fn containsMove(haystack: *const [256]chez.game.Move, needle: *const chez.game.Move) bool {
+fn containsMove(haystack: *const [256]engine.Move, needle: *const engine.Move) bool {
     for (haystack) |straw| {
         if (straw.start == needle.start and straw.end == needle.end and straw.promotion_piece == needle.promotion_piece) {
             return true;
@@ -100,7 +101,7 @@ const NNEngine = struct {
         _ = self.process.wait(io) catch {};
     }
 
-    fn getMove(self: *NNEngine, io: std.Io, state: *chez.State, buf: []u8) !?chez.game.Move {
+    fn getMove(self: *NNEngine, io: std.Io, state: *engine.State, buf: []u8) !?engine.Move {
         // Send FEN to engine (with newline to signal end of input)
         var fen_buf: [128]u8 = undefined;
         const fen_len = try state.toFen(&fen_buf);
@@ -117,7 +118,7 @@ const NNEngine = struct {
     }
 };
 
-fn writeHeader(stdout: *std.Io.Writer, state: *chez.State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
+fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
     try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
     try stdout.writeAll(" === Chez Paul ===\n");
     if (nn_mode) {
@@ -150,17 +151,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.writeAll("=== Chez Paul ===\n");
 
     var state = blk: {
-        if (parsed_args.fen) |fen| break :blk try chez.State.fromFen(fen) else break :blk chez.State.defaultPosition();
+        if (parsed_args.fen) |fen| break :blk try engine.State.fromFen(fen) else break :blk engine.State.defaultPosition();
     };
 
     // Initialize position history for repetition detection
-    var history = chez.search.PositionHistory.init();
+    var history = engine.search.PositionHistory.init();
     history.push(state.zobrist_hash);
 
     var engine_color = blk: {
         if (parsed_args.engine_color) |c| {
-            if (std.mem.eql(u8, c, "white")) break :blk chez.game.Colors.white;
-            if (std.mem.eql(u8, c, "black")) break :blk chez.game.Colors.black;
+            if (std.mem.eql(u8, c, "white")) break :blk engine.Colors.white;
+            if (std.mem.eql(u8, c, "black")) break :blk engine.Colors.black;
             return error.InvalidColor;
         } else break :blk state.to_move;
     };
@@ -187,7 +188,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     while (true) {
         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
 
-        if (chez.search.isGameOverWithHistory(&state, &history)) |res| {
+        if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
                 .checkmate => {
                     const winner = switch (res.checkmate) {
@@ -206,8 +207,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         const current_color = state.to_move;
-        var last_move: ?chez.Move = null;
-        const moves = chez.movegen.legalMoves(&state, current_color);
+        var last_move: ?engine.Move = null;
+        const moves = engine.movegen.legalMoves(&state, current_color);
 
         // try printLegalMoves(moves, stdout);
 
@@ -269,7 +270,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // const start = try std.time.Instant.now();
 
-        var best_move: ?chez.game.Move = null;
+        var best_move: ?engine.Move = null;
         var best_score: f64 = 0.0;
 
         if (nn_engine) |*eng| {
@@ -277,12 +278,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             var move_buf: [16]u8 = undefined;
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
-            // FIXME: lul
-            // if (state.fullmove_clock == 1 and last_move.?.eql(chez.Move{ .start = chez.Squares.e2, .end = chez.Squares.e4, .promotion_piece = null })) {
-            //     best_move = chez.Move{ .start = chez.Squares.e7, .end = chez.Squares.e5, .promotion_piece = null };
-            //     best_score = 69.420;
-            // } else
-            if (try chez.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            if (try engine.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
                 // Use traditional search
                 best_move = search_res.move;
                 best_score = search_res.score;
@@ -296,21 +292,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             var sq_start: [2]u8 = undefined;
             var sq_end: [2]u8 = undefined;
-            try chez.game.squareToAlgebraic(move.start, &sq_start);
-            try chez.game.squareToAlgebraic(move.end, &sq_end);
+            try engine.square.toAlgebraic(move.start, &sq_start);
+            try engine.square.toAlgebraic(move.end, &sq_end);
 
             _ = state.makeMove(move, state.to_move, piece);
             history.push(state.zobrist_hash);
 
             try stdout.writeByte('\n');
             try writeHeader(stdout, &state, depth, num_threads, nn_mode);
-            // if (nn_mode) {
-            //     try stdout.print(" Engine moved {s} from {s} to {s} (thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, elapsed / ns_per_s });
-            // } else {
-            //     try stdout.print(" Engine moved {s} from {s} to {s} (eval: {d:.2}, thought for {d:.2} seconds)\n", .{ chez.game.pieceName(piece), sq_start, sq_end, best_score, elapsed / ns_per_s });
-            // }
 
-            if (chez.search.isGameOverWithHistory(&state, &history)) |res| {
+            if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {
                     .checkmate => {
                         const winner = switch (res.checkmate) {

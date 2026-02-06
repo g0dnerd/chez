@@ -1,11 +1,11 @@
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
 
-const chez = @import("chez.zig");
-const Squares = chez.Squares;
-const Square = chez.Square;
+const square = @import("square.zig");
+const Square = square.Square;
 
 pub const Bitboard = @This();
+
 bits: u64 = 0,
 
 pub const empty = Bitboard{ .bits = 0 };
@@ -124,27 +124,27 @@ pub fn not(self: *const Bitboard) Bitboard {
 }
 
 test "bitboard contains sanity" {
-    const bb = Bitboard.fromSquare(Squares.e2);
-    try std.testing.expect(bb.contains(Squares.e2));
+    const bb = Bitboard.fromSquare(square.e2);
+    try std.testing.expect(bb.contains(square.e2));
 }
 
 test "bitboard square bitwise sanity" {
     var bb1 = Bitboard.empty;
-    bb1.bitOrAssign(Squares.e2);
-    const bb1_from_square = Bitboard.fromSquare(Squares.e2);
+    bb1.bitOrAssign(square.e2);
+    const bb1_from_square = Bitboard.fromSquare(square.e2);
     try expectEqual(bb1.bits, 4096);
     try expectEqual(bb1, bb1_from_square);
 
     var bb2 = Bitboard.empty;
-    bb2.bitAndAssign(Squares.e2);
+    bb2.bitAndAssign(square.e2);
     const bb2_from_square = Bitboard.empty;
     try expectEqual(bb2.bits, 0);
     try expectEqual(bb2, bb2_from_square);
 
-    var bb3 = Bitboard.fromSquare(Squares.d2);
-    bb3.bitOrAssign(Squares.e2);
-    bb3.bitXorAssign(Squares.d2);
-    const bb3_from_square = Bitboard.fromSquare(Squares.e2);
+    var bb3 = Bitboard.fromSquare(square.d2);
+    bb3.bitOrAssign(square.e2);
+    bb3.bitXorAssign(square.d2);
+    const bb3_from_square = Bitboard.fromSquare(square.e2);
     try expectEqual(bb3.bits, 4096);
     try expectEqual(bb3, bb3_from_square);
 }

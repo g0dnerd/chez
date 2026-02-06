@@ -1,5 +1,6 @@
 const std = @import("std");
-const chez = @import("chez.zig");
+const chez = @import("chez");
+const piece = chez.engine.piece;
 
 const puzzle_file = @embedFile("puzzles.json");
 
@@ -17,19 +18,19 @@ const Puzzle = struct {
     }
 };
 
-fn parseMove(mv: []const u8) ?chez.game.Move {
+fn parseMove(mv: []const u8) ?chez.engine.Move {
     std.debug.assert(mv.len > 3);
     std.debug.assert(mv.len < 6);
 
-    const start = chez.game.algebraicToSquare(mv[0..2]);
-    const end = chez.game.algebraicToSquare(mv[2..4]);
+    const start = chez.engine.square.algebraicToSquare(mv[0..2]);
+    const end = chez.engine.square.algebraicToSquare(mv[2..4]);
     const promotion_piece = blk: {
         if (mv.len == 5) {
             break :blk switch (mv[4]) {
-                'n' => chez.game.Pieces.knight,
-                'b' => chez.game.Pieces.bishop,
-                'r' => chez.game.Pieces.rook,
-                'q' => chez.game.Pieces.queen,
+                'n' => piece.knight,
+                'b' => piece.bishop,
+                'r' => piece.rook,
+                'q' => piece.queen,
                 else => unreachable,
             };
         } else {
@@ -59,8 +60,8 @@ test "puzzles" {
 
     const puzzles: []Puzzle = try std.json.parseFromSliceLeaky([]Puzzle, alloc, puzzle_file, .{});
     pz: for (puzzles, 0..) |p, p_i| {
-        var state = try chez.State.fromFen(p.fen);
-        var history = chez.search.PositionHistory.init();
+        var state = try chez.engine.State.fromFen(p.fen);
+        var history = chez.engine.search.PositionHistory.init();
         history.push(state.zobrist_hash);
 
         for (p.moves, 0..) |mv, i| {
@@ -68,11 +69,11 @@ test "puzzles" {
                 std.log.err("Unable to parse move {s} from puzzle.\n", .{mv});
                 return error.InvalidMove;
             };
-            const piece = state.mailbox[parsed_move.start].?;
+            const pc = state.mailbox[parsed_move.start].?;
 
             // Engine's move
             if (i % 2 == 0) {
-                if (try chez.search.searchParallel(&state, 11, num_threads, &history)) |res| {
+                if (try chez.engine.search.searchParallel(&state, 11, num_threads, &history)) |res| {
                     const eng_mv = res.move;
                     const is_move_correct = eng_mv.eql(parsed_move);
                     if (!is_move_correct) {
@@ -82,10 +83,10 @@ test "puzzles" {
                         );
                         continue :pz;
                     }
-                    _ = state.makeMove(eng_mv, state.to_move, piece);
+                    _ = state.makeMove(eng_mv, state.to_move, pc);
                 }
             } else {
-                _ = state.makeMove(parsed_move, state.to_move, piece);
+                _ = state.makeMove(parsed_move, state.to_move, pc);
             }
             history.push(state.zobrist_hash);
         }

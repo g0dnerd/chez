@@ -1,5 +1,5 @@
-const chez = @import("chez.zig");
-const Square = chez.Square;
+const square = @import("square.zig");
+const Square = square.Square;
 
 pub const CastlingRights = u4;
 
@@ -25,30 +25,30 @@ pub const castle_data: [2][2]CastleData = .{
     // White
     .{
         .{
-            .king_end = Square.g1,
-            .rook_from = Square.h1,
-            .rook_to = Square.f1,
+            .king_end = square.g1,
+            .rook_from = square.h1,
+            .rook_to = square.f1,
             .rights_bit = white_kingside,
         },
         .{
-            .king_end = Square.c1,
-            .rook_from = Square.a1,
-            .rook_to = Square.d1,
+            .king_end = square.c1,
+            .rook_from = square.a1,
+            .rook_to = square.d1,
             .rights_bit = white_queenside,
         },
     },
     // Black
     .{
         .{
-            .king_end = Square.g8,
-            .rook_from = Square.h8,
-            .rook_to = Square.f8,
+            .king_end = square.g8,
+            .rook_from = square.h8,
+            .rook_to = square.f8,
             .rights_bit = black_kingside,
         },
         .{
-            .king_end = Square.c8,
-            .rook_from = Square.a8,
-            .rook_to = Square.d8,
+            .king_end = square.c8,
+            .rook_from = square.a8,
+            .rook_to = square.d8,
             .rights_bit = black_queenside,
         },
     },
@@ -62,10 +62,10 @@ pub const king_castling_mask: [2]CastlingRights = .{
 pub const rook_castling_mask: [64]CastlingRights = blk: {
     var mask: [64]CastlingRights = @splat(all_legal);
 
-    mask[Square.a1] = ~white_queenside;
-    mask[Square.h1] = ~white_kingside;
-    mask[Square.a8] = ~black_queenside;
-    mask[Square.h8] = ~black_kingside;
+    mask[square.a1] = ~white_queenside;
+    mask[square.h1] = ~white_kingside;
+    mask[square.a8] = ~black_queenside;
+    mask[square.h8] = ~black_kingside;
 
     break :blk mask;
 };

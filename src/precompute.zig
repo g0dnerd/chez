@@ -1,14 +1,12 @@
 const std = @import("std");
 
-const chez = @import("chez.zig");
-const Bitboard = chez.Bitboard;
-const Squares = chez.Squares;
-const Square = chez.Square;
-const Slider = chez.game.Slider;
-const SliderDirections = Slider.SliderDirections;
-const trySquareOffset = chez.game.trySquareOffset;
-
-pub const MagicTableEntry = struct { magic: u64, mask: u64, shift: u6, offset: u32 };
+const engine = @import("engine/engine.zig");
+const Bitboard = engine.Bitboard;
+const piece = engine.piece;
+const SliderDirections = piece.SliderDirections;
+const square = engine.square;
+const Square = square.Square;
+const trySquareOffset = square.trySquareOffset;
 
 pub const MagicEntry = struct { magic: u64, mask: Bitboard, shift: u6 };
 
@@ -54,13 +52,6 @@ fn magicIndex(entry: *const MagicEntry, blockers: *const Bitboard) usize {
     return @intCast(hash >> entry.shift);
 }
 
-pub fn magicTableIndex(entry: *const MagicTableEntry, blockers: Bitboard) usize {
-    const blockers_masked = blockers.bits & entry.mask;
-    const hash = blockers_masked *% entry.magic;
-    const idx: usize = @intCast(hash >> entry.shift);
-    return @as(usize, entry.offset) + idx;
-}
-
 fn attemptMagics(alloc: std.mem.Allocator, directions: *const SliderDirections, s: Square, entry: *const MagicEntry) ![]Bitboard {
     const shift: u6 = @intCast(@as(u8, 64) - @as(u8, entry.shift));
 
@@ -71,14 +62,14 @@ fn attemptMagics(alloc: std.mem.Allocator, directions: *const SliderDirections, 
         const moves = sliderMoves(s, &blockers, directions);
         const potential_entry = &tbl[magicIndex(entry, &blockers)];
 
-        if (potential_entry.i.empty) {
+        if (potential_entry.isEmpty()) {
             potential_entry.* = moves;
         } else if (potential_entry.bits != moves.bits) {
             return error.TableFillError;
         }
 
         blockers.bits = (blockers.bits -% entry.mask.bits) & entry.mask.bits;
-        if (blockers.i.empty) {
+        if (blockers.isEmpty()) {
             break;
         }
     }
@@ -86,7 +77,13 @@ fn attemptMagics(alloc: std.mem.Allocator, directions: *const SliderDirections, 
     return tbl;
 }
 
-fn computeMagics(alloc: std.mem.Allocator, directions: *const SliderDirections, s: Square, shift_amt: u6, rng: *std.Random.DefaultPrng) struct { entry: MagicEntry, magics: []Bitboard } {
+fn computeMagics(
+    alloc: std.mem.Allocator,
+    directions: *const SliderDirections,
+    s: Square,
+    shift_amt: u6,
+    rng: *std.Random.DefaultPrng,
+) struct { entry: MagicEntry, magics: []Bitboard } {
     const blockers = blockersForSquare(s, directions);
     const shift: u6 = @intCast(@as(u8, 64) - @as(u8, shift_amt));
 
@@ -103,17 +100,16 @@ fn computeMagics(alloc: std.mem.Allocator, directions: *const SliderDirections, 
 fn precomputeMagics(alloc: std.mem.Allocator, rng: *std.Random.DefaultPrng) !void {
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const out_f = try std.Io.Dir.cwd().createFile(io, "src/magics.zig", .{});
+    const out_f = try std.Io.Dir.cwd().createFile(io, "src/engine/generated/magics.zig", .{});
 
     var writer_buf: [8192]u8 = undefined;
     var writer = out_f.writer(io, &writer_buf);
 
-    try writer.interface.writeAll("const precompute = @import(\"precompute.zig\");\n");
-    try writer.interface.writeAll("const MagicTableEntry = precompute.MagicTableEntry;\n\n");
+    try writer.interface.writeAll("const MagicTableEntry = @import(\"../engine.zig\").MagicTableEntry;\n\n");
     try writer.interface.flush();
 
     const piece_names = [2][]const u8{ "rook", "bishop" };
-    const sliders = [2]*const SliderDirections{ &Slider.rook_directions, &Slider.bishop_directions };
+    const sliders = [2]*const SliderDirections{ &piece.rook_directions, &piece.bishop_directions };
     for (0..2) |i| {
         const piece_name = piece_names[i];
         const slider = sliders[i];
@@ -145,7 +141,7 @@ fn precomputeMagics(alloc: std.mem.Allocator, rng: *std.Random.DefaultPrng) !voi
     try writer.interface.flush();
 }
 
-fn makeMoveTable(alloc: std.mem.Allocator, size: usize, directions: *const SliderDirections, magics: *const [64]MagicTableEntry) ![]Bitboard {
+fn makeMoveTable(alloc: std.mem.Allocator, size: usize, directions: *const SliderDirections, magics: *const [64]engine.MagicTableEntry) ![]Bitboard {
     var tbl = try alloc.alloc(Bitboard, size);
 
     for (magics, 0..) |entry, s| {
@@ -155,7 +151,7 @@ fn makeMoveTable(alloc: std.mem.Allocator, size: usize, directions: *const Slide
         while (true) {
             const s_u6: u6 = @intCast(s);
             const moves = sliderMoves(s_u6, &blockers, directions);
-            tbl[magicTableIndex(&entry, blockers)] = moves;
+            tbl[entry.magicTableIndex(blockers)] = moves;
 
             blockers.bits = (blockers.bits -% mask.bits) & mask.bits;
             if (blockers.isEmpty()) {
@@ -176,7 +172,7 @@ pub fn writeMoveTable(piece_name: []const u8, tbl: *const []Bitboard, writer: *s
     try writer.flush();
 }
 
-pub fn writeMagics(piece_name: []const u8, magics: *const [64]MagicTableEntry, writer: *std.Io.Writer) !void {
+pub fn writeMagics(piece_name: []const u8, magics: *const [64]engine.MagicTableEntry, writer: *std.Io.Writer) !void {
     try writer.writeByte('\n');
     try writer.print("pub const {s}_magics = [64]MagicTableEntry {{\n", .{piece_name});
     try writer.flush();
@@ -196,26 +192,34 @@ pub fn writeMagics(piece_name: []const u8, magics: *const [64]MagicTableEntry, w
 }
 
 pub fn main() !void {
+    const builtin = @import("builtin");
+
     const alloc = std.heap.page_allocator;
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
 
-    // try precomputeMagics(alloc, &rng);
+    var seed: u64 = undefined;
+    if (builtin.target.os.tag == .linux) {
+        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
+    } else {
+        std.crypto.random.bytes(std.mem.asBytes(&seed));
+    }
+    var rng = std.Random.DefaultPrng.init(seed);
+    try precomputeMagics(alloc, &rng);
 
-    const magics = @import("magics.zig");
+    const magics = @import("engine/generated/magics.zig");
 
-    var out_f = try std.Io.Dir.cwd().createFile(io, "src/moves.zig", .{});
+    var out_f = try std.Io.Dir.cwd().createFile(io, "src/engine/generated/moves.zig", .{});
     var writer_buf: [8192]u8 = undefined;
     var writer = out_f.writer(io, &writer_buf);
 
-    const rook_tbl = try makeMoveTable(alloc, magics.rook_table_size, &Slider.rook_directions, &magics.rook_magics);
-    const bishop_tbl = try makeMoveTable(alloc, magics.bishop_table_size, &Slider.bishop_directions, &magics.bishop_magics);
+    const rook_tbl = try makeMoveTable(alloc, magics.rook_table_size, &piece.rook_directions, &magics.rook_magics);
+    const bishop_tbl = try makeMoveTable(alloc, magics.bishop_table_size, &piece.bishop_directions, &magics.bishop_magics);
     defer alloc.free(rook_tbl);
     defer alloc.free(bishop_tbl);
 
-    try writer.interface.writeAll("const Bitboard = @import(\"Bitboard.zig\");\n");
-    try writer.interface.writeAll("const precompute = @import(\"precompute.zig\");\n");
-    try writer.interface.writeAll("const MagicTableEntry = precompute.MagicTableEntry;\n");
+    try writer.interface.writeAll("const Bitboard = @import(\"../Bitboard.zig\");\n");
+    try writer.interface.writeAll("const MagicTableEntry = @import(\"../engine.zig\").MagicTableEntry;\n");
 
     try writeMagics("rook", &magics.rook_magics, &writer.interface);
     try writeMagics("bishop", &magics.bishop_magics, &writer.interface);
@@ -224,6 +228,6 @@ pub fn main() !void {
 }
 
 test "test blockers for square" {
-    const blockers = blockersForSquare(Squares.e2, &Slider.rook_directions);
+    const blockers = blockersForSquare(square.e2, &piece.rook_directions);
     try std.testing.expectEqual(blockers.bits, 0x10101010106e00);
 }

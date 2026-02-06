@@ -51,16 +51,17 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_unit_tests.step);
 
     const puzzle_mod = b.addModule("puzzles", .{
-        .root_source_file = b.path("src/puzzles.zig"),
+        .root_source_file = b.path("tests/puzzles.zig"),
         .target = target,
         .optimize = .ReleaseFast,
     });
+    puzzle_mod.addImport("chez", chez_mod);
     const puzzle_test_step = b.step("test-puzzle", "Run puzzle tests");
     const puzzle_test_filter = [_][]const u8{"puzzles"};
     const puzzle_tests = b.addTest(.{
         .name = "puzzle_tests",
         .test_runner = .{
-            .path = b.path("src/test_runner.zig"),
+            .path = b.path("tests/test_runner.zig"),
             .mode = .simple,
         },
         .root_module = puzzle_mod,
