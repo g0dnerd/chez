@@ -172,6 +172,7 @@ pub const king_move_mask = [64]Bitboard{
 
 pub const MoveList = struct {
     moves: [256]game.Move = undefined,
+    scores: [256]i32 = undefined,
     len: u8 = 0,
 
     pub fn append(self: *MoveList, m: game.Move) void {
@@ -187,28 +188,33 @@ pub const MoveList = struct {
         countermove: ?game.Move = null,
     };
 
-    pub fn order(self: *MoveList, state: *const State, color: Color) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = .{ null, null }, .history = null };
-        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
+    // Pre-compute scores for all moves (one scoreMove call per move).
+    pub fn scoreAll(self: *MoveList, ctx: *const SortCtx) void {
+        for (0..self.len) |i| {
+            self.scores[i] = evaluation.scoreMove(ctx, self.moves[i]);
+        }
     }
 
-    pub fn orderWithKillers(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = null };
-        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
-    }
-
-    pub fn orderWithHistory(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move, history: *const evaluation.HistoryTable) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = history };
-        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
-    }
-
-    pub fn orderWithCountermove(self: *MoveList, state: *const State, color: Color, killers: [2]?game.Move, history: *const evaluation.HistoryTable, countermove: ?game.Move) void {
-        var ctx = SortCtx{ .state = state, .color = color, .killers = killers, .history = history, .countermove = countermove };
-        std.mem.sort(game.Move, self.moves[0..self.len], &ctx, cmpMove);
-    }
-
-    fn cmpMove(ctx: *const SortCtx, a: game.Move, b: game.Move) bool {
-        return evaluation.scoreMove(ctx, a) > evaluation.scoreMove(ctx, b);
+    // Incremental selection: find the best-scored move from index..len,
+    // swap it to position index. Used instead of a full sort so only
+    // the moves actually examined get ordered (alpha-beta cuts early).
+    pub fn pickNext(self: *MoveList, index: usize) game.Move {
+        var best_idx = index;
+        var best_score = self.scores[index];
+        for (index + 1..self.len) |i| {
+            if (self.scores[i] > best_score) {
+                best_score = self.scores[i];
+                best_idx = i;
+            }
+        }
+        if (best_idx != index) {
+            const tmp_move = self.moves[index];
+            self.moves[index] = self.moves[best_idx];
+            self.moves[best_idx] = tmp_move;
+            self.scores[index] = self.scores[best_idx];
+            self.scores[best_idx] = best_score;
+        }
+        return self.moves[index];
     }
 
     pub fn toCMoves(self: *const MoveList, c_moves: *ffi.CMoveList) void {
@@ -275,26 +281,17 @@ pub fn pawnMoves(state: *const State, s: Square, c: Color) Bitboard {
     return ret;
 }
 
-// Gets the blockers for a slider piece from precomputed magic tables.
-fn blockersFromState(state: *const State, s: Square, p: Piece) Bitboard {
-    const blockers = switch (p) {
-        Pieces.rook => Bitboard{ .bits = magics.rook_magics[s].mask },
-        Pieces.bishop => Bitboard{ .bits = magics.bishop_magics[s].mask },
-        Pieces.queen => Bitboard{ .bits = magics.rook_magics[s].mask | magics.bishop_magics[s].mask },
-        else => unreachable,
-    };
-    return blockers.bitAnd(state.all_pieces);
-}
-
 pub fn sliderMoves(state: *const State, s: Square, p: Piece) Bitboard {
-    const blockers = blockersFromState(state, s, p);
+    // Pass all_pieces directly - magicTableIndex applies the entry's mask internally,
+    // so pre-masking in a separate blockersFromState was redundant.
+    const all = state.all_pieces;
 
     return blk: switch (p) {
-        Pieces.rook => break :blk Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], &blockers)] },
-        Pieces.bishop => break :blk Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], &blockers)] },
+        Pieces.rook => break :blk Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], all)] },
+        Pieces.bishop => break :blk Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], all)] },
         Pieces.queen => {
-            const rookMoves = Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], &blockers)] };
-            const bishopMoves = Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], &blockers)] };
+            const rookMoves = Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], all)] };
+            const bishopMoves = Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], all)] };
             break :blk rookMoves.bitOr(bishopMoves);
         },
         else => unreachable,
@@ -354,19 +351,17 @@ pub fn isSquareAttackedBy(state: *const State, s: Square, by_color: Color) bool 
     if (!knight_attackers.isEmpty()) return true;
 
     const king_square = state.pieceBitboard(Pieces.king).bitAnd(attackers).trailingZeros();
-    if (game.absDiff(s, king_square) <= 1) {
-        const file_diff = game.absDiff(s % 8, king_square % 8);
-        const rank_diff = game.absDiff(s / 8, king_square / 8);
-        if (file_diff <= 1 and rank_diff <= 1) return true;
-    }
+    if (king_move_mask[king_square].contains(s)) return true;
 
     // Check slider attacks (bishops, rooks, queens)
+    const queens = state.pieceBitboard(Pieces.queen);
+
     const bishop_attacks = sliderMoves(state, s, Pieces.bishop);
-    const bishop_attackers = bishop_attacks.bitAnd((state.pieceBitboard(Pieces.bishop).bitOr(state.pieceBitboard(Pieces.queen)))).bitAnd(attackers);
+    const bishop_attackers = bishop_attacks.bitAnd(state.pieceBitboard(Pieces.bishop).bitOr(queens)).bitAnd(attackers);
     if (!bishop_attackers.isEmpty()) return true;
 
     const rook_attacks = sliderMoves(state, s, Pieces.rook);
-    const rook_attackers = rook_attacks.bitAnd((state.pieceBitboard(Pieces.rook).bitOr(state.pieceBitboard(Pieces.queen)))).bitAnd(attackers);
+    const rook_attackers = rook_attacks.bitAnd(state.pieceBitboard(Pieces.rook).bitOr(queens)).bitAnd(attackers);
     if (!rook_attackers.isEmpty()) return true;
 
     return false;
@@ -1065,16 +1060,8 @@ fn getLeastValuableAttacker(state: *const State, target_sq: Square, color: Color
 // Slider moves with custom occupancy (for SEE x-ray attacks)
 fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) Bitboard {
     return switch (p) {
-        Pieces.rook => blk: {
-            const mask = Bitboard{ .bits = magics.rook_magics[s].mask };
-            const blockers = mask.bitAnd(occupied);
-            break :blk Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], &blockers)] };
-        },
-        Pieces.bishop => blk: {
-            const mask = Bitboard{ .bits = magics.bishop_magics[s].mask };
-            const blockers = mask.bitAnd(occupied);
-            break :blk Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], &blockers)] };
-        },
+        Pieces.rook => Bitboard{ .bits = moves.rook_moves[magicTableIndex(&magics.rook_magics[s], occupied)] },
+        Pieces.bishop => Bitboard{ .bits = moves.bishop_moves[magicTableIndex(&magics.bishop_magics[s], occupied)] },
         else => unreachable,
     };
 }

@@ -318,11 +318,12 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
             return -checkmate_score;
         }
 
-        moves.order(state, to_move);
+        const ctx = chez.MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
+        moves.scoreAll(&ctx);
 
         var alpha = alpha_initial;
         for (0..moves.len) |i| {
-            const m = moves.moves[i];
+            const m = moves.pickNext(i);
             const p = state.pieceAt(m.start).?;
             const undo = state.makeMove(m, to_move, p);
 
@@ -363,10 +364,11 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
         return stand_pat;
     }
 
-    captures.order(state, to_move);
+    const cap_ctx = chez.MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
+    captures.scoreAll(&cap_ctx);
 
     for (0..captures.len) |i| {
-        const m = captures.moves[i];
+        const m = captures.pickNext(i);
         const p = state.pieceAt(m.start).?;
 
         // Delta pruning: skip captures that can't possibly improve alpha
@@ -431,6 +433,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     }
 
     const to_move = state.to_move;
+
+    // At depth 0, drop into quiescence search immediately.
+    // Quiescence handles checkmate detection when in check.
+    // This avoids generating a full MoveList at the most numerous nodes.
+    if (depth == 0) {
+        return quiescence(state, alpha, beta);
+    }
+
     var moves = legalMoves(state, to_move);
 
     if (moves.len == 0) {
@@ -439,10 +449,6 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         } else {
             return 0;
         }
-    }
-
-    if (depth == 0) {
-        return quiescence(state, alpha, beta);
     }
 
     const in_check = state.in_check == to_move;
@@ -492,12 +498,13 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     // Order moves with killer, countermove, and history heuristics
     const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?Move{ null, null };
     const countermove = if (prev_move) |pm| countermoves.get(pm) else null;
-    moves.orderWithCountermove(state, to_move, ply_killers, history_table, countermove);
+    const sort_ctx = chez.MoveList.SortCtx{ .state = state, .color = to_move, .killers = ply_killers, .history = history_table, .countermove = countermove };
+    moves.scoreAll(&sort_ctx);
 
     var max_score: i32 = std.math.minInt(i32);
 
     for (0..moves.len) |i| {
-        const m = moves.moves[i];
+        const m = moves.pickNext(i);
         const p = state.pieceAt(m.start).?;
 
         // Check if this is a capture before making the move (for LMR decision)
@@ -633,24 +640,22 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
         return null;
     }
 
-    moves.order(state, to_move);
+    const root_ctx = chez.MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
+    moves.scoreAll(&root_ctx);
 
-    // If we have a PV move from the previous iteration, try it first
+    // If we have a PV move from the previous iteration, give it max score
+    // so pickNext selects it first
     if (pv_move) |pv| {
-        // Find and move PV to front
         for (0..moves.len) |i| {
             if (moves.moves[i].start == pv.start and moves.moves[i].end == pv.end) {
-                // Swap PV move to front
-                const tmp = moves.moves[0];
-                moves.moves[0] = moves.moves[i];
-                moves.moves[i] = tmp;
+                moves.scores[i] = std.math.maxInt(i32);
                 break;
             }
         }
     }
 
     for (0..moves.len) |i| {
-        const m = moves.moves[i];
+        const m = moves.pickNext(i);
         const p = state.pieceAt(m.start).?;
         const undo = state.makeMove(m, to_move, p);
         history.push(state.zobrist_hash);

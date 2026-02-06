@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const chez = @import("chez.zig");
+const Bitboard = chez.Bitboard;
 const State = chez.State;
 const Colors = chez.Colors;
 const Color = chez.Color;
@@ -89,10 +90,8 @@ const bishop_pair = Score.init(30, 50); // More valuable in endgame
 const rook_open_file = Score.init(25, 15);
 const rook_semi_open = Score.init(15, 10);
 const rook_on_seventh = Score.init(20, 40); // Much stronger in endgame
-const rook_behind_passed = Score.init(15, 25); // Tarrasch rule
 const isolated_pawn = Score.init(-15, -20); // Worse in endgame
 const doubled_pawn = Score.init(-10, -20); // Worse in endgame
-const backward_pawn = Score.init(-10, -15); // Pawn that cannot safely advance
 const connected_pawn = Score.init(7, 10); // Pawns side-by-side or on adjacent files
 const protected_passed_pawn = Score.init(15, 30); // Passed pawn defended by another pawn
 const blocked_passed_pawn = Score.init(-10, -20); // Passed pawn blocked by a piece
@@ -100,12 +99,6 @@ const knight_outpost_defended = Score.init(25, 15); // Less relevant in endgame
 const knight_outpost_undefended = Score.init(10, 5);
 const pawn_shield = Score.init(15, 0); // Only matters in middlegame
 const pawn_shield_missing = Score.init(-10, 0);
-
-// King safety attack weights
-const king_attack_weights = [6]i32{ 0, 2, 2, 3, 5, 0 }; // pawn, knight, bishop, rook, queen, king
-const king_zone_attack_penalty = Score.init(-10, -2); // Per weighted attack unit
-const king_open_file_penalty = Score.init(-25, -10);
-const king_semi_open_file_penalty = Score.init(-15, -5);
 
 // File masks for rook on open file detection
 const file_masks: [8]u64 = blk: {
@@ -303,176 +296,9 @@ pub const pst = [6][64]Score{
     },
 };
 
-fn computePhase(state: *const State) i32 {
-    var phase: i32 = 0;
-    for ([_]Pieces.Piece{ Pieces.knight, Pieces.bishop, Pieces.rook, Pieces.queen }) |piece| {
-        const count: i32 = @intCast(state.pieceBitboard(piece).popCount());
-        phase += count * phase_weights[piece];
-    }
-    return @min(phase, max_phase);
-}
-
-fn materialScore(state: *const State, c: Color) Score {
-    var score = Score.zero;
-    const pieces = state.colorBitboard(c);
-
-    inline for (0..5) |piece_idx| {
-        const piece: Pieces.Piece = @intCast(piece_idx);
-        const count: i32 = @intCast(state.pieceBitboard(piece).bitAnd(pieces).popCount());
-        score = score.add(piece_values[piece].mul(count));
-    }
-
-    return score;
-}
-
-fn positionalScore(state: *const State, c: Color) Score {
-    var score = Score.zero;
-
-    var piece: Pieces.Piece = 0;
-    while (piece < 6) {
-        var pieces = state.colorBitboard(c).bitAnd(state.pieceBitboard(piece));
-        defer piece += 1;
-
-        while (pieces.next()) |s| {
-            const rank = s / 8;
-            const file = s % 8;
-            // Mirror square for black (flip rank)
-            const sq: u6 = if (c == Colors.black)
-                @intCast((7 - rank) * 8 + file)
-            else
-                s;
-
-            score = score.add(pst[piece][sq]);
-        }
-    }
-    return score;
-}
-
-fn pawnStructureScore(state: *const State, c: Color) Score {
-    var score = Score.zero;
-    const all_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
-    const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
-    const occupied = state.all_pieces.bits;
-    var pawns = all_pawns;
-
-    while (pawns.next()) |s| {
-        const file: u6 = s % 8;
-        const rank: u6 = s / 8;
-
-        // Connected pawn bonus: pawn on adjacent file, same rank or one rank behind
-        const connected = blk: {
-            var mask: u64 = 0;
-            // Same rank, adjacent files
-            if (file > 0) mask |= @as(u64, 1) << (s - 1);
-            if (file < 7) mask |= @as(u64, 1) << (s + 1);
-            // One rank behind (supporting), adjacent files
-            if (c == Colors.white and rank > 0) {
-                if (file > 0) mask |= @as(u64, 1) << (s - 9);
-                if (file < 7) mask |= @as(u64, 1) << (s - 7);
-            } else if (c == Colors.black and rank < 7) {
-                if (file > 0) mask |= @as(u64, 1) << (s + 7);
-                if (file < 7) mask |= @as(u64, 1) << (s + 9);
-            }
-            break :blk (all_pawns.bits & mask) != 0;
-        };
-        if (connected) {
-            score = score.add(connected_pawn);
-        }
-
-        // Passed pawn detection
-        const ahead_mask = computePassedPawnMask(c, file, rank);
-
-        if ((opp_pawns.bits & ahead_mask) == 0) {
-            // It's a passed pawn - use rank from pawn's perspective
-            const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
-            score = score.add(passed_pawn_bonus[passed_rank]);
-
-            // Protected passed pawn: defended by another pawn
-            const protected = blk: {
-                var def_mask: u64 = 0;
-                if (c == Colors.white and rank > 0) {
-                    if (file > 0) def_mask |= @as(u64, 1) << (s - 9);
-                    if (file < 7) def_mask |= @as(u64, 1) << (s - 7);
-                } else if (c == Colors.black and rank < 7) {
-                    if (file > 0) def_mask |= @as(u64, 1) << (s + 7);
-                    if (file < 7) def_mask |= @as(u64, 1) << (s + 9);
-                }
-                break :blk (all_pawns.bits & def_mask) != 0;
-            };
-            if (protected) {
-                score = score.add(protected_passed_pawn);
-            }
-
-            // Blocked passed pawn: piece directly in front
-            const blocked = blk: {
-                if (c == Colors.white and rank < 7) {
-                    break :blk (occupied & (@as(u64, 1) << (s + 8))) != 0;
-                } else if (c == Colors.black and rank > 0) {
-                    break :blk (occupied & (@as(u64, 1) << (s - 8))) != 0;
-                }
-                break :blk false;
-            };
-            if (blocked) {
-                score = score.add(blocked_passed_pawn);
-            }
-        }
-
-        // Doubled pawn penalty
-        const file_mask = file_masks[file];
-        if (@popCount(all_pawns.bits & file_mask) > 1) {
-            score = score.add(doubled_pawn);
-        }
-
-        // Isolated pawn penalty
-        if ((all_pawns.bits & adjacent_files[file]) == 0) {
-            score = score.add(isolated_pawn);
-        }
-
-        // Backward pawn detection
-        // A pawn is backward if:
-        // 1. No friendly pawns on adjacent files can support it (they're all ahead)
-        // 2. Advancing would put it under attack by enemy pawns
-        const is_backward = blk: {
-            // Check if there are friendly pawns behind on adjacent files
-            const behind_mask = if (c == Colors.white)
-                (@as(u64, 1) << (rank * 8)) - 1 // All squares on ranks below
-            else
-                ~((@as(u64, 1) << ((rank + 1) * 8)) - 1); // All squares on ranks above
-
-            const friendly_behind = all_pawns.bits & adjacent_files[file] & behind_mask;
-            if (friendly_behind != 0) break :blk false; // Has support, not backward
-
-            // Check if the stop square (one ahead) is attacked by enemy pawns
-            const stop_sq: u6 = if (c == Colors.white) s + 8 else s - 8;
-            if ((c == Colors.white and rank >= 6) or (c == Colors.black and rank <= 1)) break :blk false;
-
-            // Enemy pawn attack squares for the stop square
-            const stop_file: u6 = stop_sq % 8;
-            var attack_mask: u64 = 0;
-            if (c == Colors.white) {
-                // Enemy pawns attack from rank above stop square
-                if (stop_file > 0) attack_mask |= @as(u64, 1) << (stop_sq + 7);
-                if (stop_file < 7) attack_mask |= @as(u64, 1) << (stop_sq + 9);
-            } else {
-                // Enemy pawns attack from rank below stop square
-                if (stop_file > 0) attack_mask |= @as(u64, 1) << (stop_sq - 9);
-                if (stop_file < 7) attack_mask |= @as(u64, 1) << (stop_sq - 7);
-            }
-
-            break :blk (opp_pawns.bits & attack_mask) != 0;
-        };
-        if (is_backward) {
-            score = score.add(backward_pawn);
-        }
-    }
-
-    return score;
-}
-
 fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
     if (c == Colors.white) {
         if (rank >= 7) return 0;
-        // Squares ahead on same file and adjacent files
         const ranks_ahead: u64 = @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
         var file_mask: u64 = file_masks[file];
         if (file > 0) file_mask |= file_masks[file - 1];
@@ -480,7 +306,6 @@ fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
         return ranks_ahead & file_mask;
     } else {
         if (rank == 0) return 0;
-        // Squares ahead (lower ranks for black)
         const ranks_ahead: u64 = (@as(u64, 1) << (rank * 8)) - 1;
         var file_mask: u64 = file_masks[file];
         if (file > 0) file_mask |= file_masks[file - 1];
@@ -489,299 +314,286 @@ fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
     }
 }
 
-fn mobilityScore(state: *const State, c: Color) Score {
+// Single-pass evaluation for one color. Iterates each piece type once,
+// accumulating material, PST, mobility, and structural scores together.
+// Returns the total Score and adds to the phase accumulator.
+fn evaluateColor(state: *const State, c: Color, our_pieces: Bitboard, our_pieces_not: Bitboard, our_pawns_bb: Bitboard, opp_pawns_bb: Bitboard) struct { score: Score, phase: i32 } {
     var score = Score.zero;
-    const our_pieces = state.colorBitboard(c);
+    var phase: i32 = 0;
+    const occupied = state.all_pieces.bits;
 
-    // Knights
-    var knights = state.pieceBitboard(Pieces.knight).bitAnd(our_pieces);
-    while (knights.next()) |s| {
-        const moves = chez.movegen.knight_move_mask[s].bitAnd(our_pieces.not());
-        const count: i32 = @intCast(moves.popCount());
-        score = score.add(mobility_bonus[Pieces.knight].mul(count));
-    }
+    // --- Pawns: material + PST + pawn structure ---
+    {
+        var pawns = our_pawns_bb;
+        const pawn_count: i32 = @intCast(pawns.popCount());
+        score = score.add(piece_values[Pieces.pawn].mul(pawn_count));
 
-    // Bishops
-    var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(our_pieces);
-    while (bishops.next()) |s| {
-        const moves = chez.movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(our_pieces.not());
-        const count: i32 = @intCast(moves.popCount());
-        score = score.add(mobility_bonus[Pieces.bishop].mul(count));
-    }
+        while (pawns.next()) |s| {
+            const file: u6 = s % 8;
+            const rank: u6 = s / 8;
 
-    // Rooks
-    var rooks = state.pieceBitboard(Pieces.rook).bitAnd(our_pieces);
-    while (rooks.next()) |s| {
-        const moves = chez.movegen.sliderMoves(state, s, Pieces.rook).bitAnd(our_pieces.not());
-        const count: i32 = @intCast(moves.popCount());
-        score = score.add(mobility_bonus[Pieces.rook].mul(count));
-    }
+            // PST
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            score = score.add(pst[Pieces.pawn][sq]);
 
-    return score;
-}
+            // Connected pawn
+            const connected = blk: {
+                var mask: u64 = 0;
+                if (file > 0) mask |= @as(u64, 1) << (s - 1);
+                if (file < 7) mask |= @as(u64, 1) << (s + 1);
+                if (c == Colors.white and rank > 0) {
+                    if (file > 0) mask |= @as(u64, 1) << (s - 9);
+                    if (file < 7) mask |= @as(u64, 1) << (s - 7);
+                } else if (c == Colors.black and rank < 7) {
+                    if (file > 0) mask |= @as(u64, 1) << (s + 7);
+                    if (file < 7) mask |= @as(u64, 1) << (s + 9);
+                }
+                break :blk (our_pawns_bb.bits & mask) != 0;
+            };
+            if (connected) {
+                score = score.add(connected_pawn);
+            }
 
-fn bishopPairBonus(state: *const State, c: Color) Score {
-    const bishops = state.pieceBitboard(Pieces.bishop).bitAnd(state.colorBitboard(c));
-    if (bishops.popCount() >= 2) {
-        return bishop_pair;
-    }
-    return Score.zero;
-}
+            // Passed pawn
+            const ahead_mask = computePassedPawnMask(c, file, rank);
+            if ((opp_pawns_bb.bits & ahead_mask) == 0) {
+                const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
+                score = score.add(passed_pawn_bonus[passed_rank]);
 
-fn rookBonus(state: *const State, c: Color) Score {
-    var score = Score.zero;
-    const our_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
-    const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
-    var rooks = state.pieceBitboard(Pieces.rook).bitAnd(state.colorBitboard(c));
+                // Protected passed pawn
+                const is_protected = blk: {
+                    var def_mask: u64 = 0;
+                    if (c == Colors.white and rank > 0) {
+                        if (file > 0) def_mask |= @as(u64, 1) << (s - 9);
+                        if (file < 7) def_mask |= @as(u64, 1) << (s - 7);
+                    } else if (c == Colors.black and rank < 7) {
+                        if (file > 0) def_mask |= @as(u64, 1) << (s + 7);
+                        if (file < 7) def_mask |= @as(u64, 1) << (s + 9);
+                    }
+                    break :blk (our_pawns_bb.bits & def_mask) != 0;
+                };
+                if (is_protected) {
+                    score = score.add(protected_passed_pawn);
+                }
 
-    const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
+                // Blocked passed pawn
+                const blocked = blk: {
+                    if (c == Colors.white and rank < 7) {
+                        break :blk (occupied & (@as(u64, 1) << (s + 8))) != 0;
+                    } else if (c == Colors.black and rank > 0) {
+                        break :blk (occupied & (@as(u64, 1) << (s - 8))) != 0;
+                    }
+                    break :blk false;
+                };
+                if (blocked) {
+                    score = score.add(blocked_passed_pawn);
+                }
+            }
 
-    while (rooks.next()) |s| {
-        const file: u6 = @intCast(s % 8);
-        const rank: u6 = @intCast(s / 8);
-        const file_mask = file_masks[file];
+            // Doubled pawn
+            if (@popCount(our_pawns_bb.bits & file_masks[file]) > 1) {
+                score = score.add(doubled_pawn);
+            }
 
-        // Open/semi-open file
-        const has_our_pawn = (our_pawns.bits & file_mask) != 0;
-        const has_opp_pawn = (opp_pawns.bits & file_mask) != 0;
-
-        if (!has_our_pawn and !has_opp_pawn) {
-            score = score.add(rook_open_file);
-        } else if (!has_our_pawn and has_opp_pawn) {
-            score = score.add(rook_semi_open);
+            // Isolated pawn
+            if ((our_pawns_bb.bits & adjacent_files[file]) == 0) {
+                score = score.add(isolated_pawn);
+            }
         }
+    }
 
-        // Rook on 7th rank
-        if (rank == seventh_rank) {
-            score = score.add(rook_on_seventh);
-        }
+    // --- Knights: material + PST + mobility + outposts ---
+    {
+        var knights = state.pieceBitboard(Pieces.knight).bitAnd(our_pieces);
+        const knight_count: i32 = @intCast(knights.popCount());
+        score = score.add(piece_values[Pieces.knight].mul(knight_count));
+        phase += knight_count * phase_weights[Pieces.knight];
 
-        // Tarrasch rule: rook behind passed pawn
-        // Check if there's a passed pawn (ours or opponent's) on the same file
-        // and our rook is behind it
-        const pawns_on_file = (our_pawns.bits | opp_pawns.bits) & file_mask;
-        if (pawns_on_file != 0) {
-            // Find passed pawns on this file
-            var file_pawns = our_pawns.bits & file_mask;
-            while (file_pawns != 0) {
-                const pawn_sq: u6 = @intCast(@ctz(file_pawns));
-                const pawn_rank: u6 = pawn_sq / 8;
-                file_pawns &= file_pawns - 1; // Clear lowest bit
+        while (knights.next()) |s| {
+            const file: u3 = @intCast(s % 8);
+            const rank: u3 = @intCast(s / 8);
 
-                // Check if this pawn is passed
-                const ahead_mask = computePassedPawnMask(c, file, pawn_rank);
-                if ((opp_pawns.bits & ahead_mask) == 0) {
-                    // It's a passed pawn - check if rook is behind it
-                    const rook_behind = if (c == Colors.white)
-                        rank < pawn_rank
-                    else
-                        rank > pawn_rank;
-                    if (rook_behind) {
-                        score = score.add(rook_behind_passed);
+            // PST
+            const sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - rank) * 8 + file) else s;
+            score = score.add(pst[Pieces.knight][sq]);
+
+            // Mobility
+            const moves = chez.movegen.knight_move_mask[s].bitAnd(our_pieces_not);
+            const move_count: i32 = @intCast(moves.popCount());
+            score = score.add(mobility_bonus[Pieces.knight].mul(move_count));
+
+            // Outpost check
+            const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
+            if (in_outpost_zone) {
+                const can_be_attacked = blk: {
+                    if (adjacent_files[file] == 0) break :blk false;
+                    const adjacent_file_mask = adjacent_files[file];
+                    const rank_u6: u6 = rank;
+                    const attack_ranks: u64 = if (c == Colors.white)
+                        if (rank < 7) @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank_u6 + 1) * 8) else 0
+                    else if (rank > 0) (@as(u64, 1) << (rank_u6 * 8)) - 1 else 0;
+                    break :blk (opp_pawns_bb.bits & adjacent_file_mask & attack_ranks) != 0;
+                };
+
+                if (!can_be_attacked) {
+                    const defended_by_pawn = blk: {
+                        if (file == 0 or file == 7) {
+                            const def_file: u3 = if (file == 0) 1 else 6;
+                            const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
+                            if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
+                            const def_sq: u6 = @as(u6, def_file) + @as(u6, def_rank) * 8;
+                            break :blk (our_pawns_bb.bits & (@as(u64, 1) << def_sq)) != 0;
+                        }
+                        const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
+                        if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
+                        const left_sq: u6 = @as(u6, file - 1) + @as(u6, def_rank) * 8;
+                        const right_sq: u6 = @as(u6, file + 1) + @as(u6, def_rank) * 8;
+                        const left_mask: u64 = @as(u64, 1) << left_sq;
+                        const right_mask: u64 = @as(u64, 1) << right_sq;
+                        break :blk (our_pawns_bb.bits & (left_mask | right_mask)) != 0;
+                    };
+
+                    if (defended_by_pawn) {
+                        score = score.add(knight_outpost_defended);
+                    } else {
+                        score = score.add(knight_outpost_undefended);
                     }
                 }
             }
         }
     }
-    return score;
-}
 
-fn kingSafetyScore(state: *const State, c: Color) Score {
-    var score = Score.zero;
+    // --- Bishops: material + PST + mobility + bishop pair ---
+    {
+        var bishops = state.pieceBitboard(Pieces.bishop).bitAnd(our_pieces);
+        const bishop_count: i32 = @intCast(bishops.popCount());
+        score = score.add(piece_values[Pieces.bishop].mul(bishop_count));
+        phase += bishop_count * phase_weights[Pieces.bishop];
 
-    const king_bb = state.pieceBitboard(Pieces.king).bitAnd(state.colorBitboard(c));
-    const king_sq = king_bb.trailingZeros();
-    const king_file: u3 = @intCast(king_sq % 8);
-    const king_rank: u3 = @intCast(king_sq / 8);
+        if (bishop_count >= 2) {
+            score = score.add(bishop_pair);
+        }
 
-    const our_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
-    const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
-    const opp = ~c;
+        while (bishops.next()) |s| {
+            const rank: u6 = s / 8;
+            const file: u6 = s % 8;
 
-    // King zone: king square + all adjacent squares
-    const king_zone = chez.movegen.king_move_mask[king_sq].bitOr(chez.Bitboard.fromSquare(king_sq));
+            // PST
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            score = score.add(pst[Pieces.bishop][sq]);
 
-    // Count attacks on king zone by enemy pieces
-    var attack_units: i32 = 0;
-
-    // Knight attacks on king zone
-    var opp_knights = state.pieceBitboard(Pieces.knight).bitAnd(state.colorBitboard(opp));
-    while (opp_knights.next()) |sq| {
-        const attacks = chez.movegen.knight_move_mask[sq];
-        if (!attacks.bitAnd(king_zone).isEmpty()) {
-            attack_units += king_attack_weights[Pieces.knight];
+            // Mobility
+            const moves = chez.movegen.sliderMoves(state, s, Pieces.bishop).bitAnd(our_pieces_not);
+            const move_count: i32 = @intCast(moves.popCount());
+            score = score.add(mobility_bonus[Pieces.bishop].mul(move_count));
         }
     }
 
-    // Bishop attacks on king zone
-    var opp_bishops = state.pieceBitboard(Pieces.bishop).bitAnd(state.colorBitboard(opp));
-    while (opp_bishops.next()) |sq| {
-        const attacks = chez.movegen.sliderMoves(state, sq, Pieces.bishop);
-        if (!attacks.bitAnd(king_zone).isEmpty()) {
-            attack_units += king_attack_weights[Pieces.bishop];
-        }
-    }
+    // --- Rooks: material + PST + mobility + open file + 7th rank ---
+    {
+        var rooks = state.pieceBitboard(Pieces.rook).bitAnd(our_pieces);
+        const rook_count: i32 = @intCast(rooks.popCount());
+        score = score.add(piece_values[Pieces.rook].mul(rook_count));
+        phase += rook_count * phase_weights[Pieces.rook];
 
-    // Rook attacks on king zone
-    var opp_rooks = state.pieceBitboard(Pieces.rook).bitAnd(state.colorBitboard(opp));
-    while (opp_rooks.next()) |sq| {
-        const attacks = chez.movegen.sliderMoves(state, sq, Pieces.rook);
-        if (!attacks.bitAnd(king_zone).isEmpty()) {
-            attack_units += king_attack_weights[Pieces.rook];
-        }
-    }
+        const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
 
-    // Queen attacks on king zone
-    var opp_queens = state.pieceBitboard(Pieces.queen).bitAnd(state.colorBitboard(opp));
-    while (opp_queens.next()) |sq| {
-        const attacks = chez.movegen.sliderMoves(state, sq, Pieces.queen);
-        if (!attacks.bitAnd(king_zone).isEmpty()) {
-            attack_units += king_attack_weights[Pieces.queen];
-        }
-    }
+        while (rooks.next()) |s| {
+            const file: u6 = s % 8;
+            const rank: u6 = s / 8;
 
-    // Apply attack penalty
-    score = score.add(king_zone_attack_penalty.mul(attack_units));
+            // PST
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            score = score.add(pst[Pieces.rook][sq]);
 
-    // Check for open/semi-open files near king
-    const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
-    const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
+            // Mobility
+            const moves = chez.movegen.sliderMoves(state, s, Pieces.rook).bitAnd(our_pieces_not);
+            const move_count: i32 = @intCast(moves.popCount());
+            score = score.add(mobility_bonus[Pieces.rook].mul(move_count));
 
-    var file: u4 = min_file;
-    while (file <= max_file) : (file += 1) {
-        const file_mask = file_masks[file];
-        const has_our_pawn = (our_pawns.bits & file_mask) != 0;
-        const has_opp_pawn = (opp_pawns.bits & file_mask) != 0;
+            // Open/semi-open file
+            const fmask = file_masks[file];
+            const has_our_pawn = (our_pawns_bb.bits & fmask) != 0;
+            const has_opp_pawn = (opp_pawns_bb.bits & fmask) != 0;
+            if (!has_our_pawn and !has_opp_pawn) {
+                score = score.add(rook_open_file);
+            } else if (!has_our_pawn and has_opp_pawn) {
+                score = score.add(rook_semi_open);
+            }
 
-        if (!has_our_pawn and !has_opp_pawn) {
-            score = score.add(king_open_file_penalty);
-        } else if (!has_our_pawn and has_opp_pawn) {
-            score = score.add(king_semi_open_file_penalty);
-        }
-    }
-
-    // Pawn shield evaluation (only on back two ranks)
-    const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
-    if (on_back_ranks) {
-        const shield_rank: u6 = if (c == Colors.white) @as(u6, king_rank) + 1 else @as(u6, king_rank) - 1;
-
-        file = min_file;
-        while (file <= max_file) : (file += 1) {
-            const shield_sq: u6 = @as(u6, @as(u3, @intCast(file))) + shield_rank * 8;
-            const shield_mask: u64 = @as(u64, 1) << shield_sq;
-            if ((our_pawns.bits & shield_mask) != 0) {
-                score = score.add(pawn_shield);
-            } else {
-                score = score.add(pawn_shield_missing);
+            // Rook on 7th rank
+            if (rank == seventh_rank) {
+                score = score.add(rook_on_seventh);
             }
         }
     }
 
-    return score;
-}
+    // --- Queens: material + PST ---
+    {
+        var queens = state.pieceBitboard(Pieces.queen).bitAnd(our_pieces);
+        const queen_count: i32 = @intCast(queens.popCount());
+        score = score.add(piece_values[Pieces.queen].mul(queen_count));
+        phase += queen_count * phase_weights[Pieces.queen];
 
-fn knightOutposts(state: *const State, c: Color) Score {
-    var score = Score.zero;
-    const our_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(c));
-    const opp_pawns = state.pieceBitboard(Pieces.pawn).bitAnd(state.colorBitboard(~c));
-    var knights = state.pieceBitboard(Pieces.knight).bitAnd(state.colorBitboard(c));
+        while (queens.next()) |s| {
+            const rank: u6 = s / 8;
+            const file: u6 = s % 8;
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            score = score.add(pst[Pieces.queen][sq]);
+        }
+    }
 
-    while (knights.next()) |s| {
-        const file: u3 = @intCast(s % 8);
-        const rank: u3 = @intCast(s / 8);
+    // --- King: PST + king safety ---
+    {
+        const king_bb = state.pieceBitboard(Pieces.king).bitAnd(our_pieces);
+        const king_sq: u6 = @intCast(@ctz(king_bb.bits));
+        const king_file: u3 = @intCast(king_sq % 8);
+        const king_rank: u3 = @intCast(king_sq / 8);
 
-        // Check if knight is in opponent's half
-        const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
-        if (!in_outpost_zone) continue;
+        // PST
+        const pst_sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - king_rank) * 8 + king_file) else king_sq;
+        score = score.add(pst[Pieces.king][pst_sq]);
 
-        // Check if enemy pawns can attack this square
-        const can_be_attacked = blk: {
-            if (adjacent_files[file] == 0) break :blk false;
-            const adjacent_file_mask = adjacent_files[file];
+        // King safety: pawn shield (only when king on back ranks)
+        const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
+        if (on_back_ranks) {
+            const shield_rank: u6 = if (c == Colors.white) @as(u6, king_rank) + 1 else @as(u6, king_rank) - 1;
+            const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
+            const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
 
-            const rank_u6: u6 = rank;
-            const attack_ranks: u64 = if (c == Colors.white)
-                if (rank < 7) @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank_u6 + 1) * 8) else 0
-            else if (rank > 0) (@as(u64, 1) << (rank_u6 * 8)) - 1 else 0;
-
-            break :blk (opp_pawns.bits & adjacent_file_mask & attack_ranks) != 0;
-        };
-
-        if (!can_be_attacked) {
-            // Check if defended by our pawn
-            const defended_by_pawn = blk: {
-                if (file == 0 or file == 7) {
-                    const def_file: u3 = if (file == 0) 1 else 6;
-                    const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
-                    if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
-                    const def_sq: u6 = @as(u6, def_file) + @as(u6, def_rank) * 8;
-                    break :blk (our_pawns.bits & (@as(u64, 1) << def_sq)) != 0;
+            var file: u4 = min_file;
+            while (file <= max_file) : (file += 1) {
+                const shield_sq: u6 = @as(u6, @as(u3, @intCast(file))) + shield_rank * 8;
+                const shield_mask: u64 = @as(u64, 1) << shield_sq;
+                if ((our_pawns_bb.bits & shield_mask) != 0) {
+                    score = score.add(pawn_shield);
+                } else {
+                    score = score.add(pawn_shield_missing);
                 }
-                const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
-                if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
-                const left_sq: u6 = @as(u6, file - 1) + @as(u6, def_rank) * 8;
-                const right_sq: u6 = @as(u6, file + 1) + @as(u6, def_rank) * 8;
-                const left_mask: u64 = @as(u64, 1) << left_sq;
-                const right_mask: u64 = @as(u64, 1) << right_sq;
-                break :blk (our_pawns.bits & (left_mask | right_mask)) != 0;
-            };
-
-            if (defended_by_pawn) {
-                score = score.add(knight_outpost_defended);
-            } else {
-                score = score.add(knight_outpost_undefended);
             }
         }
     }
 
-    return score;
+    return .{ .score = score, .phase = phase };
 }
 
 pub fn evaluate(state: *const State) i32 {
     const to_move = state.to_move;
     const opp = ~to_move;
 
-    // Compute game phase for tapered evaluation
-    const phase = computePhase(state);
+    // Extract bitboards once for both colors
+    const our_pieces = state.colorBitboard(to_move);
+    const opp_pieces = state.colorBitboard(opp);
+    const pawn_bb = state.pieceBitboard(Pieces.pawn);
+    const our_pawns = pawn_bb.bitAnd(our_pieces);
+    const opp_pawns = pawn_bb.bitAnd(opp_pieces);
 
-    // Accumulate all scores
-    var our_score = Score.zero;
-    var opp_score = Score.zero;
+    // Single-pass evaluation for each color
+    const our = evaluateColor(state, to_move, our_pieces, our_pieces.not(), our_pawns, opp_pawns);
+    const their = evaluateColor(state, opp, opp_pieces, opp_pieces.not(), opp_pawns, our_pawns);
 
-    // Material
-    our_score = our_score.add(materialScore(state, to_move));
-    opp_score = opp_score.add(materialScore(state, opp));
-
-    // Positional (PST)
-    our_score = our_score.add(positionalScore(state, to_move));
-    opp_score = opp_score.add(positionalScore(state, opp));
-
-    // Pawn structure
-    our_score = our_score.add(pawnStructureScore(state, to_move));
-    opp_score = opp_score.add(pawnStructureScore(state, opp));
-
-    // Mobility
-    our_score = our_score.add(mobilityScore(state, to_move));
-    opp_score = opp_score.add(mobilityScore(state, opp));
-
-    // Bishop pair
-    our_score = our_score.add(bishopPairBonus(state, to_move));
-    opp_score = opp_score.add(bishopPairBonus(state, opp));
-
-    // Rook bonuses (open file, 7th rank)
-    our_score = our_score.add(rookBonus(state, to_move));
-    opp_score = opp_score.add(rookBonus(state, opp));
-
-    // King safety (pawn shield) - already tapered via Score
-    our_score = our_score.add(kingSafetyScore(state, to_move));
-    opp_score = opp_score.add(kingSafetyScore(state, opp));
-
-    // Knight outposts
-    our_score = our_score.add(knightOutposts(state, to_move));
-    opp_score = opp_score.add(knightOutposts(state, opp));
-
-    // Compute final tapered score
-    const total = our_score.sub(opp_score);
+    const phase = @min(our.phase + their.phase, max_phase);
+    const total = our.score.sub(their.score);
     return total.taper(phase);
 }
 

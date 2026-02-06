@@ -54,7 +54,7 @@ fn magicIndex(entry: *const MagicEntry, blockers: *const Bitboard) usize {
     return @intCast(hash >> entry.shift);
 }
 
-pub fn magicTableIndex(entry: *const MagicTableEntry, blockers: *const Bitboard) usize {
+pub fn magicTableIndex(entry: *const MagicTableEntry, blockers: Bitboard) usize {
     const blockers_masked = blockers.bits & entry.mask;
     const hash = blockers_masked *% entry.magic;
     const idx: usize = @intCast(hash >> entry.shift);
@@ -155,7 +155,7 @@ fn makeMoveTable(alloc: std.mem.Allocator, size: usize, directions: *const Slide
         while (true) {
             const s_u6: u6 = @intCast(s);
             const moves = sliderMoves(s_u6, &blockers, directions);
-            tbl[magicTableIndex(&entry, &blockers)] = moves;
+            tbl[magicTableIndex(&entry, blockers)] = moves;
 
             blockers.bits = (blockers.bits -% mask.bits) & mask.bits;
             if (blockers.isEmpty()) {
