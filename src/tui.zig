@@ -58,7 +58,6 @@ const Args = struct {
     engine_color: ?[]const u8,
     depth: ?u8,
     num_threads: ?usize,
-    adaptive_depth: ?bool,
     fen: ?[]const u8,
     nn_engine: ?[]const u8, // Path to NN checkpoint, e.g. "models/iter_0100.pt"
     nn_simulations: ?u32, // MCTS simulations for NN engine
@@ -124,8 +123,6 @@ fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_thr
         try stdout.print(" Move {d} - Neural Network Engine\n\n", .{state.fullmove_clock});
     } else if (depth) |d| {
         try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, d, num_threads });
-    } else {
-        try stdout.print(" Move {d} - Adaptive Depth - {d} Threads\n\n", .{ state.fullmove_clock, num_threads });
     }
     try stdout.print("{f}", .{state});
     try stdout.flush();
@@ -164,13 +161,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             return error.InvalidColor;
         } else break :blk state.to_move;
     };
-    var depth: ?u8 = null;
 
-    if (parsed_args.depth) |d| {
-        if (parsed_args.adaptive_depth.?) return error.DepthConflict;
-        depth = d;
-    }
-
+    const depth: u8 = parsed_args.depth orelse 12;
     const num_threads: usize = parsed_args.num_threads orelse 4;
 
     // Initialize NN engine if requested
