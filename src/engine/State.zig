@@ -882,7 +882,7 @@ fn initZobristKeys() void {
         // Fixed seed for WASM - deterministic behavior
         seed = 0x4d595f5345454421;
     } else if (builtin.target.os.tag == .linux) {
-        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
+        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), @sizeOf(u64), 0);
     } else {
         std.crypto.random.bytes(std.mem.asBytes(&seed));
     }
