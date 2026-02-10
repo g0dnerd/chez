@@ -667,7 +667,8 @@ pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     self.*.colors[c].bitOrAssign(end);
     self.*.mailbox[end] = p;
 
-    if (m.promotion_piece) |promo_target| {
+    if (m.is_promotion) {
+        const promo_target = m.promotion_piece;
         undo.was_promotion = true;
         undo.promotion_piece = promo_target;
         self.*.pieces[piece.pawn].bitXorAssign(end);

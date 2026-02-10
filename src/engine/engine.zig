@@ -26,27 +26,32 @@ pub const MagicTableEntry = struct {
     }
 };
 
-pub const Move = struct {
+pub const Move = packed struct(u16) {
     start: square.Square,
     end: square.Square,
-    promotion_piece: ?piece.Piece = null,
+    is_promotion: bool = false,
+    promotion_piece: piece.Piece = undefined,
 
     pub fn initCMove(c: *const ffi.CMove) Move {
-        const promotion_piece: ?piece.Piece = if (c.promotion_piece == 0)
-            null
-        else
-            @as(piece.Piece, @intCast(c.promotion_piece));
+        var is_promotion = false;
+        var promotion_piece: piece.Piece = undefined;
+
+        if (c.promotion_piece != 0) {
+            promotion_piece = @as(piece.Piece, @intCast(c.promotion_piece));
+            is_promotion = true;
+        }
 
         return .{
             .start = @intCast(c.start),
             .end = @intCast(c.end),
             .promotion_piece = promotion_piece,
+            .is_promotion = is_promotion,
         };
     }
 
     pub fn toCMove(self: *const Move, c_move: *ffi.CMove) void {
-        const c_promotion_piece: u8 = if (self.promotion_piece) |p|
-            @as(u8, @intCast(p))
+        const c_promotion_piece: u8 = if (self.is_promotion)
+            @as(u8, @intCast(self.promotion_piece))
         else
             0;
 
@@ -60,8 +65,8 @@ pub const Move = struct {
         var start_buf: [2]u8 = undefined;
         square.toAlgebraic(self.start, &start_buf) catch {};
         square.toAlgebraic(self.end, &end_buf) catch {};
-        if (self.promotion_piece) |p| {
-            try w.print("{s}{s}{c}", .{ start_buf, end_buf, piece.pieceLetter(p) });
+        if (self.is_promotion) {
+            try w.print("{s}{s}{c}", .{ start_buf, end_buf, piece.pieceLetter(self.promotion_piece) });
         } else {
             try w.print("{s}{s}", .{ start_buf, end_buf });
         }
@@ -69,7 +74,10 @@ pub const Move = struct {
     }
 
     pub fn eql(self: Move, other: Move) bool {
-        return self.start == other.start and self.end == other.end and self.promotion_piece == other.promotion_piece;
+        return self.start == other.start and
+            self.end == other.end and
+            self.promotion_piece == other.promotion_piece and
+            self.is_promotion == other.is_promotion;
     }
 };
 

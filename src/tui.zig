@@ -10,19 +10,19 @@ fn parseMove(input: []const u8) ?engine.Move {
 
     const start = engine.square.algebraicToSquare(trimmed[0..2]);
     const end = engine.square.algebraicToSquare(trimmed[2..4]);
-    const promotion_piece = blk: {
-        if (trimmed.len == 5) {
-            break :blk switch (trimmed[4]) {
-                'n' => engine.piece.knight,
-                'b' => engine.piece.bishop,
-                'r' => engine.piece.rook,
-                'q' => engine.piece.queen,
-                else => unreachable,
-            };
-        } else {
-            break :blk null;
-        }
-    };
+
+    var promotion_piece: engine.piece.Piece = undefined;
+    var is_promotion = false;
+    if (trimmed.len == 5) {
+        promotion_piece = switch (trimmed[4]) {
+            'n' => engine.piece.knight,
+            'b' => engine.piece.bishop,
+            'r' => engine.piece.rook,
+            'q' => engine.piece.queen,
+            else => unreachable,
+        };
+        is_promotion = true;
+    }
 
     if (start == null or end == null) {
         return null;
@@ -32,6 +32,7 @@ fn parseMove(input: []const u8) ?engine.Move {
         .start = start.?,
         .end = end.?,
         .promotion_piece = promotion_piece,
+        .is_promotion = is_promotion,
     };
 }
 
