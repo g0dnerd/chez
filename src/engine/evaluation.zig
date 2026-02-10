@@ -325,6 +325,14 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
         const pawn_count: i32 = @intCast(pawns.popCount());
         score = score.add(piece_values[piece.pawn].mul(pawn_count));
 
+        // Doubled pawn penalty: apply once per extra pawn on each file
+        for (0..8) |file| {
+            const count: i32 = @intCast(@popCount(our_pawns_bb.bits & file_masks[file]));
+            if (count > 1) {
+                score = score.add(doubled_pawn.mul(count - 1));
+            }
+        }
+
         while (pawns.next()) |s| {
             const file: u6 = s % 8;
             const rank: u6 = s / 8;
@@ -385,11 +393,6 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
                 if (blocked) {
                     score = score.add(blocked_passed_pawn);
                 }
-            }
-
-            // Doubled pawn
-            if (@popCount(our_pawns_bb.bits & file_masks[file]) > 1) {
-                score = score.add(doubled_pawn);
             }
 
             // Isolated pawn
