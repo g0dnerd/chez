@@ -390,25 +390,32 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
-    while (pieces.next()) |s| {
-        const p = state.pieceAt(s).?;
-        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+    if (in_check) {
+        // Single mutable copy, reused via make/unmake for all candidate moves
+        var mutable = state.*;
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s).?;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
-        while (piece_moves.next()) |end| {
-            const candidate_move = Move{ .start = s, .end = end };
-            if (in_check) {
-                var tmp_state = state.*;
-                _ = tmp_state.makeMove(candidate_move, c, p);
+            while (piece_moves.next()) |end| {
+                const candidate_move = Move{ .start = s, .end = end };
+                const undo = mutable.makeMoveNoCheck(candidate_move, c, p);
 
-                const new_king_square = if (p == piece.king)
-                    end
-                else
-                    king_square;
+                const new_king_square = if (p == piece.king) end else king_square;
+                const legal = !isSquareAttackedBy(&mutable, new_king_square, ~c);
 
-                if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
-                    return true;
-                }
-            } else {
+                mutable.unmakeMove(candidate_move, c, p, undo);
+
+                if (legal) return true;
+            }
+        }
+    } else {
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s).?;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+
+            while (piece_moves.next()) |end| {
+                const candidate_move = Move{ .start = s, .end = end };
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
                     return true;
                 }
@@ -427,40 +434,50 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
-    while (pieces.next()) |s| {
-        const p = state.pieceAt(s) orelse unreachable;
-        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+    if (in_check) {
+        // Single mutable copy, reused via make/unmake for all candidate moves
+        var mutable = state.*;
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s) orelse unreachable;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
-        while (piece_moves.next()) |end| {
-            var candidate_move = Move{ .start = s, .end = end };
+            while (piece_moves.next()) |end| {
+                var candidate_move = Move{ .start = s, .end = end };
+                const undo = mutable.makeMoveNoCheck(candidate_move, c, p);
 
-            if (in_check) {
-                var tmp_state = state.*;
-                _ = tmp_state.makeMove(candidate_move, c, p);
+                const new_king_square = if (p == piece.king) end else king_square;
+                const legal = !isSquareAttackedBy(&mutable, new_king_square, ~c);
 
-                const new_king_square = if (p == piece.king)
-                    end
-                else
-                    king_square;
+                mutable.unmakeMove(candidate_move, c, p, undo);
 
-                if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
+                if (legal) {
                     if (p == piece.pawn and end / 8 == State.pawn_promo_rank[c]) {
                         candidate_move.promotion_piece = piece.queen;
+                        candidate_move.is_promotion = true;
                         ret.append(candidate_move);
                         inline for (1..4) |promotion_target| {
-                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                            ret.append(.{ .start = s, .end = end, .is_promotion = true, .promotion_piece = @as(Piece, promotion_target) });
                         }
                         continue;
                     }
                     ret.append(candidate_move);
                 }
-            } else {
+            }
+        }
+    } else {
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s) orelse unreachable;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+
+            while (piece_moves.next()) |end| {
+                var candidate_move = Move{ .start = s, .end = end };
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
                     if (p == piece.pawn and end / 8 == State.pawn_promo_rank[c]) {
                         candidate_move.promotion_piece = piece.queen;
+                        candidate_move.is_promotion = true;
                         ret.append(candidate_move);
                         inline for (1..4) |promotion_target| {
-                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                            ret.append(.{ .start = s, .end = end, .is_promotion = true, .promotion_piece = @as(Piece, promotion_target) });
                         }
                         continue;
                     }
@@ -473,7 +490,7 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
     return ret;
 }
 
-/// Generate only legal captures and promotions (for quiescence search)
+// Generate only legal captures and promotions (for quiescence search)
 pub fn legalCaptures(state: *const State, c: Color) MoveList {
     var ret = MoveList{};
 
@@ -483,47 +500,62 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
     const in_check = isSquareAttackedBy(state, king_square, ~c);
     const enemy_pieces = state.colorBitboard(~c);
 
-    while (pieces.next()) |s| {
-        const p = state.pieceAt(s) orelse unreachable;
-        var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+    if (in_check) {
+        // Single mutable copy, reused via make/unmake for all candidate moves
+        var mutable = state.*;
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s) orelse unreachable;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+            const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
 
-        // Filter to only captures (landing on enemy piece) or promotions
-        const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
+            while (piece_moves.next()) |end| {
+                const is_capture = enemy_pieces.contains(end) or (p == piece.pawn and state.en_passant == end);
+                const is_promo = p == piece.pawn and (end / 8) == promotion_rank;
 
-        while (piece_moves.next()) |end| {
-            const is_capture = enemy_pieces.contains(end) or (p == piece.pawn and state.en_passant == end);
-            const is_promotion = p == piece.pawn and (end / 8) == promotion_rank;
+                if (!is_capture and !is_promo) continue;
 
-            if (!is_capture and !is_promotion) continue;
+                var candidate_move = Move{ .start = s, .end = end };
+                const undo = mutable.makeMoveNoCheck(candidate_move, c, p);
 
-            var candidate_move = Move{ .start = s, .end = end };
-            if (in_check) {
-                var tmp_state = state.*;
-                _ = tmp_state.makeMove(candidate_move, c, p);
+                const new_king_square = if (p == piece.king) end else king_square;
+                const legal = !isSquareAttackedBy(&mutable, new_king_square, ~c);
 
-                const new_king_square = if (p == piece.king)
-                    end
-                else
-                    king_square;
+                mutable.unmakeMove(candidate_move, c, p, undo);
 
-                if (!isSquareAttackedBy(&tmp_state, new_king_square, ~c)) {
-                    if (p == piece.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                if (legal) {
+                    if (is_promo) {
                         candidate_move.promotion_piece = piece.queen;
+                        candidate_move.is_promotion = true;
                         ret.append(candidate_move);
                         inline for (1..4) |promotion_target| {
-                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                            ret.append(.{ .start = s, .end = end, .is_promotion = true, .promotion_piece = @as(Piece, promotion_target) });
                         }
                         continue;
                     }
                     ret.append(candidate_move);
                 }
-            } else {
+            }
+        }
+    } else {
+        while (pieces.next()) |s| {
+            const p = state.pieceAt(s) orelse unreachable;
+            var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
+            const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
+
+            while (piece_moves.next()) |end| {
+                const is_capture = enemy_pieces.contains(end) or (p == piece.pawn and state.en_passant == end);
+                const is_promo = p == piece.pawn and (end / 8) == promotion_rank;
+
+                if (!is_capture and !is_promo) continue;
+
+                var candidate_move = Move{ .start = s, .end = end };
                 if (isLegalMove(state, candidate_move, c, p, king_square)) {
-                    if (p == piece.pawn and end / 8 == State.pawn_promo_rank[c]) {
+                    if (is_promo) {
                         candidate_move.promotion_piece = piece.queen;
+                        candidate_move.is_promotion = true;
                         ret.append(candidate_move);
                         inline for (1..4) |promotion_target| {
-                            ret.append(.{ .start = s, .end = end, .promotion_piece = @as(Piece, promotion_target) });
+                            ret.append(.{ .start = s, .end = end, .is_promotion = true, .promotion_piece = @as(Piece, promotion_target) });
                         }
                         continue;
                     }

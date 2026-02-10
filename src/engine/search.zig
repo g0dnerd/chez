@@ -897,7 +897,8 @@ pub fn searchParallel(
 // Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
 // Uses parallel search with default thread count.
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
-    return searchParallel(state, max_depth, default_threads, null);
+    var tbl = try TranspositionTable.init(std.heap.page_allocator);
+    return searchParallel(state, max_depth, default_threads, null, &tbl);
 }
 
 // Search with explicit thread count

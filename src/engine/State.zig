@@ -552,6 +552,16 @@ pub fn hasNonPawnMaterial(self: *const State, c: Color) bool {
 }
 
 pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
+    return self.makeMoveInner(m, c, p, true);
+}
+
+// Skip in_check detection — for movegen legality testing where caller
+// checks king safety separately. Avoids a redundant isSquareAttackedBy call.
+pub fn makeMoveNoCheck(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
+    return self.makeMoveInner(m, c, p, false);
+}
+
+inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime detect_check: bool) UndoInfo {
     const keys = State.getZobristKeys();
     const start = m.start;
     const end = m.end;
@@ -696,14 +706,16 @@ pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     self.*.to_move = ~self.to_move;
     self.all_pieces = self.allPieces();
 
-    // Update in_check for the new side to move
-    const new_to_move = self.to_move;
-    const king_bb = self.pieceBitboard(piece.king).bitAnd(self.colorBitboard(new_to_move));
-    const king_square = king_bb.trailingZeros();
-    if (isSquareAttackedBy(self, king_square, ~new_to_move)) {
-        self.*.in_check = new_to_move;
-    } else {
-        self.*.in_check = null;
+    if (detect_check) {
+        // Update in_check for the new side to move
+        const new_to_move = self.to_move;
+        const king_bb = self.pieceBitboard(piece.king).bitAnd(self.colorBitboard(new_to_move));
+        const king_square = king_bb.trailingZeros();
+        if (isSquareAttackedBy(self, king_square, ~new_to_move)) {
+            self.*.in_check = new_to_move;
+        } else {
+            self.*.in_check = null;
+        }
     }
 
     return undo;
