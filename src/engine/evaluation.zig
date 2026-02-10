@@ -528,7 +528,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
         }
     }
 
-    // --- Queens: material + PST ---
+    // --- Queens: material + PST + mobility ---
     {
         var queens = state.pieceBitboard(piece.queen).bitAnd(our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
@@ -540,6 +540,12 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
             const file: u6 = s % 8;
             const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             score = score.add(pst[piece.queen][sq]);
+
+            // Mobility (queen moves as bishop + rook)
+            const bishop_moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
+            const rook_moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
+            const move_count: i32 = @intCast(@popCount(bishop_moves | rook_moves));
+            score = score.add(mobility_bonus[piece.queen].mul(move_count));
         }
     }
 
