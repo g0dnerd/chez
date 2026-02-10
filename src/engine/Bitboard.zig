@@ -14,7 +14,7 @@ pub fn initSquare(s: Square) Bitboard {
     return .{ .bits = @as(u64, 1) << s };
 }
 
-pub fn contains(self: *const Bitboard, s: Square) bool {
+pub fn contains(self: Bitboard, s: Square) bool {
     return self.bits & @as(u64, 1) << s != 0;
 }
 
@@ -22,15 +22,15 @@ pub fn contains_u64(self: u64, s: Square) bool {
     return self & @as(u64, 1) << s != 0;
 }
 
-pub fn isEmpty(self: *const Bitboard) bool {
+pub fn isEmpty(self: Bitboard) bool {
     return self.bits == 0;
 }
 
-pub fn popCount(self: *const Bitboard) u32 {
+pub fn popCount(self: Bitboard) u32 {
     return @popCount(self.bits);
 }
 
-pub fn trailingZeros(self: *const Bitboard) Square {
+pub fn trailingZeros(self: Bitboard) Square {
     return @intCast(@ctz(self.bits));
 }
 
@@ -38,7 +38,7 @@ fn clearLsb(self: *Bitboard) void {
     self.*.bits &= self.bits - 1;
 }
 
-pub fn colorflip(self: *const Bitboard) Bitboard {
+pub fn colorflip(self: Bitboard) Bitboard {
     var flipped = Bitboard.empty;
     flipped.bits = @byteSwap(self.bits);
     return flipped;
@@ -53,7 +53,7 @@ pub fn next(self: *Bitboard) ?Square {
     return ret;
 }
 
-pub fn bitOr(self: *const Bitboard, rhs: anytype) Bitboard {
+pub fn bitOr(self: Bitboard, rhs: anytype) Bitboard {
     return switch (@TypeOf(rhs)) {
         Square => Bitboard{ .bits = self.bits | @as(u64, 1) << rhs },
         u64 => Bitboard{ .bits = self.bits | rhs },
@@ -62,7 +62,7 @@ pub fn bitOr(self: *const Bitboard, rhs: anytype) Bitboard {
     };
 }
 
-pub fn bitAnd(self: *const Bitboard, rhs: anytype) Bitboard {
+pub fn bitAnd(self: Bitboard, rhs: anytype) Bitboard {
     return switch (@TypeOf(rhs)) {
         Square => Bitboard{ .bits = self.bits & @as(u64, 1) << rhs },
         u64 => Bitboard{ .bits = self.bits & rhs },
@@ -71,7 +71,7 @@ pub fn bitAnd(self: *const Bitboard, rhs: anytype) Bitboard {
     };
 }
 
-pub fn bitXor(self: *const Bitboard, rhs: anytype) Bitboard {
+pub fn bitXor(self: Bitboard, rhs: anytype) Bitboard {
     return switch (@TypeOf(rhs)) {
         Square => Bitboard{ .bits = self.bits ^ @as(u64, 1) << rhs },
         u64 => Bitboard{ .bits = self.bits ^ rhs },
@@ -107,7 +107,7 @@ pub fn bitXorAssign(self: *Bitboard, rhs: anytype) void {
     }
 }
 
-pub fn shl(self: *const Bitboard, rhs: anytype) Bitboard {
+pub fn shl(self: Bitboard, rhs: anytype) Bitboard {
     switch (@TypeOf(rhs)) {
         Square, u64 => return Bitboard{ .bits = self.bits << rhs },
         Bitboard => return Bitboard{ .bits = self.bits << rhs.bits },
@@ -115,15 +115,7 @@ pub fn shl(self: *const Bitboard, rhs: anytype) Bitboard {
     }
 }
 
-pub fn shr(self: *const Bitboard, rhs: anytype) Bitboard {
-    switch (@TypeOf(rhs)) {
-        Square, u64 => return Bitboard{ .bits = self.bits >> rhs },
-        Bitboard => return Bitboard{ .bits = self.bits >> rhs.bits },
-        else => unreachable,
-    }
-}
-
-pub fn not(self: *const Bitboard) Bitboard {
+pub fn not(self: Bitboard) Bitboard {
     return Bitboard{ .bits = ~self.bits };
 }
 
