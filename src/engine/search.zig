@@ -231,7 +231,7 @@ const PackedTTEntry = struct {
     }
 };
 
-const TranspositionTable = struct {
+pub const TranspositionTable = struct {
     entries: []PackedTTEntry,
     alloc: std.mem.Allocator,
 
@@ -241,13 +241,13 @@ const TranspositionTable = struct {
     const tt_size: usize = 1 << tt_size_bits;
     const tt_mask: u64 = tt_size - 1;
 
-    fn init(alloc: std.mem.Allocator) !TranspositionTable {
+    pub fn init(alloc: std.mem.Allocator) !TranspositionTable {
         const entries = try alloc.alloc(PackedTTEntry, tt_size);
         @memset(entries, PackedTTEntry{});
         return .{ .entries = entries, .alloc = alloc };
     }
 
-    fn deinit(self: *TranspositionTable) void {
+    pub fn deinit(self: *TranspositionTable) void {
         self.alloc.free(self.entries);
     }
 
@@ -810,11 +810,10 @@ pub fn searchParallel(
     max_depth: u8,
     num_threads: usize,
     game_history: ?*const PositionHistory,
+    tbl: *TranspositionTable,
 ) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
 
-    var tbl = try TranspositionTable.init(std.heap.page_allocator);
-    defer tbl.deinit();
     var shared = SharedSearchState{
         .max_depth = max_depth,
     };
@@ -839,7 +838,7 @@ pub fn searchParallel(
             .history_table = evaluation.HistoryTable{},
             .countermoves = CountermoveTable{},
             .thread_id = i,
-            .tbl = &tbl,
+            .tbl = tbl,
             .shared = &shared,
         };
     }
@@ -907,8 +906,14 @@ pub fn searchWithThreads(state: *const State, max_depth: u8, num_threads: usize)
 }
 
 // Search with game history for repetition detection
-pub fn searchWithHistory(state: *const State, max_depth: ?u8, num_threads: usize, history: *const PositionHistory) !?SearchResult {
-    return searchParallel(state, max_depth, num_threads, history);
+pub fn searchWithHistory(
+    state: *const State,
+    max_depth: u8,
+    num_threads: usize,
+    history: *const PositionHistory,
+    tbl: *TranspositionTable,
+) !?SearchResult {
+    return searchParallel(state, max_depth, num_threads, history, tbl);
 }
 
 // Single-threaded search for testing and debugging

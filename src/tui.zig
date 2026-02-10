@@ -154,6 +154,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var history = engine.search.PositionHistory.init();
     history.push(state.zobrist_hash);
 
+    var tbl = try engine.search.TranspositionTable.init(std.heap.page_allocator);
+    defer tbl.deinit();
+
     var engine_color = blk: {
         if (parsed_args.engine_color) |c| {
             if (std.mem.eql(u8, c, "white")) break :blk engine.Colors.white;
@@ -280,7 +283,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             var move_buf: [16]u8 = undefined;
             best_move = try eng.getMove(io, &state, &move_buf);
         } else {
-            if (try engine.search.searchWithHistory(&state, depth, num_threads, &history)) |search_res| {
+            if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl)) |search_res| {
                 // Use traditional search
                 best_move = search_res.move;
                 best_score = search_res.score;
