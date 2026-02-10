@@ -208,10 +208,11 @@ pub const MoveList = struct {
         }
         if (best_idx != index) {
             const tmp_move = self.moves[index];
+            const tmp_score = self.scores[index];
             self.moves[index] = self.moves[best_idx];
             self.moves[best_idx] = tmp_move;
             self.scores[index] = self.scores[best_idx];
-            self.scores[best_idx] = best_score;
+            self.scores[best_idx] = tmp_score;
         }
         return self.moves[index];
     }
