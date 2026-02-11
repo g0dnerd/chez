@@ -200,6 +200,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .stalemate => try stdout.print("\n Stalemate! Draw.\n", .{}),
                 .fiftyMoveRule => try stdout.print("\n Draw by 50-move rule.\n", .{}),
                 .threefoldRepetition => try stdout.print("\n Draw by threefold repetition.\n", .{}),
+                .insufficientMaterial => try stdout.print("\n Draw by insufficient material.\n", .{}),
             }
             try stdout.flush();
             break;
@@ -292,7 +293,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         if (best_move) |move| {
-            const piece = state.pieceAt(move.start).?;
+            const piece = state.mailbox[move.start].?;
 
             var sq_start: [2]u8 = undefined;
             var sq_end: [2]u8 = undefined;
@@ -321,6 +322,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     .stalemate => try stdout.print(" Stalemate! Draw.\n", .{}),
                     .fiftyMoveRule => try stdout.print(" Draw by 50-move rule.\n", .{}),
                     .threefoldRepetition => try stdout.print(" Draw by threefold repetition.\n", .{}),
+                    .insufficientMaterial => try stdout.print(" Draw by insufficient material.\n", .{}),
                 }
                 try stdout.flush();
                 break;

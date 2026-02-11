@@ -26,7 +26,7 @@ export fn wasm_init_fen(ptr: [*]const u8, len: usize) bool {
 export fn wasm_piece_at(square: u8) u8 {
     if (square > 63) return 255;
     const sq: engine.square.Square = @intCast(square);
-    if (game_state.pieceAt(sq)) |piece| {
+    if (game_state.mailbox[sq]) |piece| {
         return piece;
     }
     return 255;
@@ -61,31 +61,33 @@ export fn wasm_generate_moves() u8 {
 export fn wasm_get_move(index: u8) u32 {
     if (index >= move_list.len) return 0;
     const m = move_list.moves[index];
-    const promo: u8 = if (m.promotion_piece) |p| p else 0;
+    const promo: u8 = if (m.is_promotion) m.promotion_piece else 0;
     return (@as(u32, m.start) << 16) | (@as(u32, m.end) << 8) | @as(u32, promo);
 }
 
 // Make a move on the board
 // Returns true if move was legal and applied, false otherwise
-export fn wasm_make_move(start: u8, end: u8, promo: u8) bool {
-    if (start > 63 or end > 63) return false;
+export fn wasm_make_move(start: u8, end: u8, promo: u8) i8 {
+    if (start > 63 or end > 63) return -1;
 
     const start_sq: engine.square.Square = @intCast(start);
     const end_sq: engine.square.Square = @intCast(end);
 
     // Get the piece at the start square
-    const piece = game_state.pieceAt(start_sq) orelse return false;
-    const color = game_state.colorAt(start_sq) orelse return false;
+    const piece = game_state.mailbox[start_sq] orelse return -2;
+    const color = game_state.colorAt(start_sq) orelse return -3;
 
     // Verify it's this player's turn
-    if (color != game_state.to_move) return false;
+    if (color != game_state.to_move) return -4;
 
     // Construct the move
-    const promotion_piece: ?engine.piece.Piece = if (promo == 0) null else @intCast(promo);
+    const is_promotion = promo != 0;
+    const promotion_piece: engine.piece.Piece = if (is_promotion) undefined else @intCast(promo);
     const move = engine.Move{
         .start = start_sq,
         .end = end_sq,
         .promotion_piece = promotion_piece,
+        .is_promotion = is_promotion,
     };
 
     // Verify move is legal
@@ -97,11 +99,11 @@ export fn wasm_make_move(start: u8, end: u8, promo: u8) bool {
             break;
         }
     }
-    if (!is_legal) return false;
+    if (!is_legal) return -5;
 
     // Apply the move
     _ = game_state.makeMove(move, color, piece);
-    return true;
+    return 1;
 }
 
 // Get game result
@@ -110,7 +112,7 @@ export fn wasm_game_result() i32 {
     const result = engine.search.isGameOver(&game_state) orelse return 0;
     return switch (result) {
         .checkmate => |winner| if (winner == engine.Colors.white) 1 else 2,
-        .stalemate, .fiftyMoveRule, .threefoldRepetition => 3,
+        .stalemate, .fiftyMoveRule, .threefoldRepetition, .insufficientMaterial => 3,
     };
 }
 
@@ -121,7 +123,7 @@ export fn wasm_get_best_move(depth: u8) u32 {
     const result = engine.search.searchSingleThreaded(&game_state, depth) catch return 0;
     if (result) |r| {
         const m = r.move;
-        const promo: u8 = if (m.promotion_piece) |p| p else 0;
+        const promo: u8 = if (m.is_promotion) m.promotion_piece else 0;
         return (@as(u32, m.start) << 16) | (@as(u32, m.end) << 8) | @as(u32, promo);
     }
     return 0;

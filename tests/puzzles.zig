@@ -24,19 +24,19 @@ fn parseMove(mv: []const u8) ?chez.engine.Move {
 
     const start = chez.engine.square.algebraicToSquare(mv[0..2]);
     const end = chez.engine.square.algebraicToSquare(mv[2..4]);
-    const promotion_piece = blk: {
-        if (mv.len == 5) {
-            break :blk switch (mv[4]) {
-                'n' => piece.knight,
-                'b' => piece.bishop,
-                'r' => piece.rook,
-                'q' => piece.queen,
-                else => unreachable,
-            };
-        } else {
-            break :blk null;
-        }
-    };
+    var promotion_piece: piece.Piece = undefined;
+    var is_promotion = false;
+
+    if (mv.len == 5) {
+        promotion_piece = switch (mv[4]) {
+            'n' => piece.knight,
+            'b' => piece.bishop,
+            'r' => piece.rook,
+            'q' => piece.queen,
+            else => unreachable,
+        };
+        is_promotion = true;
+    }
 
     if (start == null or end == null) {
         return null;
@@ -46,6 +46,7 @@ fn parseMove(mv: []const u8) ?chez.engine.Move {
         .start = start.?,
         .end = end.?,
         .promotion_piece = promotion_piece,
+        .is_promotion = is_promotion,
     };
 }
 
@@ -64,6 +65,8 @@ test "puzzles" {
         var history = chez.engine.search.PositionHistory.init();
         history.push(state.zobrist_hash);
 
+        var tbl: chez.engine.search.TranspositionTable = try .init(std.heap.page_allocator);
+
         for (p.moves, 0..) |mv, i| {
             const parsed_move = parseMove(mv) orelse {
                 std.log.err("Unable to parse move {s} from puzzle.\n", .{mv});
@@ -73,7 +76,7 @@ test "puzzles" {
 
             // Engine's move
             if (i % 2 == 0) {
-                if (try chez.engine.search.searchParallel(&state, 11, num_threads, &history)) |res| {
+                if (try chez.engine.search.searchParallel(&state, 11, num_threads, &history, &tbl)) |res| {
                     const eng_mv = res.move;
                     const is_move_correct = eng_mv.eql(parsed_move);
                     if (!is_move_correct) {

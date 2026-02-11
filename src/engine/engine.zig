@@ -118,6 +118,7 @@ pub const GameResult = union(enum) {
     stalemate,
     fiftyMoveRule,
     threefoldRepetition,
+    insufficientMaterial,
 };
 
 pub const Color = u1;

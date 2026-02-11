@@ -394,7 +394,7 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
         // Single mutable copy, reused via make/unmake for all candidate moves
         var mutable = state.*;
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s).?;
+            const p = state.mailbox[s].?;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
             while (piece_moves.next()) |end| {
@@ -411,7 +411,7 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
         }
     } else {
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s).?;
+            const p = state.mailbox[s].?;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
             while (piece_moves.next()) |end| {
@@ -438,7 +438,7 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
         // Single mutable copy, reused via make/unmake for all candidate moves
         var mutable = state.*;
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s) orelse unreachable;
+            const p = state.mailbox[s] orelse unreachable;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
             while (piece_moves.next()) |end| {
@@ -466,7 +466,7 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
         }
     } else {
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s) orelse unreachable;
+            const p = state.mailbox[s] orelse unreachable;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
 
             while (piece_moves.next()) |end| {
@@ -504,7 +504,7 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
         // Single mutable copy, reused via make/unmake for all candidate moves
         var mutable = state.*;
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s) orelse unreachable;
+            const p = state.mailbox[s] orelse unreachable;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
             const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
 
@@ -538,7 +538,7 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
         }
     } else {
         while (pieces.next()) |s| {
-            const p = state.pieceAt(s) orelse unreachable;
+            const p = state.mailbox[s] orelse unreachable;
             var piece_moves = Bitboard{ .bits = movesForPiece(state, s, c, p) };
             const promotion_rank: u6 = if (c == Colors.white) 7 else 0;
 
@@ -967,14 +967,14 @@ pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
     const target_sq = m.end;
     const attacker_sq = m.start;
     const attacker_color = state.colorAt(attacker_sq) orelse return 0;
-    const attacker_piece = state.pieceAt(attacker_sq) orelse return 0;
+    const attacker_piece = state.mailbox[attacker_sq] orelse return 0;
 
     // Get the initial captured piece value
     var gain: [32]i32 = undefined;
     var depth: usize = 0;
 
     // Handle initial capture (including en passant)
-    const initial_victim = if (state.pieceAt(target_sq)) |p|
+    const initial_victim = if (state.mailbox[target_sq]) |p|
         see_piece_values[p]
     else if (attacker_piece == piece.pawn and state.en_passant == target_sq)
         see_piece_values[piece.pawn]

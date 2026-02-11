@@ -6,14 +6,15 @@ const Atomic = std.atomic.Value;
 const engine = @import("engine.zig");
 const GameResult = engine.GameResult;
 const Move = engine.Move;
-const State = @import("State.zig");
-const piece = @import("piece.zig");
-const square = @import("square.zig");
-const movegen = @import("movegen.zig");
+const State = engine.State;
+const piece = engine.piece;
+const square = engine.square;
+const movegen = engine.movegen;
 const MoveList = movegen.MoveList;
-const evaluation = @import("evaluation.zig");
+const evaluation = engine.evaluation;
 
 const checkmate_score: i32 = 100000;
+const mate_score_threshold: i32 = checkmate_score - max_ply;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
 const beta_init: i32 = std.math.maxInt(i32);
 const max_ply: usize = 64;
@@ -160,7 +161,8 @@ const TranspositionEntry = struct {
 // Lock-free transposition table entry packed into two 64-bit words
 // This allows atomic read/write without locks (Stockfish-style)
 // Word 1: hash XOR data (for validation)
-// Word 2: data (score:16, depth:8, flag:2, move_start:6, move_end:6, move_valid:1 = 39 bits)
+// Word 2: data (score:16, depth:8, flag:2, move_start:6, move_end:6, move_valid:1,
+//          is_promotion:1, promotion_piece:3 = 43 bits)
 //
 // On 32-bit platforms (WASM), we use non-atomic access since search is single-threaded.
 const builtin = @import("builtin");
@@ -183,7 +185,7 @@ const PackedTTEntry = struct {
     key: TTWord = TTWord.init(0),
     data: TTWord = TTWord.init(0),
 
-    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) struct { key: u64, data: u64 } {
+    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move, generation: u8) struct { key: u64, data: u64 } {
         // Pack data into 64 bits:
         // bits 0-15: score (as u16, offset by 32768 to handle negatives)
         // bits 16-23: depth
@@ -191,6 +193,9 @@ const PackedTTEntry = struct {
         // bits 26-31: move start
         // bits 32-37: move end
         // bit 38: move valid
+        // bit 39: is_promotion
+        // bits 40-42: promotion_piece
+        // bits 43-50: generation
         // Clamp score to i16 range to avoid corruption of mate scores
         const clamped_score = std.math.clamp(score, std.math.minInt(i16), std.math.maxInt(i16));
         const score_u: u16 = @bitCast(@as(i16, @intCast(clamped_score)));
@@ -201,7 +206,12 @@ const PackedTTEntry = struct {
             data |= @as(u64, m.start) << 26;
             data |= @as(u64, m.end) << 32;
             data |= @as(u64, 1) << 38;
+            if (m.is_promotion) {
+                data |= @as(u64, 1) << 39;
+                data |= @as(u64, m.promotion_piece) << 40;
+            }
         }
+        data |= @as(u64, generation) << 43;
         // XOR hash with data for validation
         const key = hash ^ data;
         return .{ .key = key, .data = data };
@@ -218,6 +228,8 @@ const PackedTTEntry = struct {
         const move_start: u6 = @truncate(data >> 26);
         const move_end: u6 = @truncate(data >> 32);
         const move_valid: u1 = @truncate(data >> 38);
+        const is_promotion: u1 = @truncate(data >> 39);
+        const promotion_piece: u3 = @truncate(data >> 40);
 
         if (flag == .empty) return null;
 
@@ -226,25 +238,54 @@ const PackedTTEntry = struct {
             .score = score,
             .depth = depth,
             .flag = flag,
-            .best_move = if (move_valid == 1) Move{ .start = move_start, .end = move_end } else null,
+            .best_move = if (move_valid == 1) Move{
+                .start = move_start,
+                .end = move_end,
+                .is_promotion = is_promotion == 1,
+                .promotion_piece = promotion_piece,
+            } else null,
         };
     }
 };
 
+// Adjust mate scores for TT storage: convert from ply-relative to root-relative
+// A score of checkmate_score - ply means "mate in ply moves from here".
+// When storing, we add ply so the stored score is distance from root.
+// When retrieving, we subtract ply to get distance from the retrieval node.
+fn scoreToTT(score: i32, ply: usize) i32 {
+    const p = @as(i32, @intCast(ply));
+    if (score > mate_score_threshold) return score + p;
+    if (score < -mate_score_threshold) return score - p;
+    return score;
+}
+
+fn scoreFromTT(score: i32, ply: usize) i32 {
+    const p = @as(i32, @intCast(ply));
+    if (score > mate_score_threshold) return score - p;
+    if (score < -mate_score_threshold) return score + p;
+    return score;
+}
+
 pub const TranspositionTable = struct {
     entries: []PackedTTEntry,
     alloc: std.mem.Allocator,
+    generation: u8 = 0,
 
-    // Fixed-size transposition table using direct indexing
-    // Size must be a power of 2 for fast modulo via bitmask
-    const tt_size_bits = 20; // 2^20 = ~1M entries
-    const tt_size: usize = 1 << tt_size_bits;
-    const tt_mask: u64 = tt_size - 1;
+    // Multi-bucket transposition table: 4 entries per bucket = 1 cache line (64 bytes)
+    const bucket_size: usize = 4;
+    const num_buckets_bits = 18; // 2^18 buckets
+    const num_buckets: usize = 1 << num_buckets_bits;
+    const bucket_mask: u64 = num_buckets - 1;
+    const num_entries: usize = num_buckets * bucket_size;
 
     pub fn init(alloc: std.mem.Allocator) !TranspositionTable {
-        const entries = try alloc.alloc(PackedTTEntry, tt_size);
+        const entries = try alloc.alloc(PackedTTEntry, num_entries);
         @memset(entries, PackedTTEntry{});
         return .{ .entries = entries, .alloc = alloc };
+    }
+
+    pub fn newSearch(self: *TranspositionTable) void {
+        self.generation +%= 1;
     }
 
     pub fn deinit(self: *TranspositionTable) void {
@@ -252,32 +293,86 @@ pub const TranspositionTable = struct {
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
-        const idx: usize = @intCast(hash & tt_mask);
-        const entry = &self.entries[idx];
+        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
 
-        // Lock-free read with atomic loads
-        const key = entry.key.load(.monotonic);
-        const data = entry.data.load(.monotonic);
+        for (0..bucket_size) |i| {
+            const entry = &self.entries[base + i];
+            const key = entry.key.load(.monotonic);
+            const data = entry.data.load(.monotonic);
 
-        return PackedTTEntry.unpack(key, data, hash);
+            if (PackedTTEntry.unpack(key, data, hash)) |result| {
+                return result;
+            }
+        }
+        return null;
     }
 
     fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) void {
-        const idx: usize = @intCast(hash & tt_mask);
-        const entry = &self.entries[idx];
+        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
+        const gen = self.generation;
 
-        // Check replacement policy: only replace if new depth >= existing
-        const old_data = entry.data.load(.monotonic);
-        const old_depth: u8 = @truncate(old_data >> 16);
-        const old_flag: Flag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
+        var victim_idx: usize = base;
+        var victim_score: i32 = std.math.maxInt(i32);
+        var same_hash_idx: ?usize = null;
 
-        if (old_flag != .empty and depth < old_depth) return;
+        // Scan all 4 entries in the bucket
+        for (0..bucket_size) |i| {
+            const idx = base + i;
+            const entry = &self.entries[idx];
+            const old_data = entry.data.load(.monotonic);
+            const old_flag: Flag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
 
-        const p = PackedTTEntry.pack(hash, score, depth, flag, best_move);
+            // Empty slot: use immediately
+            if (old_flag == .empty) {
+                victim_idx = idx;
+                victim_score = std.math.minInt(i32);
+                break;
+            }
 
-        // Lock-free write - data races are benign (just cause cache misses)
-        entry.data.store(p.data, .monotonic);
-        entry.key.store(p.key, .monotonic);
+            // Check for same hash (XOR verification)
+            const old_key = entry.key.load(.monotonic);
+            if ((old_key ^ old_data) == hash) {
+                same_hash_idx = idx;
+                continue;
+            }
+
+            // Compute replacement score: depth - 4 * age
+            const old_depth: u8 = @truncate(old_data >> 16);
+            const old_gen: u8 = @truncate(old_data >> 43);
+            const age: i32 = @intCast(gen -% old_gen);
+            const rs: i32 = @as(i32, old_depth) - 4 * age;
+            if (rs < victim_score) {
+                victim_score = rs;
+                victim_idx = idx;
+            }
+        }
+
+        // Same hash: always replace, but preserve old best_move if new entry has none
+        if (same_hash_idx) |idx| {
+            const actual_move = if (best_move == null) blk: {
+                const old_data = self.entries[idx].data.load(.monotonic);
+                const move_valid: u1 = @truncate(old_data >> 38);
+                if (move_valid == 1) {
+                    break :blk @as(?Move, Move{
+                        .start = @truncate(old_data >> 26),
+                        .end = @truncate(old_data >> 32),
+                        .is_promotion = @as(u1, @truncate(old_data >> 39)) == 1,
+                        .promotion_piece = @truncate(old_data >> 40),
+                    });
+                }
+                break :blk null;
+            } else best_move;
+
+            const p = PackedTTEntry.pack(hash, score, depth, flag, actual_move, gen);
+            self.entries[idx].data.store(p.data, .monotonic);
+            self.entries[idx].key.store(p.key, .monotonic);
+            return;
+        }
+
+        // Use victim slot
+        const p = PackedTTEntry.pack(hash, score, depth, flag, best_move, gen);
+        self.entries[victim_idx].data.store(p.data, .monotonic);
+        self.entries[victim_idx].key.store(p.key, .monotonic);
     }
 };
 
@@ -308,7 +403,7 @@ const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
-fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
+fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
     const to_move = state.to_move;
     const in_check = state.in_check == to_move;
 
@@ -317,7 +412,7 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
         var moves = movegen.legalMoves(state, to_move);
 
         if (moves.len == 0) {
-            return -checkmate_score;
+            return -checkmate_score + @as(i32, @intCast(ply));
         }
 
         const ctx = MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
@@ -326,10 +421,10 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
         var alpha = alpha_initial;
         for (0..moves.len) |i| {
             const m = moves.pickNext(i);
-            const p = state.pieceAt(m.start).?;
+            const p = state.mailbox[m.start].?;
             const undo = state.makeMove(m, to_move, p);
 
-            const score = -quiescence(state, -beta, -alpha);
+            const score = -quiescence(state, ply + 1, -beta, -alpha);
 
             state.unmakeMove(m, to_move, p, undo);
 
@@ -371,20 +466,22 @@ fn quiescence(state: *State, alpha_initial: i32, beta: i32) i32 {
 
     for (0..captures.len) |i| {
         const m = captures.pickNext(i);
-        const p = state.pieceAt(m.start).?;
+        const p = state.mailbox[m.start].?;
 
         // Delta pruning: skip captures that can't possibly improve alpha
-        // Check if even capturing the most valuable piece (queen) + margin would improve alpha
-        if (state.pieceAt(m.end)) |captured_piece| {
-            const capture_value = evaluation.piece_values_mg[captured_piece];
-            if (stand_pat + capture_value + delta_margin < alpha) {
-                continue; // Skip hopeless captures
+        if (state.mailbox[m.end]) |captured_piece| {
+            var gain = evaluation.piece_values_mg[captured_piece];
+            if (m.is_promotion) {
+                gain += evaluation.piece_values_mg[m.promotion_piece] - evaluation.piece_values_mg[piece.pawn];
+            }
+            if (stand_pat + gain + delta_margin < alpha) {
+                continue;
             }
         }
 
         const undo = state.makeMove(m, to_move, p);
 
-        const score = -quiescence(state, -beta, -alpha);
+        const score = -quiescence(state, ply + 1, -beta, -alpha);
 
         state.unmakeMove(m, to_move, p, undo);
 
@@ -406,30 +503,50 @@ const futility_margins = [_]i32{ 0, 200, 500 };
 // More conservative: 5 + depth^2
 const lmp_thresholds = [4]u8{ 5, 6, 9, 14 }; // depth 0, 1, 2, 3
 
-fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, tbl: *TranspositionTable, killers: *KillerTable, history: *PositionHistory, history_table: *evaluation.HistoryTable, countermoves: *CountermoveTable, prev_move: ?Move) i32 {
+const SearchContext = struct {
+    tt: *TranspositionTable,
+    killers: *KillerTable,
+    history: *PositionHistory,
+    history_table: *evaluation.HistoryTable,
+    countermoves: *CountermoveTable,
+    prev_move: ?Move,
+};
+
+fn negamax(
+    state: *State,
+    depth: u8,
+    ply: usize,
+    alpha_initial: i32,
+    beta_param: i32,
+    search_ctx: SearchContext,
+) i32 {
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
 
     // Check for repetition - return draw score (0) if position occurred before
     // We check for twofold since we're in the search tree (implies threefold in game)
-    if (ply > 0 and history.isTwofold(hash, state.halfmove_clock)) {
+    if (ply > 0 and search_ctx.history.isTwofold(hash, state.halfmove_clock)) {
+        return 0;
+    }
+
+    if (state.hasInsufficientMaterial()) {
         return 0;
     }
 
     // Probe transposition table
-    if (tbl.probe(hash)) |entry| {
+    var beta = beta_param;
+    if (search_ctx.tt.probe(hash)) |entry| {
         if (entry.depth >= depth) {
+            const tt_score = scoreFromTT(entry.score, ply);
             switch (entry.flag) {
-                .exact => return entry.score,
-                .lowerBound => alpha = @max(alpha, entry.score),
-                .upperBound => {
-                    if (entry.score <= alpha) return entry.score;
-                },
+                .exact => return tt_score,
+                .lowerBound => alpha = @max(alpha, tt_score),
+                .upperBound => beta = @min(beta, tt_score),
                 .empty => {},
             }
             if (alpha >= beta) {
-                return entry.score;
+                return tt_score;
             }
         }
     }
@@ -440,14 +557,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     // Quiescence handles checkmate detection when in check.
     // This avoids generating a full MoveList at the most numerous nodes.
     if (depth == 0) {
-        return quiescence(state, alpha, beta);
+        return quiescence(state, ply, alpha, beta);
     }
 
     var moves = movegen.legalMoves(state, to_move);
 
     if (moves.len == 0) {
         if (state.in_check == to_move) {
-            return -checkmate_score;
+            return -checkmate_score + @as(i32, @intCast(ply));
         } else {
             return 0;
         }
@@ -484,7 +601,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
-        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, tbl, killers, history, history_table, countermoves, null);
+        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, .{
+            .tt = search_ctx.tt,
+            .killers = search_ctx.killers,
+            .history = search_ctx.history,
+            .history_table = search_ctx.history_table,
+            .countermoves = search_ctx.countermoves,
+            .prev_move = null,
+        });
 
         // Unmake null move
         state.*.to_move = old_to_move;
@@ -498,13 +622,13 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     }
 
     // Order moves with killer, countermove, and history heuristics
-    const ply_killers = if (ply < max_ply) killers.moves[ply] else [2]?Move{ null, null };
-    const countermove = if (prev_move) |pm| countermoves.get(pm) else null;
+    const ply_killers = if (ply < max_ply) search_ctx.killers.moves[ply] else [2]?Move{ null, null };
+    const countermove = if (search_ctx.prev_move) |pm| search_ctx.countermoves.get(pm) else null;
     const sort_ctx = MoveList.SortCtx{
         .state = state,
         .color = to_move,
         .killers = ply_killers,
-        .history = history_table,
+        .history = search_ctx.history_table,
         .countermove = countermove,
     };
     moves.scoreAll(&sort_ctx);
@@ -513,14 +637,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
 
     for (0..moves.len) |i| {
         const m = moves.pickNext(i);
-        const p = state.pieceAt(m.start).?;
+        const p = state.mailbox[m.start].?;
 
         // Check if this is a capture before making the move (for LMR decision)
-        const is_capture = state.pieceAt(m.end) != null;
+        const is_capture = state.mailbox[m.end] != null;
         const end_rank = m.end / 8;
         const is_promotion = p == piece.pawn and
             ((end_rank == 7 and to_move == engine.Colors.white) or (end_rank == 0 and to_move == engine.Colors.black));
-        const is_killer = killers.isKiller(ply, m);
+        const is_killer = search_ctx.killers.isKiller(ply, m);
 
         // Futility pruning: skip quiet moves at shallow depths when hopeless
         // Note: we need to make the move first to check if it gives check
@@ -531,7 +655,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
             !is_capture and !is_promotion and !is_killer;
 
         const undo = state.makeMove(m, to_move, p);
-        history.push(state.zobrist_hash);
+        search_ctx.history.push(state.zobrist_hash);
 
         // Check extension: extend search by 1 ply when giving check
         const gives_check = state.in_check != null;
@@ -539,12 +663,12 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         // Apply pruning only if the move doesn't give check
         if (!gives_check) {
             if (should_futility_prune) {
-                history.pop();
+                search_ctx.history.pop();
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
             }
             if (should_lmp) {
-                history.pop();
+                search_ctx.history.pop();
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
             }
@@ -556,7 +680,14 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         var score: i32 = undefined;
         if (i == 0) {
             // First move: search with full window
-            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table, countermoves, m);
+            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
+                .tt = search_ctx.tt,
+                .killers = search_ctx.killers,
+                .history = search_ctx.history,
+                .history_table = search_ctx.history_table,
+                .countermoves = search_ctx.countermoves,
+                .prev_move = m,
+            });
         } else {
             // Late Move Reductions (LMR):
             // Moves ordered later are likely worse, so search with reduced depth first.
@@ -576,23 +707,44 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
             }
 
             // PVS with LMR: search with reduced depth and null window
-            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
+            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, .{
+                .tt = search_ctx.tt,
+                .killers = search_ctx.killers,
+                .history = search_ctx.history,
+                .history_table = search_ctx.history_table,
+                .countermoves = search_ctx.countermoves,
+                .prev_move = m,
+            });
 
             // Re-search at full depth if reduced search improved alpha
             if (score > alpha and reduction > 0) {
-                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
+                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, .{
+                    .tt = search_ctx.tt,
+                    .killers = search_ctx.killers,
+                    .history = search_ctx.history,
+                    .history_table = search_ctx.history_table,
+                    .countermoves = search_ctx.countermoves,
+                    .prev_move = m,
+                });
             }
 
             // Re-search with full window if null window failed high
             if (score > alpha and score < beta) {
-                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, tbl, killers, history, history_table, countermoves, m);
+                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
+                    .tt = search_ctx.tt,
+                    .killers = search_ctx.killers,
+                    .history = search_ctx.history,
+                    .history_table = search_ctx.history_table,
+                    .countermoves = search_ctx.countermoves,
+                    .prev_move = m,
+                });
             }
         }
 
         // Track if it was a capture (for killer move storage)
         const was_capture = is_capture or undo.captured_piece != null; // en passant
 
-        history.pop();
+        search_ctx.history.pop();
         state.unmakeMove(m, to_move, p, undo);
 
         if (score > max_score) {
@@ -604,11 +756,11 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
         if (alpha >= beta) {
             // Beta cutoff - store killer, countermove, and update history for quiet moves
             if (!was_capture) {
-                killers.store(ply, m);
-                history_table.update(to_move, m.start, m.end, depth);
+                search_ctx.killers.store(ply, m);
+                search_ctx.history_table.update(to_move, m.start, m.end, depth);
                 // Store countermove: this move refutes opponent's previous move
-                if (prev_move) |pm| {
-                    countermoves.store(pm, m);
+                if (search_ctx.prev_move) |pm| {
+                    search_ctx.countermoves.store(pm, m);
                 }
             }
             break;
@@ -623,7 +775,7 @@ fn negamax(state: *State, depth: u8, ply: usize, alpha_initial: i32, beta: i32, 
     else
         .exact;
 
-    tbl.store(hash, max_score, depth, flag, best_move);
+    search_ctx.tt.store(hash, scoreToTT(max_score, ply), depth, flag, best_move);
 
     return max_score;
 }
@@ -636,7 +788,18 @@ pub const SearchResult = struct {
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
 // alpha_bound and beta_bound allow aspiration windows when not at full window
-fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *evaluation.HistoryTable, countermoves: *CountermoveTable, alpha_bound: i32, beta_bound: i32) ?SearchResult {
+fn searchAtDepthWithBounds(
+    state: *State,
+    depth: u8,
+    tbl: *TranspositionTable,
+    killers: *KillerTable,
+    pv_move: ?Move,
+    history: *PositionHistory,
+    history_table: *evaluation.HistoryTable,
+    countermoves: *CountermoveTable,
+    alpha_bound: i32,
+    beta_bound: i32,
+) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
     var alpha = alpha_bound;
@@ -664,7 +827,7 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
 
     for (0..moves.len) |i| {
         const m = moves.pickNext(i);
-        const p = state.pieceAt(m.start).?;
+        const p = state.mailbox[m.start].?;
         const undo = state.makeMove(m, to_move, p);
         history.push(state.zobrist_hash);
 
@@ -674,22 +837,30 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
                 .checkmate => if (r.checkmate == to_move) {
                     history.pop();
                     state.unmakeMove(m, to_move, p, undo);
-                    return .{ .move = m, .score = checkmate_score, .depth = depth };
+                    return .{ .move = m, .score = checkmate_score - 1, .depth = depth };
                 },
                 else => {},
             }
         }
 
         var score: i32 = undefined;
+        const ctx = SearchContext{
+            .tt = tbl,
+            .killers = killers,
+            .history = history,
+            .history_table = history_table,
+            .countermoves = countermoves,
+            .prev_move = m,
+        };
         if (i == 0) {
             // First move: full window search
-            score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table, countermoves, m);
+            score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, ctx);
         } else {
             // PVS: null window search first
-            score = -negamax(state, depth - 1, 1, -alpha - 1, -alpha, tbl, killers, history, history_table, countermoves, m);
+            score = -negamax(state, depth - 1, 1, -alpha - 1, -alpha, ctx);
             // Re-search with full window if failed high
             if (score > alpha and score < beta_bound) {
-                score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, tbl, killers, history, history_table, countermoves, m);
+                score = -negamax(state, depth - 1, 1, -beta_bound, -alpha, ctx);
             }
         }
 
@@ -720,7 +891,16 @@ fn searchAtDepthWithBounds(state: *State, depth: u8, tbl: *TranspositionTable, k
 }
 
 // Search at a specific depth with full window
-fn searchAtDepth(state: *State, depth: u8, tbl: *TranspositionTable, killers: *KillerTable, pv_move: ?Move, history: *PositionHistory, history_table: *evaluation.HistoryTable, countermoves: *CountermoveTable) ?SearchResult {
+fn searchAtDepth(
+    state: *State,
+    depth: u8,
+    tbl: *TranspositionTable,
+    killers: *KillerTable,
+    pv_move: ?Move,
+    history: *PositionHistory,
+    history_table: *evaluation.HistoryTable,
+    countermoves: *CountermoveTable,
+) ?SearchResult {
     return searchAtDepthWithBounds(state, depth, tbl, killers, pv_move, history, history_table, countermoves, alpha_init, beta_init);
 }
 
@@ -813,6 +993,8 @@ pub fn searchParallel(
     tbl: *TranspositionTable,
 ) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
+
+    tbl.newSearch();
 
     var shared = SharedSearchState{
         .max_depth = max_depth,
@@ -944,8 +1126,8 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             best_move = r.move;
             best_score = r.score;
 
-            try square.squareToAlgebraic(best_move.?.start, &sq_start);
-            try square.squareToAlgebraic(best_move.?.end, &sq_end);
+            try square.toAlgebraic(best_move.?.start, &sq_start);
+            try square.toAlgebraic(best_move.?.end, &sq_end);
 
             best_depth = r.depth;
 
@@ -983,6 +1165,10 @@ pub fn isGameOverWithHistory(state: *const State, history: ?*const PositionHisto
         } else {
             return .stalemate;
         }
+    }
+
+    if (state.hasInsufficientMaterial()) {
+        return .insufficientMaterial;
     }
 
     if (state.halfmove_clock >= 100) {

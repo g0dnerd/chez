@@ -47,7 +47,7 @@ mailbox: [64]?Piece,
 const pawn_start_rank: [2]Square = .{ 1, 6 };
 const pawn_double_rank: [2]Square = .{ 3, 4 };
 pub const pawn_promo_rank: [2]Square = .{ 7, 0 };
-const pawn_ep_offset: [2]i8 = .{ -8, 8 };
+pub const pawn_ep_offset: [2]i8 = .{ -8, 8 };
 
 pub fn defaultPosition() State {
     const pawns = Bitboard{ .bits = 0xff00000000ff00 };
@@ -489,7 +489,7 @@ pub fn computeHash(self: *const State) u64 {
         const color: Color = @intCast(color_idx);
         var color_pieces = self.colorBitboard(color);
         while (color_pieces.next()) |s| {
-            const p = self.pieceAt(s).?;
+            const p = self.mailbox[s].?;
             h ^= keys.pieces[color][p][s];
         }
     }
@@ -551,6 +551,39 @@ pub fn hasNonPawnMaterial(self: *const State, c: Color) bool {
     return !color_pieces.bitAnd(non_pawn_pieces).isEmpty();
 }
 
+// Returns true if neither side has enough material to checkmate.
+// Detected cases: K vs K, K+N vs K, K+B vs K, K+B vs K+B (same-color bishops).
+pub fn hasInsufficientMaterial(self: *const State) bool {
+    if (!self.pieceBitboard(piece.pawn).isEmpty()) return false;
+    if (!self.pieceBitboard(piece.rook).isEmpty()) return false;
+    if (!self.pieceBitboard(piece.queen).isEmpty()) return false;
+
+    const knights = self.pieceBitboard(piece.knight);
+    const bishops = self.pieceBitboard(piece.bishop);
+    const knight_count = knights.popCount();
+    const bishop_count = bishops.popCount();
+
+    // K vs K
+    if (knight_count == 0 and bishop_count == 0) return true;
+
+    // K+N vs K or K+B vs K
+    if (knight_count + bishop_count == 1) return true;
+
+    // K+B vs K+B with same-color bishops
+    if (knight_count == 0 and bishop_count == 2) {
+        const white_bishops = bishops.bitAnd(self.colorBitboard(Colors.white));
+        const black_bishops = bishops.bitAnd(self.colorBitboard(Colors.black));
+        if (white_bishops.popCount() == 1 and black_bishops.popCount() == 1) {
+            const light_squares = Bitboard{ .bits = 0x55AA55AA55AA55AA };
+            const w_on_light = !white_bishops.bitAnd(light_squares).isEmpty();
+            const b_on_light = !black_bishops.bitAnd(light_squares).isEmpty();
+            return w_on_light == b_on_light;
+        }
+    }
+
+    return false;
+}
+
 pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     return self.makeMoveInner(m, c, p, true);
 }
@@ -568,7 +601,7 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
 
     // Store undo info before modifying state
     var undo = UndoInfo{
-        .captured_piece = self.pieceAt(end),
+        .captured_piece = self.mailbox[end],
         .captured_square = end,
         .castling_rights = self.castling_rights,
         .en_passant = self.en_passant,
@@ -1308,4 +1341,51 @@ test "to fen sanity" {
 
     try expectEqual(default_fen.len, fen_len);
     try expect(std.mem.eql(u8, default_fen, fen_buf[0..fen_len]));
+}
+
+test "insufficient material: K vs K" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/8 w - - 0 1");
+    try expect(state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+N vs K" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/1N6 w - - 0 1");
+    try expect(state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+B vs K" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/5B2 w - - 0 1");
+    try expect(state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+B vs K+B same color" {
+    // Both bishops on light squares
+    const state = try State.fromFen("8/8/4k3/5b2/8/3K4/8/5B2 w - - 0 1");
+    try expect(state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+B vs K+B opposite color" {
+    // White bishop on light square (f1), black bishop on dark square (e5)
+    const state = try State.fromFen("8/8/4k3/4b3/8/3K4/8/5B2 w - - 0 1");
+    try expect(!state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+N+N vs K is sufficient" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/NN6 w - - 0 1");
+    try expect(!state.hasInsufficientMaterial());
+}
+
+test "insufficient material: starting position is sufficient" {
+    const state = State.defaultPosition();
+    try expect(!state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+R vs K is sufficient" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/R7 w - - 0 1");
+    try expect(!state.hasInsufficientMaterial());
+}
+
+test "insufficient material: K+P vs K is sufficient" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/P7/8 w - - 0 1");
+    try expect(!state.hasInsufficientMaterial());
 }

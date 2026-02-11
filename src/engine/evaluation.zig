@@ -629,17 +629,24 @@ pub const HistoryTable = struct {
 
 pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     var score: i32 = 0;
+    const p = ctx.state.mailbox[m.start].?;
 
     // MVV-LVA for captures
-    if (ctx.state.pieceAt(m.end)) |captured_piece| {
-        const attacker_piece = ctx.state.pieceAt(m.start).?;
+    if (ctx.state.mailbox[m.end]) |captured_piece| {
+        const attacker_piece = ctx.state.mailbox[m.start].?;
         score += piece_values_mg[captured_piece] * 10 - piece_values_mg[attacker_piece];
+    } else {
+        // Check for en-passant
+        const ep_square: u6 = @intCast(@as(u6, m.start) + State.pawn_ep_offset[ctx.state.to_move]);
+        if (m.end == ep_square) {
+            score += piece_values_mg[piece.pawn] * 10 - piece_values_mg[piece.pawn];
+        }
     }
 
     // Promotion bonus
     const end_rank = m.end / 8;
-    if (ctx.state.pieceAt(m.start) == piece.pawn and
-        ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black)))
+    if (p == piece.pawn and ((end_rank == 7 and ctx.color == Colors.white) or
+        (end_rank == 0 and ctx.color == Colors.black)))
     {
         score += 5000;
     }
@@ -664,8 +671,8 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     }
 
     // History heuristic for quiet moves (non-captures, non-promotions)
-    if (ctx.state.pieceAt(m.end) == null and ctx.history != null) {
-        const is_promotion = ctx.state.pieceAt(m.start) == piece.pawn and
+    if (ctx.state.mailbox[m.end] == null and ctx.history != null) {
+        const is_promotion = ctx.state.mailbox[m.start] == piece.pawn and
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
             score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 10);

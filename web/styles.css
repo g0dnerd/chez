@@ -15,7 +15,7 @@
   --highlight-selected: rgba(255, 255, 0, 0.5);
   --highlight-move: rgba(0, 255, 0, 0.4);
   --highlight-capture: rgba(255, 0, 0, 0.4);
-  --highlight-last-move: rgba(255, 255, 0, 0.3);
+  --highlight-last-move: rgba(0, 255, 0, 0.4);
 }
 
 body {
@@ -218,6 +218,8 @@ select {
 select:focus {
   outline: none;
   border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .btn {

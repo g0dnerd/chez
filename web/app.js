@@ -170,6 +170,7 @@ function onSquareClick(square) {
 function generateLegalMovesFor(square) {
   legalMoves = [];
   const count = wasm.wasm_generate_moves();
+  console.log(`${count} legal moves.`);
 
   for (let i = 0; i < count; i++) {
     const packed = wasm.wasm_get_move(i);
@@ -189,9 +190,11 @@ function makeMove(start, end, promo) {
   const captured = wasm.wasm_piece_at(end);
 
   const success = wasm.wasm_make_move(start, end, promo);
-  if (!success) {
-    console.error("Move failed:", start, end, promo);
+  if (success < 0) {
+    console.error("Move failed:", start, end, promo, success);
     return;
+  } else {
+    console.log("Move succeeded:", start, end, promo, success);
   }
 
   // Record move
