@@ -811,7 +811,8 @@ fn searchAtDepthWithBounds(
         return null;
     }
 
-    const root_ctx = MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
+    const root_killers = if (0 < max_ply) killers.moves[0] else [2]?Move{ null, null };
+    const root_ctx = MoveList.SortCtx{ .state = state, .color = to_move, .killers = root_killers, .history = history_table };
     moves.scoreAll(&root_ctx);
 
     // If we have a PV move from the previous iteration, give it max score
