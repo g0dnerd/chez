@@ -612,14 +612,13 @@ pub const HistoryTable = struct {
         return self.table[color][from][to];
     }
 
-    pub fn update(self: *HistoryTable, color: Color, from: u6, to: u6, depth: u8) void {
-        // Bonus proportional to depth squared (deeper cutoffs are more valuable)
-        const bonus: i32 = @as(i32, depth) * @as(i32, depth);
-        self.table[color][from][to] += bonus;
-        // Prevent overflow - cap at reasonable value
-        if (self.table[color][from][to] > 10000) {
-            self.table[color][from][to] = 10000;
-        }
+    const max_history: i32 = 16384;
+
+    pub fn update(self: *HistoryTable, color: Color, from: u6, to: u6, bonus: i32) void {
+        const entry = &self.table[color][from][to];
+        // Gravity formula: bonus is damped as value approaches max_history
+        // This provides natural aging — large values get smaller effective bonuses
+        entry.* += bonus - @divTrunc(entry.* * @as(i32, @intCast(@abs(bonus))), max_history);
     }
 
     pub fn clear(self: *HistoryTable) void {
@@ -675,7 +674,7 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
         const is_promotion = ctx.state.mailbox[m.start] == piece.pawn and
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
-            score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 10);
+            score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 32);
         }
     }
 

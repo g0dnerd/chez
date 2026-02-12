@@ -634,6 +634,8 @@ fn negamax(
     moves.scoreAll(&sort_ctx);
 
     var max_score: i32 = std.math.minInt(i32);
+    var quiets_tried: [256]struct { start: u6, end: u6 } = undefined;
+    var num_quiets: usize = 0;
 
     for (0..moves.len) |i| {
         const m = moves.pickNext(i);
@@ -747,6 +749,11 @@ fn negamax(
         search_ctx.history.pop();
         state.unmakeMove(m, to_move, p, undo);
 
+        if (!was_capture and !is_promotion) {
+            quiets_tried[num_quiets] = .{ .start = m.start, .end = m.end };
+            num_quiets += 1;
+        }
+
         if (score > max_score) {
             max_score = score;
             best_move = m;
@@ -756,8 +763,16 @@ fn negamax(
         if (alpha >= beta) {
             // Beta cutoff - store killer, countermove, and update history for quiet moves
             if (!was_capture) {
+                const bonus: i32 = @as(i32, depth) * @as(i32, depth);
                 search_ctx.killers.store(ply, m);
-                search_ctx.history_table.update(to_move, m.start, m.end, depth);
+                search_ctx.history_table.update(to_move, m.start, m.end, bonus);
+                // Malus: penalize all quiet moves tried before the cutoff move
+                // If cutoff move is quiet it's the last entry in quiets_tried; skip it.
+                // If cutoff move is a promotion it's not in quiets_tried; penalize all.
+                const malus_count = if (!is_promotion) num_quiets - 1 else num_quiets;
+                for (0..malus_count) |qi| {
+                    search_ctx.history_table.update(to_move, quiets_tried[qi].start, quiets_tried[qi].end, -bonus);
+                }
                 // Store countermove: this move refutes opponent's previous move
                 if (search_ctx.prev_move) |pm| {
                     search_ctx.countermoves.store(pm, m);
