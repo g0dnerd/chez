@@ -197,6 +197,7 @@ main {
 
 .control-row {
   display: flex;
+  /* flex-flow: row wrap; */
   justify-content: space-between;
   align-items: center;
 }
@@ -204,6 +205,18 @@ main {
 .control-row label {
   color: var(--text-secondary);
   font-size: 14px;
+}
+
+.control-row button {
+  background: white;
+  color: var(--accent);
+  width: 100%;
+  margin-top: 12px;
+}
+
+.control-row button.inactive {
+  cursor: initial;
+  color: var(--text-secondary);
 }
 
 select {
@@ -236,7 +249,7 @@ select:focus {
     box-shadow 0.1s;
 }
 
-.btn:hover {
+.active:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(233, 69, 96, 0.4);
 }
@@ -287,7 +300,6 @@ select:focus {
   border-radius: 3px;
 }
 
-/* Promotion modal */
 .modal {
   display: none;
   position: fixed;
@@ -339,7 +351,6 @@ select:focus {
   transform: scale(1.1);
 }
 
-/* Responsive */
 @media (max-width: 900px) {
   main {
     flex-direction: column;

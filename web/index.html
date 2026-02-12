@@ -60,7 +60,12 @@
                 <option value="black">Black</option>
               </select>
             </div>
-            <button id="new-game" class="btn">New Game</button>
+            <div class="control-row">
+              <button id="unmake-move" class="btn inactive">
+                Undo Last Move
+              </button>
+            </div>
+            <button id="new-game" class="btn active">New Game</button>
           </div>
 
           <div class="move-history">
@@ -70,7 +75,6 @@
         </aside>
       </main>
 
-      <!-- Promotion modal -->
       <div class="modal" id="promotion-modal">
         <div class="modal-content">
           <h3>Promote pawn to:</h3>

@@ -6,6 +6,9 @@ const engine = @import("chez.zig").engine;
 // Global game state
 var game_state: engine.State = undefined;
 var move_list: engine.movegen.MoveList = undefined;
+var undo_info: [2]?engine.State.UndoInfo = @splat(null);
+var last_moves: [2]?engine.Move = @splat(null);
+var last_pieces: [2]?engine.piece.Piece = @splat(null);
 
 // Initialize a new game at starting position
 export fn wasm_init_default() void {
@@ -67,7 +70,7 @@ export fn wasm_get_move(index: u8) u32 {
 
 // Make a move on the board
 // Returns true if move was legal and applied, false otherwise
-export fn wasm_make_move(start: u8, end: u8, promo: u8) i8 {
+export fn wasm_make_move(start: u8, end: u8, promo: u8, is_player: bool) i8 {
     if (start > 63 or end > 63) return -1;
 
     const start_sq: engine.square.Square = @intCast(start);
@@ -102,7 +105,13 @@ export fn wasm_make_move(start: u8, end: u8, promo: u8) i8 {
     if (!is_legal) return -5;
 
     // Apply the move
-    _ = game_state.makeMove(move, color, piece);
+    const u = game_state.makeMove(move, color, piece);
+    const idx = @intFromBool(~is_player);
+
+    undo_info[idx] = u;
+    last_moves[idx] = move;
+    last_pieces[idx] = piece;
+
     return 1;
 }
 
@@ -114,6 +123,24 @@ export fn wasm_game_result() i32 {
         .checkmate => |winner| if (winner == engine.Colors.white) 1 else 2,
         .stalemate, .fiftyMoveRule, .threefoldRepetition, .insufficientMaterial => 3,
     };
+}
+
+export fn wasm_unmake_move() i8 {
+    const u_engine = undo_info[1] orelse return -1;
+    const u_player = undo_info[0] orelse return -2;
+    const mv_engine = last_moves[1] orelse return -3;
+    const mv_player = last_moves[0] orelse return -4;
+    const p_engine = last_pieces[1] orelse return -5;
+    const p_player = last_pieces[0] orelse return -6;
+
+    game_state.unmakeMove(mv_engine, ~game_state.to_move, p_engine, u_engine);
+    game_state.unmakeMove(mv_player, ~game_state.to_move, p_player, u_player);
+
+    @memset(&undo_info, null);
+    @memset(&last_moves, null);
+    @memset(&last_pieces, null);
+
+    return 0;
 }
 
 // Get best move from engine

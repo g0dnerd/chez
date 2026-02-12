@@ -28,6 +28,9 @@ async function init() {
     document
       .getElementById("player-color")
       .addEventListener("change", onColorChange);
+    document
+      .getElementById("unmake-move")
+      .addEventListener("click", unmakeMove);
 
     setupPromotionModal();
   } catch (e) {
@@ -50,6 +53,28 @@ function setupPromotionModal() {
   });
 }
 
+function unmakeMove() {
+  const success = wasm.wasm_unmake_move();
+
+  if (success < 0) {
+    console.error("Failed to unmake move:", success);
+    document
+      .getElementById("unmake-move")
+      .classList.replace("active", "inactive");
+    document.getElementById("unmake-move").disabled = "true";
+  }
+
+  selectedSquare = null;
+  legalMoves = [];
+  lastMoveFrom = null;
+  lastMoveTo = null;
+
+  moveHistory.pop();
+
+  updateHistoryDisplay();
+  updateUI();
+}
+
 function newGame() {
   wasm.wasm_init_default();
   selectedSquare = null;
@@ -59,6 +84,11 @@ function newGame() {
   moveHistory = [];
   updateHistoryDisplay();
   playerColor = document.getElementById("player-color").value;
+
+  document
+    .getElementById("unmake-move")
+    .classList.replace("active", "inactive");
+  document.getElementById("unmake-move").disabled = "true";
 
   updateUI();
   setStatus("Your move");
@@ -170,7 +200,6 @@ function onSquareClick(square) {
 function generateLegalMovesFor(square) {
   legalMoves = [];
   const count = wasm.wasm_generate_moves();
-  console.log(`${count} legal moves.`);
 
   for (let i = 0; i < count; i++) {
     const packed = wasm.wasm_get_move(i);
@@ -189,12 +218,10 @@ function makeMove(start, end, promo) {
   const color = wasm.wasm_color_at(start);
   const captured = wasm.wasm_piece_at(end);
 
-  const success = wasm.wasm_make_move(start, end, promo);
+  const success = wasm.wasm_make_move(start, end, promo, true);
   if (success < 0) {
     console.error("Move failed:", start, end, promo, success);
     return;
-  } else {
-    console.log("Move succeeded:", start, end, promo, success);
   }
 
   // Record move
@@ -220,6 +247,14 @@ function makeMove(start, end, promo) {
   const isEngineTurn =
     (toMove === 0 && playerColor === "black") ||
     (toMove === 1 && playerColor === "white");
+
+  const moveNum = wasm.wasm_fullmove_clock();
+  if (moveNum >= 2) {
+    document
+      .getElementById("unmake-move")
+      .classList.replace("inactive", "active");
+    document.getElementById("unmake-move").removeAttribute("disabled");
+  }
 
   if (isEngineTurn) {
     setStatus("Engine thinking...");
@@ -263,7 +298,7 @@ function engineMove() {
   const color = wasm.wasm_color_at(start);
   const captured = wasm.wasm_piece_at(end);
 
-  wasm.wasm_make_move(start, end, promo);
+  wasm.wasm_make_move(start, end, promo, false);
 
   // Record move
   const moveStr = formatMove(piece, start, end, captured !== 255, promo);
@@ -284,6 +319,14 @@ function engineMove() {
     document.getElementById("status").classList.add("check");
   } else {
     setStatus("Your move");
+  }
+
+  const moveNum = wasm.wasm_fullmove_clock();
+  if (moveNum >= 2) {
+    document
+      .getElementById("unmake-move")
+      .classList.replace("inactive", "active");
+    document.getElementById("unmake-move").removeAttribute("disabled");
   }
 }
 
