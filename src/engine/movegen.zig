@@ -592,68 +592,44 @@ fn isLegalMove(state: *const State, m: Move, c: Color, p: Piece, king_square: Sq
     return true;
 }
 
-// Check if there's a slider attacking both the king and this piece
-// If so, return the ray between them
+// Check if there's a slider pinning this piece to the king.
+// If so, return the ray from king to pinner (inclusive) — the piece may only move along it.
 fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboard {
-    if (s == king_square) {
-        return Bitboard.empty;
-    }
+    if (s == king_square) return Bitboard.empty;
 
     const direction = engine.Direction.fromSquares(king_square, s);
+    const away_dir = square.toRayDirection(direction, king_square, s) orelse return Bitboard.empty;
+    const toward_dir = away_dir.opposite();
 
-    if (direction == engine.Direction.none) {
-        return Bitboard.empty;
-    }
+    const away_idx = @intFromEnum(away_dir);
+    const toward_idx = @intFromEnum(toward_dir);
 
-    const between = square.betweenSquares(king_square, s);
-    if (!(between.bitAnd(state.all_pieces)).isEmpty()) {
-        return Bitboard.empty;
-    }
+    // Squares strictly between king and piece (intersection of opposing rays)
+    const between_bits = square.ray_attacks[away_idx][king_square] &
+        square.ray_attacks[toward_idx][s];
+    if (between_bits & state.all_pieces.bits != 0) return Bitboard.empty;
 
-    const king_file = king_square % 8;
-    const king_rank = king_square / 8;
-    const piece_file = s % 8;
-    const piece_rank = s / 8;
+    // First occupied square beyond s, away from king
+    const beyond_occupied = square.ray_attacks[away_idx][s] & state.all_pieces.bits;
+    if (beyond_occupied == 0) return Bitboard.empty;
 
-    const file_step: i8 = switch (std.math.order(piece_file, king_file)) {
-        .gt => 1,
-        .lt => -1,
-        .eq => 0,
+    const pinner_sq: Square = if (away_dir.isPositive())
+        @intCast(@ctz(beyond_occupied))
+    else
+        @intCast(63 - @as(u7, @clz(beyond_occupied)));
+
+    // Check if pinner is an enemy slider of the correct type
+    const enemy_sliders = switch (direction) {
+        .horizontal, .vertical => state.pieceBitboard(piece.rook).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
+        .diagonal, .antiDiagonal => state.pieceBitboard(piece.bishop).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
+        .none => unreachable,
     };
 
-    const rank_step: i8 = switch (std.math.order(piece_rank, king_rank)) {
-        .gt => 1,
-        .lt => -1,
-        .eq => 0,
-    };
-
-    // Step from piece_square in the direction away from king to find next piece
-    var current_rank = @as(i8, piece_rank) + rank_step;
-    var current_file = @as(i8, piece_file) + file_step;
-
-    var next_piece_square: ?Square = null;
-
-    while (current_rank >= 0 and current_rank < 8 and current_file >= 0 and current_file < 8) {
-        const sq: Square = @intCast(current_rank * 8 + current_file);
-        if (state.all_pieces.contains(sq)) {
-            next_piece_square = sq;
-            break;
-        }
-        current_rank += rank_step;
-        current_file += file_step;
-    }
-
-    // Check if that piece is an enemy slider of the right type
-    if (next_piece_square) |sq| {
-        const enemy_sliders = switch (direction) {
-            .horizontal, .vertical => state.pieceBitboard(piece.rook).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
-            .diagonal, .antiDiagonal => state.pieceBitboard(piece.bishop).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
-            .none => return Bitboard.empty,
-        };
-
-        if (enemy_sliders.contains(sq)) {
-            return square.rayBetweenInclusive(king_square, sq, direction);
-        }
+    if (enemy_sliders.contains(pinner_sq)) {
+        // Ray from king to pinner inclusive, computed from the ray table
+        const king_ray = square.ray_attacks[away_idx][king_square];
+        const beyond_pinner = square.ray_attacks[away_idx][pinner_sq];
+        return Bitboard{ .bits = (king_ray & ~beyond_pinner) | (@as(u64, 1) << king_square) };
     }
 
     return Bitboard.empty;

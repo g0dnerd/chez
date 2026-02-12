@@ -117,6 +117,80 @@ pub fn absDiff(lhs: Square, rhs: Square) Square {
     return @intCast(@abs(diff));
 }
 
+// 8 cardinal/diagonal ray directions
+pub const RayDirection = enum(u3) {
+    N = 0,
+    NE = 1,
+    E = 2,
+    SE = 3,
+    S = 4,
+    SW = 5,
+    W = 6,
+    NW = 7,
+
+    pub fn opposite(self: RayDirection) RayDirection {
+        return @enumFromInt(@as(u3, @intFromEnum(self)) ^ 4);
+    }
+
+    // Positive directions have increasing square indices (use @ctz for closest blocker).
+    // Negative directions have decreasing indices (use @clz).
+    pub fn isPositive(self: RayDirection) bool {
+        return switch (self) {
+            .N, .NE, .E, .NW => true,
+            .S, .SE, .SW, .W => false,
+        };
+    }
+};
+
+// Map a Direction (4-way) plus relative square order to a RayDirection (8-way)
+pub fn toRayDirection(direction: Direction, from: Square, to: Square) ?RayDirection {
+    return switch (direction) {
+        .vertical => if (to > from) RayDirection.N else RayDirection.S,
+        .horizontal => if (to > from) RayDirection.E else RayDirection.W,
+        .diagonal => if (to > from) RayDirection.NE else RayDirection.SW,
+        .antiDiagonal => if (to > from) RayDirection.NW else RayDirection.SE,
+        .none => null,
+    };
+}
+
+// Precomputed ray attacks: ray_attacks[direction][square]
+// Each entry is the set of squares from `square` (exclusive) extending to the board edge.
+pub const ray_attacks = computeRayAttacks();
+
+fn computeRayAttacks() [8][64]u64 {
+    @setEvalBranchQuota(10000);
+    var rays: [8][64]u64 = undefined;
+    const deltas = [8][2]i8{
+        .{ 1, 0 },   // N
+        .{ 1, 1 },   // NE
+        .{ 0, 1 },   // E
+        .{ -1, 1 },  // SE
+        .{ -1, 0 },  // S
+        .{ -1, -1 }, // SW
+        .{ 0, -1 },  // W
+        .{ 1, -1 },  // NW
+    };
+
+    for (0..64) |sq| {
+        const file: i8 = @intCast(sq % 8);
+        const rank: i8 = @intCast(sq / 8);
+
+        for (0..8) |dir| {
+            var bb: u64 = 0;
+            var r = rank + deltas[dir][0];
+            var f = file + deltas[dir][1];
+            while (r >= 0 and r < 8 and f >= 0 and f < 8) {
+                bb |= @as(u64, 1) << @intCast(r * 8 + f);
+                r += deltas[dir][0];
+                f += deltas[dir][1];
+            }
+            rays[dir][sq] = bb;
+        }
+    }
+
+    return rays;
+}
+
 pub fn betweenSquares(from: Square, to: Square) Bitboard {
     if (from == to) {
         return Bitboard.empty;
