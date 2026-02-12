@@ -71,8 +71,17 @@ function unmakeMove() {
 
   moveHistory.pop();
 
+  if (playerColor == "black") {
+    moveHistory[moveHistory.length - 1].black = "";
+  }
+
   updateHistoryDisplay();
   updateUI();
+
+  document
+    .getElementById("unmake-move")
+    .classList.replace("active", "inactive");
+  document.getElementById("unmake-move").disabled = "true";
 }
 
 function newGame() {
