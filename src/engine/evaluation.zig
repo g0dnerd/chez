@@ -603,6 +603,371 @@ pub fn evaluate(state: *const State) i32 {
     return total.taper(phase);
 }
 
+pub const EvalTrace = struct {
+    material: [2]Score,
+    pst: [2]Score,
+    pawn_structure: [2]Score,
+    passed_pawns: [2]Score,
+    knight_outposts: [2]Score,
+    bishop_pair: [2]Score,
+    rook_bonuses: [2]Score,
+    mobility: [2]Score,
+    king_safety: [2]Score,
+    phase: i32,
+    total: i32,
+
+    pub fn dump(self: *const EvalTrace, writer: *std.Io.Writer) !void {
+        try writer.print("              | White MG  EG | Black MG  EG |\n", .{});
+        try writer.print("--------------+--------------+--------------+\n", .{});
+        try printRow(writer, "Material     ", self.material);
+        try printRow(writer, "PST          ", self.pst);
+        try printRow(writer, "Pawn struct  ", self.pawn_structure);
+        try printRow(writer, "Passed pawns ", self.passed_pawns);
+        try printRow(writer, "Kt outposts  ", self.knight_outposts);
+        try printRow(writer, "Bishop pair  ", self.bishop_pair);
+        try printRow(writer, "Rook bonuses ", self.rook_bonuses);
+        try printRow(writer, "Mobility     ", self.mobility);
+        try printRow(writer, "King safety  ", self.king_safety);
+        try writer.print("--------------+--------------+--------------+\n", .{});
+        try writer.print("Phase: {d}/24\n", .{self.phase});
+        try writer.print("Total: {d}\n", .{self.total});
+    }
+
+    fn printRow(writer: *std.Io.Writer, label: []const u8, scores: [2]Score) !void {
+        try writer.print("{s} | {d:>5}  {d:>5} | {d:>5}  {d:>5} |\n", .{
+            label,
+            scores[0].midgame,
+            scores[0].endgame,
+            scores[1].midgame,
+            scores[1].endgame,
+        });
+    }
+};
+
+fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces_not: u64, our_pawns_bb: Bitboard, opp_pawns_bb: Bitboard) struct {
+    material: Score,
+    pst_score: Score,
+    pawn_structure: Score,
+    passed_pawns_score: Score,
+    knight_outposts_score: Score,
+    bishop_pair_score: Score,
+    rook_bonuses_score: Score,
+    mobility_score: Score,
+    king_safety_score: Score,
+    phase: i32,
+} {
+    var material_score = Score.zero;
+    var pst_score = Score.zero;
+    var pawn_structure_score = Score.zero;
+    var passed_pawns_score = Score.zero;
+    var knight_outposts_score = Score.zero;
+    var bishop_pair_score = Score.zero;
+    var rook_bonuses_score = Score.zero;
+    var mobility_score = Score.zero;
+    var king_safety_score = Score.zero;
+    var phase: i32 = 0;
+    const occupied = state.all_pieces.bits;
+
+    // --- Pawns ---
+    {
+        var pawns = our_pawns_bb;
+        const pawn_count: i32 = @intCast(pawns.popCount());
+        material_score = material_score.add(piece_values[piece.pawn].mul(pawn_count));
+
+        for (0..8) |file| {
+            const count: i32 = @intCast(@popCount(our_pawns_bb.bits & file_masks[file]));
+            if (count > 1) {
+                pawn_structure_score = pawn_structure_score.add(doubled_pawn.mul(count - 1));
+            }
+        }
+
+        while (pawns.next()) |s| {
+            const file: u6 = s % 8;
+            const rank: u6 = s / 8;
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            pst_score = pst_score.add(pst[piece.pawn][sq]);
+
+            const connected = blk: {
+                var mask: u64 = 0;
+                if (file > 0) mask |= @as(u64, 1) << (s - 1);
+                if (file < 7) mask |= @as(u64, 1) << (s + 1);
+                if (c == Colors.white and rank > 0) {
+                    if (file > 0) mask |= @as(u64, 1) << (s - 9);
+                    if (file < 7) mask |= @as(u64, 1) << (s - 7);
+                } else if (c == Colors.black and rank < 7) {
+                    if (file > 0) mask |= @as(u64, 1) << (s + 7);
+                    if (file < 7) mask |= @as(u64, 1) << (s + 9);
+                }
+                break :blk (our_pawns_bb.bits & mask) != 0;
+            };
+            if (connected) {
+                pawn_structure_score = pawn_structure_score.add(connected_pawn);
+            }
+
+            const ahead_mask = computePassedPawnMask(c, file, rank);
+            if ((opp_pawns_bb.bits & ahead_mask) == 0) {
+                const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
+                passed_pawns_score = passed_pawns_score.add(passed_pawn_bonus[passed_rank]);
+
+                const is_protected = blk: {
+                    var def_mask: u64 = 0;
+                    if (c == Colors.white and rank > 0) {
+                        if (file > 0) def_mask |= @as(u64, 1) << (s - 9);
+                        if (file < 7) def_mask |= @as(u64, 1) << (s - 7);
+                    } else if (c == Colors.black and rank < 7) {
+                        if (file > 0) def_mask |= @as(u64, 1) << (s + 7);
+                        if (file < 7) def_mask |= @as(u64, 1) << (s + 9);
+                    }
+                    break :blk (our_pawns_bb.bits & def_mask) != 0;
+                };
+                if (is_protected) {
+                    passed_pawns_score = passed_pawns_score.add(protected_passed_pawn);
+                }
+
+                const blocked = blk: {
+                    if (c == Colors.white and rank < 7) {
+                        break :blk (occupied & (@as(u64, 1) << (s + 8))) != 0;
+                    } else if (c == Colors.black and rank > 0) {
+                        break :blk (occupied & (@as(u64, 1) << (s - 8))) != 0;
+                    }
+                    break :blk false;
+                };
+                if (blocked) {
+                    passed_pawns_score = passed_pawns_score.add(blocked_passed_pawn);
+                }
+            }
+
+            if ((our_pawns_bb.bits & adjacent_files[file]) == 0) {
+                pawn_structure_score = pawn_structure_score.add(isolated_pawn);
+            }
+        }
+    }
+
+    // --- Knights ---
+    {
+        var knights = state.pieceBitboard(piece.knight).bitAnd(our_pieces);
+        const knight_count: i32 = @intCast(knights.popCount());
+        material_score = material_score.add(piece_values[piece.knight].mul(knight_count));
+        phase += knight_count * phase_weights[piece.knight];
+
+        while (knights.next()) |s| {
+            const file: u3 = @intCast(s % 8);
+            const rank: u3 = @intCast(s / 8);
+            const sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - rank) * 8 + file) else s;
+            pst_score = pst_score.add(pst[piece.knight][sq]);
+
+            const moves = movegen.knight_move_mask[s] & our_pieces_not;
+            const move_count: i32 = @intCast(@popCount(moves));
+            mobility_score = mobility_score.add(mobility_bonus[piece.knight].mul(move_count));
+
+            const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
+            if (in_outpost_zone) {
+                const can_be_attacked = blk: {
+                    if (adjacent_files[file] == 0) break :blk false;
+                    const adjacent_file_mask = adjacent_files[file];
+                    const rank_u6: u6 = rank;
+                    const attack_ranks: u64 = if (c == Colors.white)
+                        if (rank < 7) @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank_u6 + 1) * 8) else 0
+                    else if (rank > 0) (@as(u64, 1) << (rank_u6 * 8)) - 1 else 0;
+                    break :blk (opp_pawns_bb.bits & adjacent_file_mask & attack_ranks) != 0;
+                };
+
+                if (!can_be_attacked) {
+                    const defended_by_pawn = blk: {
+                        if (file == 0 or file == 7) {
+                            const def_file: u3 = if (file == 0) 1 else 6;
+                            const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
+                            if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
+                            const def_sq: u6 = @as(u6, def_file) + @as(u6, def_rank) * 8;
+                            break :blk (our_pawns_bb.bits & (@as(u64, 1) << def_sq)) != 0;
+                        }
+                        const def_rank: u3 = if (c == Colors.white) rank - 1 else rank + 1;
+                        if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) break :blk false;
+                        const left_sq: u6 = @as(u6, file - 1) + @as(u6, def_rank) * 8;
+                        const right_sq: u6 = @as(u6, file + 1) + @as(u6, def_rank) * 8;
+                        const left_mask: u64 = @as(u64, 1) << left_sq;
+                        const right_mask: u64 = @as(u64, 1) << right_sq;
+                        break :blk (our_pawns_bb.bits & (left_mask | right_mask)) != 0;
+                    };
+
+                    if (defended_by_pawn) {
+                        knight_outposts_score = knight_outposts_score.add(knight_outpost_defended);
+                    } else {
+                        knight_outposts_score = knight_outposts_score.add(knight_outpost_undefended);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Bishops ---
+    {
+        var bishops = state.pieceBitboard(piece.bishop).bitAnd(our_pieces);
+        const bishop_count: i32 = @intCast(bishops.popCount());
+        material_score = material_score.add(piece_values[piece.bishop].mul(bishop_count));
+        phase += bishop_count * phase_weights[piece.bishop];
+
+        if (bishop_count >= 2) {
+            bishop_pair_score = bishop_pair_score.add(bishop_pair);
+        }
+
+        while (bishops.next()) |s| {
+            const rank: u6 = s / 8;
+            const file: u6 = s % 8;
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            pst_score = pst_score.add(pst[piece.bishop][sq]);
+
+            const moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
+            const move_count: i32 = @intCast(@popCount(moves));
+            mobility_score = mobility_score.add(mobility_bonus[piece.bishop].mul(move_count));
+        }
+    }
+
+    // --- Rooks ---
+    {
+        var rooks = Bitboard{ .bits = state.pieceBitboard(piece.rook).bits & our_pieces };
+        const rook_count: i32 = @intCast(rooks.popCount());
+        material_score = material_score.add(piece_values[piece.rook].mul(rook_count));
+        phase += rook_count * phase_weights[piece.rook];
+
+        const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
+
+        while (rooks.next()) |s| {
+            const file: u6 = s % 8;
+            const rank: u6 = s / 8;
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            pst_score = pst_score.add(pst[piece.rook][sq]);
+
+            const moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
+            const move_count: i32 = @intCast(@popCount(moves));
+            mobility_score = mobility_score.add(mobility_bonus[piece.rook].mul(move_count));
+
+            const fmask = file_masks[file];
+            const has_our_pawn = (our_pawns_bb.bits & fmask) != 0;
+            const has_opp_pawn = (opp_pawns_bb.bits & fmask) != 0;
+            if (!has_our_pawn and !has_opp_pawn) {
+                rook_bonuses_score = rook_bonuses_score.add(rook_open_file);
+            } else if (!has_our_pawn and has_opp_pawn) {
+                rook_bonuses_score = rook_bonuses_score.add(rook_semi_open);
+            }
+
+            if (rank == seventh_rank) {
+                rook_bonuses_score = rook_bonuses_score.add(rook_on_seventh);
+            }
+        }
+    }
+
+    // --- Queens ---
+    {
+        var queens = state.pieceBitboard(piece.queen).bitAnd(our_pieces);
+        const queen_count: i32 = @intCast(queens.popCount());
+        material_score = material_score.add(piece_values[piece.queen].mul(queen_count));
+        phase += queen_count * phase_weights[piece.queen];
+
+        while (queens.next()) |s| {
+            const rank: u6 = s / 8;
+            const file: u6 = s % 8;
+            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            pst_score = pst_score.add(pst[piece.queen][sq]);
+
+            const bishop_moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
+            const rook_moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
+            const move_count: i32 = @intCast(@popCount(bishop_moves | rook_moves));
+            mobility_score = mobility_score.add(mobility_bonus[piece.queen].mul(move_count));
+        }
+    }
+
+    // --- King ---
+    {
+        const king_bb = state.pieceBitboard(piece.king).bitAnd(our_pieces);
+        const king_sq: u6 = @intCast(@ctz(king_bb.bits));
+        const king_file: u3 = @intCast(king_sq % 8);
+        const king_rank: u3 = @intCast(king_sq / 8);
+        const pst_sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - king_rank) * 8 + king_file) else king_sq;
+        pst_score = pst_score.add(pst[piece.king][pst_sq]);
+
+        const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
+        if (on_back_ranks) {
+            const shield_rank: u6 = if (c == Colors.white) @as(u6, king_rank) + 1 else @as(u6, king_rank) - 1;
+            const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
+            const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
+
+            var f: u4 = min_file;
+            while (f <= max_file) : (f += 1) {
+                const shield_sq: u6 = @as(u6, @as(u3, @intCast(f))) + shield_rank * 8;
+                const shield_mask: u64 = @as(u64, 1) << shield_sq;
+                if ((our_pawns_bb.bits & shield_mask) != 0) {
+                    king_safety_score = king_safety_score.add(pawn_shield);
+                } else {
+                    king_safety_score = king_safety_score.add(pawn_shield_missing);
+                }
+            }
+        }
+    }
+
+    return .{
+        .material = material_score,
+        .pst_score = pst_score,
+        .pawn_structure = pawn_structure_score,
+        .passed_pawns_score = passed_pawns_score,
+        .knight_outposts_score = knight_outposts_score,
+        .bishop_pair_score = bishop_pair_score,
+        .rook_bonuses_score = rook_bonuses_score,
+        .mobility_score = mobility_score,
+        .king_safety_score = king_safety_score,
+        .phase = phase,
+    };
+}
+
+pub fn evaluateTrace(state: *const State) EvalTrace {
+    const to_move = state.to_move;
+    const opp = ~to_move;
+
+    const our_pieces = state.colorBitboard(to_move).bits;
+    const opp_pieces = state.colorBitboard(opp).bits;
+    const pawn_bb = state.pieceBitboard(piece.pawn);
+    const our_pawns = pawn_bb.bitAnd(our_pieces);
+    const opp_pawns = pawn_bb.bitAnd(opp_pieces);
+
+    // White is index 0, black is index 1 regardless of side to move
+    const white_idx: usize = if (to_move == Colors.white) 0 else 1;
+    const black_idx: usize = 1 - white_idx;
+
+    const our = evaluateColorTrace(state, to_move, our_pieces, ~our_pieces, our_pawns, opp_pawns);
+    const their = evaluateColorTrace(state, opp, opp_pieces, ~opp_pieces, opp_pawns, our_pawns);
+
+    var trace: EvalTrace = undefined;
+    trace.material[white_idx] = our.material;
+    trace.material[black_idx] = their.material;
+    trace.pst[white_idx] = our.pst_score;
+    trace.pst[black_idx] = their.pst_score;
+    trace.pawn_structure[white_idx] = our.pawn_structure;
+    trace.pawn_structure[black_idx] = their.pawn_structure;
+    trace.passed_pawns[white_idx] = our.passed_pawns_score;
+    trace.passed_pawns[black_idx] = their.passed_pawns_score;
+    trace.knight_outposts[white_idx] = our.knight_outposts_score;
+    trace.knight_outposts[black_idx] = their.knight_outposts_score;
+    trace.bishop_pair[white_idx] = our.bishop_pair_score;
+    trace.bishop_pair[black_idx] = their.bishop_pair_score;
+    trace.rook_bonuses[white_idx] = our.rook_bonuses_score;
+    trace.rook_bonuses[black_idx] = their.rook_bonuses_score;
+    trace.mobility[white_idx] = our.mobility_score;
+    trace.mobility[black_idx] = their.mobility_score;
+    trace.king_safety[white_idx] = our.king_safety_score;
+    trace.king_safety[black_idx] = their.king_safety_score;
+
+    trace.phase = @min(our.phase + their.phase, max_phase);
+    const total = our.material.add(our.pst_score).add(our.pawn_structure).add(our.passed_pawns_score)
+        .add(our.knight_outposts_score).add(our.bishop_pair_score).add(our.rook_bonuses_score)
+        .add(our.mobility_score).add(our.king_safety_score)
+        .sub(their.material).sub(their.pst_score).sub(their.pawn_structure).sub(their.passed_pawns_score)
+        .sub(their.knight_outposts_score).sub(their.bishop_pair_score).sub(their.rook_bonuses_score)
+        .sub(their.mobility_score).sub(their.king_safety_score);
+    trace.total = total.taper(trace.phase);
+
+    return trace;
+}
+
 // History heuristic table: [color][from_square][to_square] -> score
 // Tracks which quiet moves have caused beta cutoffs
 pub const HistoryTable = struct {

@@ -126,6 +126,9 @@ fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_thr
         try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, d, num_threads });
     }
     try stdout.print("{f}", .{state});
+
+    const eval = engine.evaluation.evaluateTrace(state);
+    try eval.dump(stdout);
     try stdout.flush();
 }
 
