@@ -363,7 +363,7 @@ pub fn isSquareAttackedBy(state: *const State, s: Square, by_color: Color) bool 
     const knight_attackers = knight_move_mask[s] & state.pieceBitboard(piece.knight).bits & attackers;
     if (knight_attackers != 0) return true;
 
-    const king_square = state.pieceBitboard(piece.king).bitAnd(attackers).trailingZeros();
+    const king_square = state.pieceBitboard(piece.king).bitAnd(u64, attackers).trailingZeros();
     if (Bitboard.contains_u64(king_move_mask[king_square], s)) return true;
 
     // Check slider attacks (bishops, rooks, queens)
@@ -386,7 +386,7 @@ pub fn movesForPiece(state: *const State, s: Square, c: Color, p: Piece) u64 {
 
 pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
     var pieces = state.colorBitboard(c);
-    const king_mask = state.pieceBitboard(piece.king).bitAnd(pieces);
+    const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
@@ -430,7 +430,7 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
     var ret = MoveList{};
 
     var pieces = state.colorBitboard(c);
-    const king_mask = state.pieceBitboard(piece.king).bitAnd(pieces);
+    const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
 
@@ -495,7 +495,7 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
     var ret = MoveList{};
 
     var pieces = state.colorBitboard(c);
-    const king_mask = state.pieceBitboard(piece.king).bitAnd(pieces);
+    const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
     const in_check = isSquareAttackedBy(state, king_square, ~c);
     const enemy_pieces = state.colorBitboard(~c);
@@ -620,8 +620,8 @@ fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboar
 
     // Check if pinner is an enemy slider of the correct type
     const enemy_sliders = switch (direction) {
-        .horizontal, .vertical => state.pieceBitboard(piece.rook).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
-        .diagonal, .antiDiagonal => state.pieceBitboard(piece.bishop).bitOr(state.pieceBitboard(piece.queen)).bitAnd(state.colorBitboard(~c)),
+        .horizontal, .vertical => state.pieceBitboard(piece.rook).bitOr(Bitboard, state.pieceBitboard(piece.queen)).bitAnd(Bitboard, state.colorBitboard(~c)),
+        .diagonal, .antiDiagonal => state.pieceBitboard(piece.bishop).bitOr(Bitboard, state.pieceBitboard(piece.queen)).bitAnd(Bitboard, state.colorBitboard(~c)),
         .none => unreachable,
     };
 
@@ -650,18 +650,18 @@ fn enPassantExposesKing(state: *const State, m: Move, c: Color, king_square: Squ
         m.end + 8;
 
     // Temporarily remove both pawns and check for attacks
-    const all_pieces = state.all_pieces.bitAnd(Bitboard.initSquare(m.start).not()).bitAnd(Bitboard.initSquare(captured_pawn_square).not());
+    const all_pieces = state.all_pieces.bitAnd(Bitboard, Bitboard.initSquare(m.start).not()).bitAnd(Bitboard, Bitboard.initSquare(captured_pawn_square).not());
 
     // Check for enemy rooks/queens on the same rank
     const enemy_pieces = state.colorBitboard(~c);
-    var enemy_rooks_queens = state.pieceBitboard(piece.rook).bitOr(state.pieceBitboard(piece.queen)).bitAnd(enemy_pieces);
+    var enemy_rooks_queens = state.pieceBitboard(piece.rook).bitOr(Bitboard, state.pieceBitboard(piece.queen)).bitAnd(Bitboard, enemy_pieces);
 
     // Check horizontal attacks on the king's rank
     while (enemy_rooks_queens.next()) |sq| {
         if (sq / 8 == king_rank) {
             // Check if there's a clear path between attacker and king
             const between = square.betweenSquares(sq, king_square);
-            if (between.bitAnd(all_pieces).isEmpty()) {
+            if (between.bitAnd(Bitboard, all_pieces).isEmpty()) {
                 return true; // Exposed to check
             }
         }

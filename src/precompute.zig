@@ -20,12 +20,12 @@ fn blockersForSquare(s: Square, directions: *const SliderDirections) Bitboard {
         var ray = s;
         while (true) {
             const offs = trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
-            blockers.bitOrAssign(ray);
+            blockers.bitOrAssign(Square, ray);
             ray = offs;
         }
     }
 
-    return blockers.bitAnd(Bitboard.initSquare(s).not());
+    return blockers.bitAnd(Bitboard, Bitboard.initSquare(s).not());
 }
 
 fn sliderMoves(s: Square, blockers: *const Bitboard, directions: *const SliderDirections) Bitboard {
@@ -39,7 +39,7 @@ fn sliderMoves(s: Square, blockers: *const Bitboard, directions: *const SliderDi
         while (!blockers.contains(ray)) {
             const offs = trySquareOffset(ray, @as(i3, dx), @as(i3, dy)) orelse break;
             ray = offs;
-            moves.bitOrAssign(ray);
+            moves.bitOrAssign(Square, ray);
         }
     }
 
@@ -47,7 +47,7 @@ fn sliderMoves(s: Square, blockers: *const Bitboard, directions: *const SliderDi
 }
 
 fn magicIndex(entry: *const MagicEntry, blockers: *const Bitboard) usize {
-    const blockers_masked = blockers.bitAnd(entry.mask);
+    const blockers_masked = blockers.bitAnd(Bitboard, entry.mask);
     const hash = blockers_masked.bits *% entry.magic;
     return @intCast(hash >> entry.shift);
 }

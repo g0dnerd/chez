@@ -404,7 +404,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
 
     // --- Knights: material + PST + mobility + outposts ---
     {
-        var knights = state.pieceBitboard(piece.knight).bitAnd(our_pieces);
+        var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
         score = score.add(piece_values[piece.knight].mul(knight_count));
         phase += knight_count * phase_weights[piece.knight];
@@ -465,7 +465,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
 
     // --- Bishops: material + PST + mobility + bishop pair ---
     {
-        var bishops = state.pieceBitboard(piece.bishop).bitAnd(our_pieces);
+        var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
         score = score.add(piece_values[piece.bishop].mul(bishop_count));
         phase += bishop_count * phase_weights[piece.bishop];
@@ -530,7 +530,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
 
     // --- Queens: material + PST + mobility ---
     {
-        var queens = state.pieceBitboard(piece.queen).bitAnd(our_pieces);
+        var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
         score = score.add(piece_values[piece.queen].mul(queen_count));
         phase += queen_count * phase_weights[piece.queen];
@@ -551,7 +551,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
 
     // --- King: PST + king safety ---
     {
-        const king_bb = state.pieceBitboard(piece.king).bitAnd(our_pieces);
+        const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
         const king_sq: u6 = @intCast(@ctz(king_bb.bits));
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
@@ -591,8 +591,8 @@ pub fn evaluate(state: *const State) i32 {
     const our_pieces = state.colorBitboard(to_move).bits;
     const opp_pieces = state.colorBitboard(opp).bits;
     const pawn_bb = state.pieceBitboard(piece.pawn);
-    const our_pawns = pawn_bb.bitAnd(our_pieces);
-    const opp_pawns = pawn_bb.bitAnd(opp_pieces);
+    const our_pawns = pawn_bb.bitAnd(u64, our_pieces);
+    const opp_pawns = pawn_bb.bitAnd(u64, opp_pieces);
 
     // Single-pass evaluation for each color
     const our = evaluateColor(state, to_move, our_pieces, ~our_pieces, our_pawns, opp_pawns);
@@ -745,7 +745,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
     // --- Knights ---
     {
-        var knights = state.pieceBitboard(piece.knight).bitAnd(our_pieces);
+        var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
         material_score = material_score.add(piece_values[piece.knight].mul(knight_count));
         phase += knight_count * phase_weights[piece.knight];
@@ -802,7 +802,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
     // --- Bishops ---
     {
-        var bishops = state.pieceBitboard(piece.bishop).bitAnd(our_pieces);
+        var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
         material_score = material_score.add(piece_values[piece.bishop].mul(bishop_count));
         phase += bishop_count * phase_weights[piece.bishop];
@@ -825,7 +825,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
     // --- Rooks ---
     {
-        var rooks = Bitboard{ .bits = state.pieceBitboard(piece.rook).bits & our_pieces };
+        var rooks = state.pieceBitboard(piece.rook).bitAnd(u64, our_pieces);
         const rook_count: i32 = @intCast(rooks.popCount());
         material_score = material_score.add(piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
@@ -859,7 +859,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
     // --- Queens ---
     {
-        var queens = state.pieceBitboard(piece.queen).bitAnd(our_pieces);
+        var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
         material_score = material_score.add(piece_values[piece.queen].mul(queen_count));
         phase += queen_count * phase_weights[piece.queen];
@@ -879,7 +879,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
     // --- King ---
     {
-        const king_bb = state.pieceBitboard(piece.king).bitAnd(our_pieces);
+        const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
         const king_sq: u6 = @intCast(@ctz(king_bb.bits));
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
@@ -926,8 +926,8 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
     const our_pieces = state.colorBitboard(to_move).bits;
     const opp_pieces = state.colorBitboard(opp).bits;
     const pawn_bb = state.pieceBitboard(piece.pawn);
-    const our_pawns = pawn_bb.bitAnd(our_pieces);
-    const opp_pawns = pawn_bb.bitAnd(opp_pieces);
+    const our_pawns = pawn_bb.bitAnd(u64, our_pieces);
+    const opp_pawns = pawn_bb.bitAnd(u64, opp_pieces);
 
     // White is index 0, black is index 1 regardless of side to move
     const white_idx: usize = if (to_move == Colors.white) 0 else 1;

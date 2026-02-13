@@ -5,6 +5,7 @@ const chez = @import("chez.zig");
 const engine = chez.engine;
 const Colors = engine.Colors;
 const Move = engine.Move;
+const Bitboard = engine.Bitboard;
 const State = engine.State;
 const piece = engine.piece;
 const castling = engine.castling;
@@ -180,13 +181,13 @@ export fn chez_encode_position(state: *const State, buffer: [*]f32) void {
 
     // P1 pieces (planes 0-5: pawn, knight, bishop, rook, queen, king)
     inline for (0..6) |p| {
-        const bb = state.pieces[p].bitAnd(state.colors[p1]);
+        const bb = state.pieces[p].bitAnd(Bitboard, state.colors[p1]);
         bitboardToPlane(bb.bits, buffer + p * 64, flip);
     }
 
     // P2 pieces (planes 6-11)
     inline for (0..6) |p| {
-        const bb = state.pieces[p].bitAnd(state.colors[p2]);
+        const bb = state.pieces[p].bitAnd(Bitboard, state.colors[p2]);
         bitboardToPlane(bb.bits, buffer + (6 + p) * 64, flip);
     }
 }

@@ -161,14 +161,14 @@ fn computeRayAttacks() [8][64]u64 {
     @setEvalBranchQuota(10000);
     var rays: [8][64]u64 = undefined;
     const deltas = [8][2]i8{
-        .{ 1, 0 },   // N
-        .{ 1, 1 },   // NE
-        .{ 0, 1 },   // E
-        .{ -1, 1 },  // SE
-        .{ -1, 0 },  // S
+        .{ 1, 0 }, // N
+        .{ 1, 1 }, // NE
+        .{ 0, 1 }, // E
+        .{ -1, 1 }, // SE
+        .{ -1, 0 }, // S
         .{ -1, -1 }, // SW
-        .{ 0, -1 },  // W
-        .{ 1, -1 },  // NW
+        .{ 0, -1 }, // W
+        .{ 1, -1 }, // NW
     };
 
     for (0..64) |sq| {
@@ -202,7 +202,7 @@ pub fn betweenSquares(from: Square, to: Square) Bitboard {
     }
 
     const ray = rayBetweenInclusive(from, to, direction);
-    return ray.bitAnd(Bitboard.initSquare(from).not()).bitAnd(Bitboard.initSquare(to).not());
+    return ray.bitAnd(Bitboard, Bitboard.initSquare(from).not()).bitAnd(Bitboard, Bitboard.initSquare(to).not());
 }
 
 pub fn rayBetweenInclusive(from: Square, to: Square, d: Direction) Bitboard {
@@ -219,7 +219,7 @@ pub fn rayBetweenInclusive(from: Square, to: Square, d: Direction) Bitboard {
             const max_file = @max(from_file, to_file);
             for (min_file..max_file + 1) |f| {
                 const f_u6: u6 = @intCast(f);
-                ray.bitOrAssign(from_rank * 8 + f_u6);
+                ray.bitOrAssign(Square, from_rank * 8 + f_u6);
             }
         },
         .vertical => {
@@ -227,7 +227,7 @@ pub fn rayBetweenInclusive(from: Square, to: Square, d: Direction) Bitboard {
             const max_rank = @max(from_rank, to_rank);
             for (min_rank..max_rank + 1) |r| {
                 const r_u6: u6 = @intCast(r);
-                ray.bitOrAssign(r_u6 * 8 + from_file);
+                ray.bitOrAssign(Square, r_u6 * 8 + from_file);
             }
         },
         .diagonal, .antiDiagonal => {
@@ -246,7 +246,7 @@ pub fn rayBetweenInclusive(from: Square, to: Square, d: Direction) Bitboard {
 
             while (true) {
                 const s: Square = @intCast(r * 8 + f);
-                ray.bitOrAssign(s);
+                ray.bitOrAssign(Square, s);
                 if (r == @as(i8, to_rank) and f == @as(i8, to_file)) {
                     break;
                 }

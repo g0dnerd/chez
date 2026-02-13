@@ -4,12 +4,13 @@ const expect = std.testing.expect;
 const Atomic = std.atomic.Value;
 
 const engine = @import("engine.zig");
+const Bitboard = @import("Bitboard.zig");
+const State = @import("State.zig");
+const movegen = @import("movegen.zig");
+const piece = @import("piece.zig");
+const square = @import("square.zig");
 const GameResult = engine.GameResult;
 const Move = engine.Move;
-const State = engine.State;
-const piece = engine.piece;
-const square = engine.square;
-const movegen = engine.movegen;
 const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
@@ -1175,7 +1176,7 @@ pub fn isGameOverWithHistory(state: *const State, history: ?*const PositionHisto
     const hasLegalMoves = movegen.hasAnyLegalMove(state, to_move);
 
     if (!hasLegalMoves) {
-        const king_square = state.pieceBitboard(piece.king).bitAnd(state.colorBitboard(to_move)).trailingZeros();
+        const king_square = state.pieceBitboard(piece.king).bitAnd(Bitboard, state.colorBitboard(to_move)).trailingZeros();
         if (movegen.isSquareAttackedBy(state, king_square, ~to_move)) {
             return GameResult{ .checkmate = ~to_move };
         } else {

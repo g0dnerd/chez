@@ -132,7 +132,7 @@ pub fn defaultPosition() State {
         .pieces = .{ pawns, knights, bishops, rooks, queens, kings },
         .to_move = Colors.white,
         .castling_rights = castling.all_legal,
-        .all_pieces = white_pieces.bitOr(black_pieces),
+        .all_pieces = white_pieces.bitOr(Bitboard, black_pieces),
         .mailbox = mailbox,
     };
     state.zobrist_hash = state.computeHash();
@@ -174,85 +174,85 @@ pub fn fromFen(fen: []const u8) !State {
             .placement => {
                 switch (c) {
                     'p' => {
-                        pawns.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        pawns.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'P' => {
-                        pawns.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        pawns.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'n' => {
-                        knights.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        knights.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'N' => {
-                        knights.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        knights.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'b' => {
-                        bishops.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        bishops.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'B' => {
-                        bishops.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        bishops.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'r' => {
-                        rooks.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        rooks.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'R' => {
-                        rooks.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        rooks.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'q' => {
-                        queens.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        queens.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'Q' => {
-                        queens.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        queens.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'k' => {
-                        kings.bitOrAssign(current_square);
-                        black_pieces.bitOrAssign(current_square);
+                        kings.bitOrAssign(Square, current_square);
+                        black_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
                     },
                     'K' => {
-                        kings.bitOrAssign(current_square);
-                        white_pieces.bitOrAssign(current_square);
+                        kings.bitOrAssign(Square, current_square);
+                        white_pieces.bitOrAssign(Square, current_square);
                         if (current_square % 8 < 7) {
                             current_square += 1;
                         }
@@ -378,12 +378,12 @@ pub fn fromFen(fen: []const u8) !State {
         .in_check = null,
         .halfmove_clock = halfmove_clock.?,
         .fullmove_clock = fullmove_clock,
-        .all_pieces = white_pieces.bitOr(black_pieces),
+        .all_pieces = white_pieces.bitOr(Bitboard, black_pieces),
         .mailbox = mailbox,
     };
 
     const pieces = res.colorBitboard(res.to_move);
-    const king_mask = res.pieceBitboard(piece.king).bitAnd(pieces);
+    const king_mask = res.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
     if (isSquareAttackedBy(&res, king_square, ~res.to_move)) {
         res.in_check = res.to_move;
@@ -511,33 +511,29 @@ pub fn computeHash(self: *const State) u64 {
     return h;
 }
 
-pub fn colorBitboard(self: *const State, c: Color) Bitboard {
+pub inline fn colorBitboard(self: State, c: Color) Bitboard {
     return self.colors[c];
 }
 
-pub fn pieceBitboard(self: *const State, p: Piece) Bitboard {
+pub inline fn pieceBitboard(self: State, p: Piece) Bitboard {
     return self.pieces[p];
 }
 
-fn allPieces(self: *const State) Bitboard {
-    return self.colors[0].bitOr(self.colors[1]);
+inline fn allPieces(self: State) Bitboard {
+    return self.colors[0].bitOr(Bitboard, self.colors[1]);
 }
 
-pub fn pieceAt(self: *const State, s: Square) ?Piece {
+pub fn pieceAt(self: State, s: Square) ?Piece {
     return self.mailbox[s];
 }
 
-pub fn colorAt(self: *const State, s: Square) ?Color {
+pub inline fn colorAt(self: State, s: Square) ?Color {
     if (!self.all_pieces.contains(s)) return null;
 
     return @intFromBool(self.colors[1].contains(s));
 }
 
-pub fn colorAtUnchecked(self: *const State, s: Square) Color {
-    return @intFromBool(self.colors[1].contains(s));
-}
-
-pub fn isSquareEmpty(self: *const State, s: Square) bool {
+pub inline fn isSquareEmpty(self: State, s: Square) bool {
     return !self.all_pieces.contains(s);
 }
 
@@ -545,10 +541,10 @@ pub fn isSquareEmpty(self: *const State, s: Square) bool {
 pub fn hasNonPawnMaterial(self: *const State, c: Color) bool {
     const color_pieces = self.colorBitboard(c);
     const non_pawn_pieces = self.pieceBitboard(piece.knight)
-        .bitOr(self.pieceBitboard(piece.bishop))
-        .bitOr(self.pieceBitboard(piece.rook))
-        .bitOr(self.pieceBitboard(piece.queen));
-    return !color_pieces.bitAnd(non_pawn_pieces).isEmpty();
+        .bitOr(Bitboard, self.pieceBitboard(piece.bishop))
+        .bitOr(Bitboard, self.pieceBitboard(piece.rook))
+        .bitOr(Bitboard, self.pieceBitboard(piece.queen));
+    return !color_pieces.bitAnd(Bitboard, non_pawn_pieces).isEmpty();
 }
 
 // Returns true if neither side has enough material to checkmate.
@@ -571,12 +567,12 @@ pub fn hasInsufficientMaterial(self: *const State) bool {
 
     // K+B vs K+B with same-color bishops
     if (knight_count == 0 and bishop_count == 2) {
-        const white_bishops = bishops.bitAnd(self.colorBitboard(Colors.white));
-        const black_bishops = bishops.bitAnd(self.colorBitboard(Colors.black));
+        const white_bishops = bishops.bitAnd(Bitboard, self.colorBitboard(Colors.white));
+        const black_bishops = bishops.bitAnd(Bitboard, self.colorBitboard(Colors.black));
         if (white_bishops.popCount() == 1 and black_bishops.popCount() == 1) {
             const light_squares = Bitboard{ .bits = 0x55AA55AA55AA55AA };
-            const w_on_light = !white_bishops.bitAnd(light_squares).isEmpty();
-            const b_on_light = !black_bishops.bitAnd(light_squares).isEmpty();
+            const w_on_light = !white_bishops.bitAnd(Bitboard, light_squares).isEmpty();
+            const b_on_light = !black_bishops.bitAnd(Bitboard, light_squares).isEmpty();
             return w_on_light == b_on_light;
         }
     }
@@ -650,11 +646,11 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
                     undo.castling_side = side;
 
                     // Move rook
-                    self.*.pieces[piece.rook].bitXorAssign(data.rook_from);
-                    self.*.colors[c].bitXorAssign(data.rook_from);
+                    self.*.pieces[piece.rook].bitXorAssign(Square, data.rook_from);
+                    self.*.colors[c].bitXorAssign(Square, data.rook_from);
                     self.*.mailbox[data.rook_from] = null;
-                    self.*.pieces[piece.rook].bitOrAssign(data.rook_to);
-                    self.*.colors[c].bitOrAssign(data.rook_to);
+                    self.*.pieces[piece.rook].bitOrAssign(Square, data.rook_to);
+                    self.*.colors[c].bitOrAssign(Square, data.rook_to);
                     self.*.mailbox[data.rook_to] = piece.rook;
 
                     // Update hash
@@ -680,8 +676,8 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
     if (undo.captured_piece) |x| {
         self.*.castling_rights &= castling.rook_castling_mask[end];
         self.*.halfmove_clock = 0;
-        self.*.pieces[x].bitXorAssign(end);
-        self.*.colors[~c].bitXorAssign(end);
+        self.*.pieces[x].bitXorAssign(Square, end);
+        self.*.colors[~c].bitXorAssign(Square, end);
         self.*.mailbox[end] = null;
         // XOR out captured piece from hash
         self.*.zobrist_hash ^= keys.pieces[~c][x][end];
@@ -692,8 +688,8 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
         undo.captured_piece = piece.pawn;
         undo.captured_square = t;
         self.*.halfmove_clock = 0;
-        self.*.pieces[piece.pawn].bitXorAssign(t);
-        self.*.colors[~c].bitXorAssign(t);
+        self.*.pieces[piece.pawn].bitXorAssign(Square, t);
+        self.*.colors[~c].bitXorAssign(Square, t);
         self.*.mailbox[t] = null;
         // XOR out captured pawn from hash
         self.*.zobrist_hash ^= keys.pieces[~c][piece.pawn][t];
@@ -703,19 +699,19 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
     self.*.zobrist_hash ^= keys.pieces[c][p][start];
 
     // Actually move the piece
-    self.*.pieces[p].bitXorAssign(start);
-    self.*.colors[c].bitXorAssign(start);
+    self.*.pieces[p].bitXorAssign(Square, start);
+    self.*.colors[c].bitXorAssign(Square, start);
     self.*.mailbox[start] = null;
-    self.*.pieces[p].bitOrAssign(end);
-    self.*.colors[c].bitOrAssign(end);
+    self.*.pieces[p].bitOrAssign(Square, end);
+    self.*.colors[c].bitOrAssign(Square, end);
     self.*.mailbox[end] = p;
 
     if (m.is_promotion) {
         const promo_target = m.promotion_piece;
         undo.was_promotion = true;
         undo.promotion_piece = promo_target;
-        self.*.pieces[piece.pawn].bitXorAssign(end);
-        self.*.pieces[promo_target].bitOrAssign(end);
+        self.*.pieces[piece.pawn].bitXorAssign(Square, end);
+        self.*.pieces[promo_target].bitOrAssign(Square, end);
 
         // XOR in promoted piece at end square (not pawn)
         self.*.zobrist_hash ^= keys.pieces[c][promo_target][end];
@@ -742,7 +738,7 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
     if (detect_check) {
         // Update in_check for the new side to move
         const new_to_move = self.to_move;
-        const king_bb = self.pieceBitboard(piece.king).bitAnd(self.colorBitboard(new_to_move));
+        const king_bb = self.pieceBitboard(piece.king).bitAnd(Bitboard, self.colorBitboard(new_to_move));
         const king_square = king_bb.trailingZeros();
         if (isSquareAttackedBy(self, king_square, ~new_to_move)) {
             self.*.in_check = new_to_move;
@@ -772,30 +768,30 @@ pub fn unmakeMove(self: *State, m: Move, c: Color, p: Piece, undo: UndoInfo) voi
     const actual_piece = if (undo.was_promotion) undo.promotion_piece.? else p;
 
     // Move piece back from end to start
-    self.*.pieces[actual_piece].bitXorAssign(end);
-    self.*.colors[c].bitXorAssign(end);
+    self.*.pieces[actual_piece].bitXorAssign(Square, end);
+    self.*.colors[c].bitXorAssign(Square, end);
     self.*.mailbox[end] = null;
-    self.*.pieces[p].bitOrAssign(start);
-    self.*.colors[c].bitOrAssign(start);
+    self.*.pieces[p].bitOrAssign(Square, start);
+    self.*.colors[c].bitOrAssign(Square, start);
     self.*.mailbox[start] = p;
 
     // Handle castling: unmove the rook
     if (undo.was_castling) {
         const data = castling.castle_data[c][undo.castling_side];
         // Move rook back
-        self.*.pieces[piece.rook].bitXorAssign(data.rook_to);
-        self.*.colors[c].bitXorAssign(data.rook_to);
+        self.*.pieces[piece.rook].bitXorAssign(Square, data.rook_to);
+        self.*.colors[c].bitXorAssign(Square, data.rook_to);
         self.*.mailbox[data.rook_to] = null;
-        self.*.pieces[piece.rook].bitOrAssign(data.rook_from);
-        self.*.colors[c].bitOrAssign(data.rook_from);
+        self.*.pieces[piece.rook].bitOrAssign(Square, data.rook_from);
+        self.*.colors[c].bitOrAssign(Square, data.rook_from);
         self.*.mailbox[data.rook_from] = piece.rook;
     }
 
     // Restore captured piece
     if (undo.captured_piece) |captured| {
         const cap_sq = undo.captured_square;
-        self.*.pieces[captured].bitOrAssign(cap_sq);
-        self.*.colors[~c].bitOrAssign(cap_sq);
+        self.*.pieces[captured].bitOrAssign(Square, cap_sq);
+        self.*.colors[~c].bitOrAssign(Square, cap_sq);
         self.*.mailbox[cap_sq] = captured;
     }
 
