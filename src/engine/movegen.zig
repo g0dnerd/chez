@@ -1078,7 +1078,7 @@ fn getLeastValuableAttacker(state: *const State, target_sq: Square, color: Color
 }
 
 // Slider moves with custom occupancy (for SEE x-ray attacks)
-fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) u64 {
+pub fn sliderMovesWithOccupancy(s: Square, p: Piece, occupied: Bitboard) u64 {
     return switch (p) {
         piece.rook => moves.rook_moves[magics.rook_magics[s].magicTableIndex(occupied)],
         piece.bishop => moves.bishop_moves[magics.bishop_magics[s].magicTableIndex(occupied)],
