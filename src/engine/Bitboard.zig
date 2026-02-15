@@ -118,20 +118,20 @@ test "bitboard contains sanity" {
 
 test "bitboard square bitwise sanity" {
     var bb1 = Bitboard.empty;
-    bb1.bitOrAssign(square.e2);
+    bb1.bitOrAssign(Square, square.e2);
     const bb1_from_square = Bitboard.initSquare(square.e2);
     try expectEqual(bb1.bits, 4096);
     try expectEqual(bb1, bb1_from_square);
 
     var bb2 = Bitboard.empty;
-    bb2.bitAndAssign(square.e2);
+    bb2.bitAndAssign(Square, square.e2);
     const bb2_from_square = Bitboard.empty;
     try expectEqual(bb2.bits, 0);
     try expectEqual(bb2, bb2_from_square);
 
     var bb3 = Bitboard.initSquare(square.d2);
-    bb3.bitOrAssign(square.e2);
-    bb3.bitXorAssign(square.d2);
+    bb3.bitOrAssign(Square, square.e2);
+    bb3.bitXorAssign(Square, square.d2);
     const bb3_from_square = Bitboard.initSquare(square.e2);
     try expectEqual(bb3.bits, 4096);
     try expectEqual(bb3, bb3_from_square);
