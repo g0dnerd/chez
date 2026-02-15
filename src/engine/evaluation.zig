@@ -10,9 +10,9 @@ const Color = engine.Color;
 const Colors = engine.Colors;
 const piece = @import("piece.zig");
 
-// Phase weights for tapered evaluation (max phase = 24)
+// Phase weights for tapered evaluation
 const phase_weights = [6]i32{ 0, 1, 1, 2, 4, 0 }; // pawn, knight, bishop, rook, queen, king
-const max_phase: i32 = 24;
+const max_phase_mg: i32 = 24;
 
 // Packed score holding both middlegame and endgame values.
 // Allows evaluating once and interpolating at the end based on game phase.
@@ -43,17 +43,16 @@ pub const Score = packed struct {
 
     // Interpolate between MG and EG based on phase (0 = endgame, 24 = opening)
     pub fn taper(self: Score, phase: i32) i32 {
-        return @divTrunc(@as(i32, self.midgame) * phase + @as(i32, self.endgame) * (max_phase - phase), max_phase);
+        return @divTrunc(@as(i32, self.midgame) * phase + @as(i32, self.endgame) * (max_phase_mg - phase), max_phase_mg);
     }
 };
 
-// Piece values: (middlegame, endgame)
 pub const piece_values = [6]Score{
-    Score{ .midgame = 100, .endgame = 120 }, // pawn - more valuable in endgame
-    Score{ .midgame = 305, .endgame = 290 }, // knight - slightly weaker in endgame
-    Score{ .midgame = 333, .endgame = 350 }, // bishop - stronger in endgame
-    Score{ .midgame = 563, .endgame = 575 }, // rook - slightly stronger in endgame
-    Score{ .midgame = 950, .endgame = 1000 }, // queen
+    Score{ .midgame = 124, .endgame = 206 }, // pawn
+    Score{ .midgame = 781, .endgame = 854 }, // knight
+    Score{ .midgame = 825, .endgame = 915 }, // bishop
+    Score{ .midgame = 1276, .endgame = 1380 }, // rook
+    Score{ .midgame = 2538, .endgame = 2682 }, // queen
     Score{ .midgame = 20000, .endgame = 20000 }, // king
 };
 
@@ -73,29 +72,149 @@ const passed_pawn_bonus = [8]Score{
 };
 
 // Mobility bonus per move (middlegame, endgame)
-const mobility_bonus = [6]Score{
-    Score{ .midgame = 0, .endgame = 0 }, // pawn
-    Score{ .midgame = 4, .endgame = 4 }, // knight
-    Score{ .midgame = 5, .endgame = 5 }, // bishop
-    Score{ .midgame = 2, .endgame = 4 }, // rook - mobility matters more in endgame
-    Score{ .midgame = 1, .endgame = 2 }, // queen
-    Score{ .midgame = 0, .endgame = 0 }, // king
+const mobility_bonus = [4][28]Score{
+    // Knights
+    [_]Score{
+        Score{ .midgame = -62, .endgame = -81 },
+        Score{ .midgame = -53, .endgame = -56 },
+        Score{ .midgame = -12, .endgame = -31 },
+        Score{ .midgame = -4, .endgame = -16 },
+        Score{ .midgame = 3, .endgame = 5 },
+        Score{ .midgame = 13, .endgame = 11 },
+        Score{ .midgame = 22, .endgame = 17 },
+        Score{ .midgame = 28, .endgame = 20 },
+        Score{ .midgame = 33, .endgame = 25 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+    },
+    // Bishops
+    [_]Score{
+        Score{ .midgame = -48, .endgame = -59 },
+        Score{ .midgame = -20, .endgame = -23 },
+        Score{ .midgame = 16, .endgame = -3 },
+        Score{ .midgame = 26, .endgame = 13 },
+        Score{ .midgame = 38, .endgame = 24 },
+        Score{ .midgame = 51, .endgame = 42 },
+        Score{ .midgame = 55, .endgame = 54 },
+        Score{ .midgame = 63, .endgame = 57 },
+        Score{ .midgame = 63, .endgame = 65 },
+        Score{ .midgame = 68, .endgame = 73 },
+        Score{ .midgame = 81, .endgame = 78 },
+        Score{ .midgame = 81, .endgame = 86 },
+        Score{ .midgame = 91, .endgame = 88 },
+        Score{ .midgame = 98, .endgame = 97 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+    },
+    // Rooks
+    [_]Score{
+        Score{ .midgame = -60, .endgame = -78 },
+        Score{ .midgame = -20, .endgame = -17 },
+        Score{ .midgame = 2, .endgame = 23 },
+        Score{ .midgame = 3, .endgame = 39 },
+        Score{ .midgame = 3, .endgame = 70 },
+        Score{ .midgame = 11, .endgame = 99 },
+        Score{ .midgame = 22, .endgame = 103 },
+        Score{ .midgame = 31, .endgame = 121 },
+        Score{ .midgame = 40, .endgame = 134 },
+        Score{ .midgame = 40, .endgame = 139 },
+        Score{ .midgame = 41, .endgame = 158 },
+        Score{ .midgame = 48, .endgame = 164 },
+        Score{ .midgame = 57, .endgame = 168 },
+        Score{ .midgame = 57, .endgame = 169 },
+        Score{ .midgame = 62, .endgame = 172 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+        Score{ .midgame = 0, .endgame = 0 },
+    },
+    // Queens
+    [_]Score{
+        Score{ .midgame = -30, .endgame = -48 },
+        Score{ .midgame = -12, .endgame = -30 },
+        Score{ .midgame = -8, .endgame = -7 },
+        Score{ .midgame = -9, .endgame = 19 },
+        Score{ .midgame = 20, .endgame = 40 },
+        Score{ .midgame = 23, .endgame = 55 },
+        Score{ .midgame = 23, .endgame = 59 },
+        Score{ .midgame = 35, .endgame = 75 },
+        Score{ .midgame = 38, .endgame = 78 },
+        Score{ .midgame = 53, .endgame = 96 },
+        Score{ .midgame = 64, .endgame = 96 },
+        Score{ .midgame = 65, .endgame = 100 },
+        Score{ .midgame = 65, .endgame = 121 },
+        Score{ .midgame = 66, .endgame = 127 },
+        Score{ .midgame = 67, .endgame = 131 },
+        Score{ .midgame = 67, .endgame = 133 },
+        Score{ .midgame = 72, .endgame = 136 },
+        Score{ .midgame = 72, .endgame = 141 },
+        Score{ .midgame = 77, .endgame = 147 },
+        Score{ .midgame = 79, .endgame = 150 },
+        Score{ .midgame = 93, .endgame = 151 },
+        Score{ .midgame = 108, .endgame = 168 },
+        Score{ .midgame = 108, .endgame = 168 },
+        Score{ .midgame = 108, .endgame = 171 },
+        Score{ .midgame = 110, .endgame = 182 },
+        Score{ .midgame = 114, .endgame = 182 },
+        Score{ .midgame = 114, .endgame = 192 },
+        Score{ .midgame = 116, .endgame = 218 },
+    },
 };
 
 // Bonus/penalty constants
-const bishop_pair = Score{ .midgame = 30, .endgame = 50 }; // More valuable in endgame
+const bishop_pair = Score{ .midgame = 30, .endgame = 50 };
 const rook_open_file = Score{ .midgame = 25, .endgame = 15 };
 const rook_semi_open = Score{ .midgame = 15, .endgame = 10 };
-const rook_on_seventh = Score{ .midgame = 20, .endgame = 40 }; // Much stronger in endgame
-const isolated_pawn = Score{ .midgame = -15, .endgame = -20 }; // Worse in endgame
-const doubled_pawn = Score{ .midgame = -10, .endgame = -20 }; // Worse in endgame
-const connected_pawn = Score{ .midgame = 7, .endgame = 10 }; // Pawns side-by-side or on adjacent files
-const protected_passed_pawn = Score{ .midgame = 15, .endgame = 30 }; // Passed pawn defended by another pawn
-const blocked_passed_pawn = Score{ .midgame = -10, .endgame = -20 }; // Passed pawn blocked by a piece
-const knight_outpost_defended = Score{ .midgame = 25, .endgame = 15 }; // Less relevant in endgame
+const rook_on_seventh = Score{ .midgame = 20, .endgame = 40 };
+const isolated_pawn = Score{ .midgame = -15, .endgame = -20 };
+const doubled_pawn = Score{ .midgame = -10, .endgame = -20 };
+const connected_pawn = Score{ .midgame = 7, .endgame = 10 };
+const protected_passed_pawn = Score{ .midgame = 15, .endgame = 30 };
+const blocked_passed_pawn = Score{ .midgame = -10, .endgame = -20 };
+const knight_outpost_defended = Score{ .midgame = 25, .endgame = 15 };
 const knight_outpost_undefended = Score{ .midgame = 10, .endgame = 5 };
-const pawn_shield = Score{ .midgame = 15, .endgame = 0 }; // Only matters in middlegame
+const pawn_shield = Score{ .midgame = 15, .endgame = 0 };
 const pawn_shield_missing = Score{ .midgame = -10, .endgame = 0 };
+
+const promotion_bonus: i32 = 5000;
 
 // File masks for rook on open file detection
 const file_masks: [8]u64 = blk: {
@@ -314,7 +433,14 @@ fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
 // Single-pass evaluation for one color. Iterates each piece type once,
 // accumulating material, PST, mobility, and structural scores together.
 // Returns the total Score and adds to the phase accumulator.
-fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not: u64, our_pawns_bb: Bitboard, opp_pawns_bb: Bitboard) struct { score: Score, phase: i32 } {
+fn evaluateColor(
+    state: *const State,
+    c: Color,
+    our_pieces: u64,
+    our_pieces_not: u64,
+    our_pawns_bb: Bitboard,
+    opp_pawns_bb: Bitboard,
+) struct { score: Score, phase: i32 } {
     var score = Score.zero;
     var phase: i32 = 0;
     const occupied = state.all_pieces.bits;
@@ -420,7 +546,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
             // Mobility
             const moves = movegen.knight_move_mask[s] & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            score = score.add(mobility_bonus[piece.knight].mul(move_count));
+            score = score.add(mobility_bonus[0][@as(usize, @intCast(move_count))]);
 
             // Outpost check
             const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
@@ -485,7 +611,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
             // Mobility
             const moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            score = score.add(mobility_bonus[piece.bishop].mul(move_count));
+            score = score.add(mobility_bonus[1][@as(usize, @intCast(move_count))]);
         }
     }
 
@@ -509,7 +635,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
             // Mobility
             const moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            score = score.add(mobility_bonus[piece.rook].mul(move_count));
+            score = score.add(mobility_bonus[2][@as(usize, @intCast(move_count))]);
 
             // Open/semi-open file
             const fmask = file_masks[file];
@@ -533,7 +659,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
         var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
         score = score.add(piece_values[piece.queen].mul(queen_count));
-        phase += queen_count * phase_weights[piece.queen];
+        phase += queen_count * phase_weights[4];
 
         while (queens.next()) |s| {
             const rank: u6 = s / 8;
@@ -545,7 +671,7 @@ fn evaluateColor(state: *const State, c: Color, our_pieces: u64, our_pieces_not:
             const bishop_moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
             const rook_moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(bishop_moves | rook_moves));
-            score = score.add(mobility_bonus[piece.queen].mul(move_count));
+            score = score.add(mobility_bonus[3][@as(usize, @intCast(move_count))]);
         }
     }
 
@@ -598,7 +724,7 @@ pub fn evaluate(state: *const State) i32 {
     const our = evaluateColor(state, to_move, our_pieces, ~our_pieces, our_pawns, opp_pawns);
     const their = evaluateColor(state, opp, opp_pieces, ~opp_pieces, opp_pawns, our_pawns);
 
-    const phase = @min(our.phase + their.phase, max_phase);
+    const phase = @min(our.phase + their.phase, max_phase_mg);
     const total = our.score.sub(their.score);
     return total.taper(phase);
 }
@@ -644,7 +770,14 @@ pub const EvalTrace = struct {
     }
 };
 
-fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces_not: u64, our_pawns_bb: Bitboard, opp_pawns_bb: Bitboard) struct {
+fn evaluateColorTrace(
+    state: *const State,
+    c: Color,
+    our_pieces: u64,
+    our_pieces_not: u64,
+    our_pawns_bb: Bitboard,
+    opp_pawns_bb: Bitboard,
+) struct {
     material: Score,
     pst_score: Score,
     pawn_structure: Score,
@@ -758,7 +891,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
             const moves = movegen.knight_move_mask[s] & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            mobility_score = mobility_score.add(mobility_bonus[piece.knight].mul(move_count));
+            mobility_score = mobility_score.add(mobility_bonus[0][move_count]);
 
             const in_outpost_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
             if (in_outpost_zone) {
@@ -819,7 +952,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
             const moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            mobility_score = mobility_score.add(mobility_bonus[piece.bishop].mul(move_count));
+            mobility_score = mobility_score.add(mobility_bonus[1][move_count]);
         }
     }
 
@@ -840,7 +973,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
 
             const moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(moves));
-            mobility_score = mobility_score.add(mobility_bonus[piece.rook].mul(move_count));
+            mobility_score = mobility_score.add(mobility_bonus[2][move_count]);
 
             const fmask = file_masks[file];
             const has_our_pawn = (our_pawns_bb.bits & fmask) != 0;
@@ -873,7 +1006,7 @@ fn evaluateColorTrace(state: *const State, c: Color, our_pieces: u64, our_pieces
             const bishop_moves = movegen.sliderMoves(state, s, piece.bishop) & our_pieces_not;
             const rook_moves = movegen.sliderMoves(state, s, piece.rook) & our_pieces_not;
             const move_count: i32 = @intCast(@popCount(bishop_moves | rook_moves));
-            mobility_score = mobility_score.add(mobility_bonus[piece.queen].mul(move_count));
+            mobility_score = mobility_score.add(mobility_bonus[3][move_count]);
         }
     }
 
@@ -956,7 +1089,7 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
     trace.king_safety[white_idx] = our.king_safety_score;
     trace.king_safety[black_idx] = their.king_safety_score;
 
-    trace.phase = @min(our.phase + their.phase, max_phase);
+    trace.phase = @min(our.phase + their.phase, max_phase_mg);
     const total = our.material.add(our.pst_score).add(our.pawn_structure).add(our.passed_pawns_score)
         .add(our.knight_outposts_score).add(our.bishop_pair_score).add(our.rook_bonuses_score)
         .add(our.mobility_score).add(our.king_safety_score)
@@ -1012,7 +1145,7 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     if (p == piece.pawn and ((end_rank == 7 and ctx.color == Colors.white) or
         (end_rank == 0 and ctx.color == Colors.black)))
     {
-        score += 5000;
+        score += promotion_bonus;
     }
 
     // Killer move bonus (below captures, above quiet moves)

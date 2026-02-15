@@ -127,8 +127,8 @@ fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_thr
     }
     try stdout.print("{f}", .{state});
 
-    const eval = engine.evaluation.evaluateTrace(state);
-    try eval.dump(stdout);
+    // const eval = engine.evaluation.evaluateTrace(state);
+    // try eval.dump(stdout);
     try stdout.flush();
 }
 
