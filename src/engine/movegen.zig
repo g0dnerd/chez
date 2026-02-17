@@ -937,7 +937,7 @@ test "en passant illegal when pinned" {
 // Static Exchange Evaluation (SEE)
 // Returns the material gain/loss from a capture sequence on a square
 // Positive = winning exchange, negative = losing exchange
-pub const see_piece_values = [6]i32{ 100, 320, 330, 500, 900, 20000 };
+pub const see_piece_values = [6]i32{ 126, 781, 825, 1276, 2538, 20000 };
 
 pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
     const target_sq = m.end;

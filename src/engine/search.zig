@@ -498,7 +498,7 @@ fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
 }
 
 // Futility pruning margins by depth
-const futility_margins = [_]i32{ 0, 200, 500 };
+const futility_margins = [_]i32{ 0, 300, 600 };
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
 // More conservative: 5 + depth^2
