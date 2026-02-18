@@ -96,6 +96,24 @@
     "pgn": "1. e4 e5 2. Nf3 Nc6 3. d4 exd4 4. c3 Nf6 5. Bd3 d5 6. e5 Ne4 7. O-O Be7 8. cxd4 Nb4 9. Nc3 Nxd3 10. Qxd3 Nxc3 11. bxc3 O-O 12. a4 Be6 13. Ba3 Bxa3 14. Rxa3 Qd7 15. h3 Bf5 16. Qe2 Rac8 17. a5 Rfe8 18. Rb3 c5 19. Qb2 Re7 20. Re1 Be4 21. e6 fxe6 22. Ne5 Qc7 23. Qa3 cxd4 24. cxd4 Qd8 25. a6 b6 26. Rg3 Rec7 27. Rf1 Rc2 28. Qe3 R8c7 29. Kh2 Qf8 30. Qh6 Qe7 31. Qf4 Qf8 32. Qh6 Qe7 33. Qf4 Qf8 34. Qh6 1/2-1/2",
     "depth": 14,
     "threads": 6,
-    "commit":
+    "commit": "19bb1ae7bbe5aa6dc98ba15a634b20203d512267"
+  },
+  {
+    "as": "white",
+    "versus": "komodo 24",
+    "result": "loss",
+    "pgn": "1. e4 c5 2. Nf3 d6 3. Bc4 Nf6 4. Nc3 a6 5. a4 Nc6 6. O-O Bg4 7. h3 Bxf3 8. Qxf3 e6 9. Qg3 Be7 10. Qxg7 Rg8 11. Qh6 Nd4 12. Rb1 d5 13. exd5 Qd6 14. Qe3 Nxc2 15. Qd3 Nb4 16. Ne4 Nxe4 17. Qxe4 Nxd5 18. d4 cxd4 19. Qxd4 O-O-O 20. Bxd5 Qxd5 21. Qxd5 Rxd5 22. Bf4 e5 23. Be3 Kd7 24. Rfd1 Rxd1+ 25. Rxd1+ Ke6 26. Rc1 Rd8 27. Rc7 Rd1+ 28. Kh2 Rd7 29. Rxd7 Kxd7 30. Kg3 f5 31. Bb6 Kc6 32. Ba5 Bc5 33. b3 Bd4 34. Bd2 e4 35. Be3 Be5+ 36. Bf4 Kd5 37. h4 h5 38. a5 Kd4 39. Bxe5+ Kxe5 40. Kh3 f4 41. g3 Kf5 42. gxf4 Kxf4 43. Kg2 Kg4 44. b4 Kxh4 45. Kg1 Kg4 46. Kg2 h4 47. Kg1 Kf3 48. b5 axb5 49. Kf1 b4 50. Kg1 b3 51. Kh2 Kxf2 52. Kh3 e3 53. Kxh4 b2 54. Kg5 e2 55. a6 bxa6 56. Kf5 b1=Q+ 57. Ke6 e1=Q+ 58. Kd7 Qb6 59. Kc8 Qe8# 0-1",
+    "depth": 14,
+    "threads": 6,
+    "commit": "19bb1ae7bbe5aa6dc98ba15a634b20203d512267"
+  },
+  {
+    "as": "white",
+    "versus": "komodo 24",
+    "result": "draw",
+    "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Nf6 5. d4 exd4 6. e5 d5 7. Be2 Ne4 8. cxd4 Be7 9. O-O O-O 10. Be3 Bf5 11. Nbd2 h6 12. Rc1 a6 13. Ne1 f6 14. Nxe4 Bxe4 15. Nd3 fxe5 16. Nxe5 Nxe5 17. dxe5 c6 18. Bd3 Bxd3 19. Qxd3 Qc8 20. f4 Qe6 21. Bd4 g6 22. Qb3 Rac8 23. Qb6 Rf7 24. Be3 Bf8 25. Bd4 h5 26. Rf3 Bh6 27. Be3 Rcf8 28. Rcf1 Re8 29. Qc5 Bf8 30. Qc2 Be7 31. Qb3 Bd8 32. Bd4 Be7 33. Qe3 a5 34. Qb3 c5 35. Bf2 Ref8 36. Rd1 Rxf4 37. Qxd5 Qxd5 38. Rxd5 Rc4 39. Be3 Rxf3 40. gxf3 Kf7 41. Rd7 Ke6 42. Rxb7 Rc2 43. a4 Re2 44. Bf4 c4 45. Kf1 Rc2 46. h3 Bc5 47. Rc7 Bb4 48. Rc6+ Kd5 49. Rxg6 Rxb2 50. Rg7 c3 51. Rd7+ Ke6 52. Rb7 c2 53. Rb6+ Kd5 54. Rb5+ Kc4 55. e6 Rb1+ 56. Kf2 Bd6 57. Bd2 Rxb5 58. axb5 a4 59. b6 Kd5 60. e7 Bxe7 61. b7 Bd6 62. Bc1 a3 63. Bxa3 Bxa3 64. b8=Q Bc5+ 65. Ke2 c1=Q 66. Qa8+ Ke5 67. Qh8+ Kd6 68. Qf6+ Kd5 69. Qf7+ Kc6 70. Qg6+ Kc7 71. Qxh5 Qe3+ 72. Kd1 Qd3+ 73. Ke1 Qb1+ 74. Kd2 Qb4+ 75. Kd3 Qd4+ 76. Kc2 Qc4+ 77. Kd2 Qd4+ 78. Kc2 Qc4+ 79. Kd2 Qa2+ 80. Kd3 Kb6 81. Qg6+ Ka5 82. Qe4 Qb3+ 83. Ke2 Qc3 84. h4 Qb2+ 85. Kd1 Bb4 86. Qd5+ Kb6 87. h5 Qf6 88. Kc2 Qc3+ 89. Kb1 Ba3 90. Qe6+ Kc7 91. Qf7+ Kd8 92. Qg8+ Kd7 93. Qd5+ Bd6 94. h6 Kc7 95. Qe4 Qb3+ 96. Kc1 Ba3+ 97. Kd2 Bb4+ 98. Kc1 Bc3 99. Qe7+ Kb6 100. Qd6+ Kb7 101. Qd7+ Kb6 102. Qd6+ Kb7 103. Qd7+ Ka6 104. Qc8+ Ka7 105. Qc7+ Ka6 106. Qc8+ Ka7 107. Qc7+ Ka8 108. Qc8+ Ka7 1/2-1/2",
+    "depth": 15,
+    "threads": 6,
+    "commit": "19bb1ae7bbe5aa6dc98ba15a634b20203d512267"
   }
 ]
