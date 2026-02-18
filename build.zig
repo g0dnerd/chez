@@ -70,9 +70,19 @@ pub fn build(b: *std.Build) !void {
     const run_puzzle_tests = b.addRunArtifact(puzzle_tests);
     puzzle_test_step.dependOn(&run_puzzle_tests.step);
 
+    const uci = b.addExecutable(.{
+        .name = "uci",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/uci.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+
     b.installArtifact(libchez);
     b.installArtifact(precompute);
     b.installArtifact(tui);
+    b.installArtifact(uci);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{
