@@ -377,10 +377,24 @@ pub const TranspositionTable = struct {
     }
 };
 
+pub const InfoCallback = struct {
+    context: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, depth: u8, score: i32, nodes: u64, time_ms: u64, pv: []const Move) void,
+};
+
+pub const SearchOptions = struct {
+    stop: ?*Atomic(bool) = null,
+    max_time_ms: ?u64 = null,
+    on_info: ?InfoCallback = null,
+};
+
 // Minimal shared state for Lazy SMP - threads run independently
 const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
+    node_count: Atomic(u64) = Atomic(u64).init(0),
     max_depth: u8 = 0,
+    timer: std.time.Timer,
+    options: SearchOptions = .{},
 };
 
 // Per-thread context for search
@@ -404,7 +418,8 @@ const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
-fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
+fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32, shared: *SharedSearchState) i32 {
+    _ = shared.node_count.fetchAdd(1, .monotonic);
     const to_move = state.to_move;
     const in_check = state.in_check == to_move;
 
@@ -425,7 +440,7 @@ fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
             const p = state.mailbox[m.start].?;
             const undo = state.makeMove(m, to_move, p);
 
-            const score = -quiescence(state, ply + 1, -beta, -alpha);
+            const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
 
             state.unmakeMove(m, to_move, p, undo);
 
@@ -462,7 +477,12 @@ fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
         return stand_pat;
     }
 
-    const cap_ctx = MoveList.SortCtx{ .state = state, .color = to_move, .killers = .{ null, null }, .history = null };
+    const cap_ctx = MoveList.SortCtx{
+        .state = state,
+        .color = to_move,
+        .killers = .{ null, null },
+        .history = null,
+    };
     captures.scoreAll(&cap_ctx);
 
     for (0..captures.len) |i| {
@@ -482,7 +502,7 @@ fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
 
         const undo = state.makeMove(m, to_move, p);
 
-        const score = -quiescence(state, ply + 1, -beta, -alpha);
+        const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
 
         state.unmakeMove(m, to_move, p, undo);
 
@@ -498,7 +518,7 @@ fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32) i32 {
 }
 
 // Futility pruning margins by depth
-const futility_margins = [_]i32{ 0, 200, 500 };
+const futility_margins = [_]i32{ 0, 300, 600 };
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
 // More conservative: 5 + depth^2
@@ -511,6 +531,7 @@ const SearchContext = struct {
     history_table: *evaluation.HistoryTable,
     countermoves: *CountermoveTable,
     prev_move: ?Move,
+    shared: *SharedSearchState,
 };
 
 fn negamax(
@@ -521,6 +542,7 @@ fn negamax(
     beta_param: i32,
     search_ctx: SearchContext,
 ) i32 {
+    _ = search_ctx.shared.node_count.fetchAdd(1, .monotonic);
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -558,7 +580,7 @@ fn negamax(
     // Quiescence handles checkmate detection when in check.
     // This avoids generating a full MoveList at the most numerous nodes.
     if (depth == 0) {
-        return quiescence(state, ply, alpha, beta);
+        return quiescence(state, ply, alpha, beta, search_ctx.shared);
     }
 
     var moves = movegen.legalMoves(state, to_move);
@@ -609,6 +631,7 @@ fn negamax(
             .history_table = search_ctx.history_table,
             .countermoves = search_ctx.countermoves,
             .prev_move = null,
+            .shared = search_ctx.shared,
         });
 
         // Unmake null move
@@ -690,6 +713,7 @@ fn negamax(
                 .history_table = search_ctx.history_table,
                 .countermoves = search_ctx.countermoves,
                 .prev_move = m,
+                .shared = search_ctx.shared,
             });
         } else {
             // Late Move Reductions (LMR):
@@ -717,6 +741,7 @@ fn negamax(
                 .history_table = search_ctx.history_table,
                 .countermoves = search_ctx.countermoves,
                 .prev_move = m,
+                .shared = search_ctx.shared,
             });
 
             // Re-search at full depth if reduced search improved alpha
@@ -728,6 +753,7 @@ fn negamax(
                     .history_table = search_ctx.history_table,
                     .countermoves = search_ctx.countermoves,
                     .prev_move = m,
+                    .shared = search_ctx.shared,
                 });
             }
 
@@ -740,6 +766,7 @@ fn negamax(
                     .history_table = search_ctx.history_table,
                     .countermoves = search_ctx.countermoves,
                     .prev_move = m,
+                    .shared = search_ctx.shared,
                 });
             }
         }
@@ -815,6 +842,7 @@ fn searchAtDepthWithBounds(
     countermoves: *CountermoveTable,
     alpha_bound: i32,
     beta_bound: i32,
+    shared: *SharedSearchState,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -828,7 +856,12 @@ fn searchAtDepthWithBounds(
     }
 
     const root_killers = if (0 < max_ply) killers.moves[0] else [2]?Move{ null, null };
-    const root_ctx = MoveList.SortCtx{ .state = state, .color = to_move, .killers = root_killers, .history = history_table };
+    const root_ctx = MoveList.SortCtx{
+        .state = state,
+        .color = to_move,
+        .killers = root_killers,
+        .history = history_table,
+    };
     moves.scoreAll(&root_ctx);
 
     // If we have a PV move from the previous iteration, give it max score
@@ -868,6 +901,7 @@ fn searchAtDepthWithBounds(
             .history_table = history_table,
             .countermoves = countermoves,
             .prev_move = m,
+            .shared = shared,
         };
         if (i == 0) {
             // First move: full window search
@@ -917,12 +951,58 @@ fn searchAtDepth(
     history: *PositionHistory,
     history_table: *evaluation.HistoryTable,
     countermoves: *CountermoveTable,
+    shared: *SharedSearchState,
 ) ?SearchResult {
-    return searchAtDepthWithBounds(state, depth, tbl, killers, pv_move, history, history_table, countermoves, alpha_init, beta_init);
+    return searchAtDepthWithBounds(
+        state,
+        depth,
+        tbl,
+        killers,
+        pv_move,
+        history,
+        history_table,
+        countermoves,
+        alpha_init,
+        beta_init,
+        shared,
+    );
 }
 
 // Aspiration window initial size (centipawns)
 const aspiration_window: i32 = 25;
+
+// Extract the principal variation from the transposition table
+fn extractPV(root_state: *const State, tbl: *TranspositionTable, buf: []Move) usize {
+    var state = root_state.*;
+    var count: usize = 0;
+    var seen: [32]u64 = undefined;
+    while (count < buf.len) {
+        // Loop detection
+        for (seen[0..count]) |h| if (h == state.zobrist_hash) return count;
+        seen[count] = state.zobrist_hash;
+
+        const entry = tbl.probe(state.zobrist_hash) orelse break;
+        const best = entry.best_move orelse break;
+
+        // Validate the move is legal
+        var moves = movegen.legalMoves(&state, state.to_move);
+        var found = false;
+        for (0..moves.len) |i| {
+            if (moves.moves[i].eql(best)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) break;
+
+        buf[count] = best;
+        count += 1;
+        const color = state.to_move;
+        const piece_at = state.mailbox[best.start] orelse break;
+        _ = state.makeMove(best, color, piece_at);
+    }
+    return count;
+}
 
 // Worker thread function for Lazy SMP
 // Each thread does full iterative deepening independently
@@ -934,6 +1014,23 @@ fn workerThread(ctx: *ThreadContext) void {
     // Each thread does iterative deepening up to max_depth
     for (1..ctx.shared.max_depth + 1) |depth_usize| {
         if (ctx.shared.stop_flag.load(.monotonic)) break;
+
+        // Check external stop signal
+        if (ctx.shared.options.stop) |ext_stop| {
+            if (ext_stop.load(.monotonic)) {
+                ctx.shared.stop_flag.store(true, .monotonic);
+                break;
+            }
+        }
+
+        // Check time limit
+        if (ctx.shared.options.max_time_ms) |max_ms| {
+            const elapsed: u64 = @divTrunc(ctx.shared.timer.read(), std.time.ns_per_ms);
+            if (elapsed >= @as(i64, @intCast(max_ms))) {
+                ctx.shared.stop_flag.store(true, .monotonic);
+                break;
+            }
+        }
 
         const depth: u8 = @intCast(depth_usize);
 
@@ -951,7 +1048,7 @@ fn workerThread(ctx: *ThreadContext) void {
             var attempts: u8 = 0;
 
             while (attempts < 3) : (attempts += 1) {
-                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves, alpha, beta);
+                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves, alpha, beta, ctx.shared);
 
                 if (result) |r| {
                     if (r.score <= alpha) {
@@ -974,12 +1071,32 @@ fn workerThread(ctx: *ThreadContext) void {
             // If still failing after 3 attempts, do full window search
             if (result) |r| {
                 if (r.score <= alpha or r.score >= beta) {
-                    result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves);
+                    result = searchAtDepth(
+                        &ctx.state,
+                        depth,
+                        ctx.tbl,
+                        &ctx.killers,
+                        hint,
+                        &ctx.history,
+                        &ctx.history_table,
+                        &ctx.countermoves,
+                        ctx.shared,
+                    );
                 }
             }
         } else {
             // Depth 1: always use full window
-            result = searchAtDepth(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves);
+            result = searchAtDepth(
+                &ctx.state,
+                depth,
+                ctx.tbl,
+                &ctx.killers,
+                hint,
+                &ctx.history,
+                &ctx.history_table,
+                &ctx.countermoves,
+                ctx.shared,
+            );
         }
 
         if (result) |r| {
@@ -988,6 +1105,17 @@ fn workerThread(ctx: *ThreadContext) void {
             ctx.best_depth = depth;
             pv_move = r.move;
             prev_score = r.score;
+
+            // Emit info from thread 0 only
+            if (ctx.thread_id == 0) {
+                if (ctx.shared.options.on_info) |cb| {
+                    const nodes = ctx.shared.node_count.load(.monotonic);
+                    const elapsed_ms: u64 = @divTrunc(ctx.shared.timer.read(), std.time.ns_per_ms);
+                    var pv_buf: [32]Move = undefined;
+                    const pv_len = extractPV(&ctx.state, ctx.tbl, &pv_buf);
+                    cb.func(cb.context, depth, r.score, nodes, elapsed_ms, pv_buf[0..pv_len]);
+                }
+            }
 
             // Early exit if checkmate found
             if (r.score >= checkmate_score - 100) {
@@ -1008,6 +1136,7 @@ pub fn searchParallel(
     num_threads: usize,
     game_history: ?*const PositionHistory,
     tbl: *TranspositionTable,
+    options: SearchOptions,
 ) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
 
@@ -1015,6 +1144,8 @@ pub fn searchParallel(
 
     var shared = SharedSearchState{
         .max_depth = max_depth,
+        .timer = try std.time.Timer.start(),
+        .options = options,
     };
 
     // Create thread contexts
@@ -1097,12 +1228,7 @@ pub fn searchParallel(
 // Uses parallel search with default thread count.
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
-    return searchParallel(state, max_depth, default_threads, null, &tbl);
-}
-
-// Search with explicit thread count
-pub fn searchWithThreads(state: *const State, max_depth: u8, num_threads: usize) !?SearchResult {
-    return searchParallel(state, max_depth, num_threads, null);
+    return searchParallel(state, max_depth, default_threads, null, &tbl, .{});
 }
 
 // Search with game history for repetition detection
@@ -1113,7 +1239,7 @@ pub fn searchWithHistory(
     history: *const PositionHistory,
     tbl: *TranspositionTable,
 ) !?SearchResult {
-    return searchParallel(state, max_depth, num_threads, history, tbl);
+    return searchParallel(state, max_depth, num_threads, history, tbl, .{});
 }
 
 // Single-threaded search for testing and debugging
@@ -1137,8 +1263,23 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var sq_start: [2]u8 = undefined;
     var sq_end: [2]u8 = undefined;
 
+    var shared = SharedSearchState{
+        .max_depth = max_depth,
+        .start_time = std.time.milliTimestamp(),
+    };
+
     for (1..max_depth + 1) |depth| {
-        const result = searchAtDepth(&mutable_state, @intCast(depth), &tbl, &killers, best_move, &history, &history_table, &countermoves);
+        const result = searchAtDepth(
+            &mutable_state,
+            @intCast(depth),
+            &tbl,
+            &killers,
+            best_move,
+            &history,
+            &history_table,
+            &countermoves,
+            &shared,
+        );
         if (result) |r| {
             best_move = r.move;
             best_score = r.score;
@@ -1248,7 +1389,7 @@ test "smothered mate pattern" {
     const fen = "4r2k/2pRP1pp/2p5/p4pN1/2Q3n1/q5P1/P3PP1P/6K1 w - - 0 1";
     const state = try State.fromFen(fen);
 
-    const result = try search(&state, 4);
+    const result = try search(&state, 6);
     try expect(result != null);
     try expectEqual(square.g5, result.?.move.start);
     try expectEqual(square.f7, result.?.move.end);

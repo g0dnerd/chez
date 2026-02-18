@@ -964,7 +964,7 @@ test "en passant illegal when pinned" {
 // Static Exchange Evaluation (SEE)
 // Returns the material gain/loss from a capture sequence on a square
 // Positive = winning exchange, negative = losing exchange
-pub const see_piece_values = [6]i32{ 100, 320, 330, 500, 900, 20000 };
+pub const see_piece_values = [6]i32{ 126, 781, 825, 1276, 2538, 20000 };
 
 pub fn staticExchangeEvaluation(state: *const State, m: Move) i32 {
     const target_sq = m.end;
@@ -1119,7 +1119,7 @@ test "SEE winning capture" {
     const state = try State.fromFen(fen);
     const m = Move{ .start = square.e4, .end = square.d5 };
     const score = staticExchangeEvaluation(&state, m);
-    try std.testing.expectEqual(@as(i32, 100), score); // Win a pawn
+    try std.testing.expectEqual(@as(i32, 126), score); // Win a pawn
 }
 
 test "SEE queen takes defended pawn" {
@@ -1137,5 +1137,5 @@ test "SEE x-ray attack" {
     const state = try State.fromFen(fen);
     const m = Move{ .start = square.d1, .end = square.d8 };
     const score = staticExchangeEvaluation(&state, m);
-    try std.testing.expectEqual(@as(i32, 500), score); // Win the rook (x-ray from a1 rook)
+    try std.testing.expectEqual(@as(i32, 1276), score); // Win the rook (x-ray from a1 rook)
 }

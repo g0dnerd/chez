@@ -91,10 +91,20 @@ pub fn build(b: *std.Build) !void {
     }
     bench_step.dependOn(&run_bench.step);
 
+    const uci = b.addExecutable(.{
+        .name = "uci",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/uci.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+
     b.installArtifact(libchez);
     b.installArtifact(precompute);
     b.installArtifact(tui);
     b.installArtifact(bench);
+    b.installArtifact(uci);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{

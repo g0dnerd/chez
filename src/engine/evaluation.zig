@@ -244,7 +244,7 @@ const pawn_shield = Score.init(15, 0);
 const pawn_shield_missing = Score.init(-10, 0);
 const tempo = Score.init(28, 28);
 
-const promotion_bonus: i32 = 5000;
+const promotion_bonus: i32 = 12500;
 
 // File masks for rook on open file detection
 const file_masks: [8]u64 = blk: {
@@ -1375,19 +1375,19 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     // Killer move bonus (below captures, above quiet moves)
     if (ctx.killers[0]) |k| {
         if (k.start == m.start and k.end == m.end) {
-            score += 900;
+            score += 1100;
         }
     }
     if (ctx.killers[1]) |k| {
         if (k.start == m.start and k.end == m.end) {
-            score += 800;
+            score += 1000;
         }
     }
 
     // Countermove bonus (between killers and history)
     if (ctx.countermove) |cm| {
         if (cm.start == m.start and cm.end == m.end) {
-            score += 850;
+            score += 1050;
         }
     }
 
