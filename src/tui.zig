@@ -135,7 +135,10 @@ fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_thr
 pub fn main(init: std.process.Init.Minimal) !void {
     const arg_parser = try kore.args.declarative.Parser(Args);
 
-    var args_iter = init.args.iterate();
+    var args_iter = if (builtin.os.tag == .windows)
+        try init.args.iterateAllocator(std.heap.page_allocator)
+    else
+        init.args.iterate();
     const parsed_args = try arg_parser.parse(&args_iter);
 
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .empty });
