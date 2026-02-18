@@ -71,7 +71,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             continue;
         };
 
-        const result = try search.searchParallel(&state, depth, threads, null, &tbl);
+        const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{});
         if (result) |r| {
             var start_buf: [2]u8 = undefined;
             var end_buf: [2]u8 = undefined;

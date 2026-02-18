@@ -397,6 +397,23 @@ const SharedSearchState = struct {
     options: SearchOptions = .{},
 };
 
+// Check time limit and external stop signal periodically.
+// Called every N nodes from within negamax/quiescence to enable mid-depth abort.
+fn checkTime(shared: *SharedSearchState) void {
+    if (shared.options.stop) |ext_stop| {
+        if (ext_stop.load(.monotonic)) {
+            shared.stop_flag.store(true, .monotonic);
+            return;
+        }
+    }
+    if (shared.options.max_time_ms) |max_ms| {
+        const elapsed: u64 = @divTrunc(shared.timer.read(), std.time.ns_per_ms);
+        if (elapsed >= max_ms) {
+            shared.stop_flag.store(true, .monotonic);
+        }
+    }
+}
+
 // Per-thread context for search
 const ThreadContext = struct {
     state: State,
@@ -419,7 +436,10 @@ const delta_margin: i32 = 200;
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
 fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32, shared: *SharedSearchState) i32 {
-    _ = shared.node_count.fetchAdd(1, .monotonic);
+    const nodes = shared.node_count.fetchAdd(1, .monotonic);
+    if (nodes & 2047 == 0) checkTime(shared);
+    if (shared.stop_flag.load(.monotonic)) return 0;
+
     const to_move = state.to_move;
     const in_check = state.in_check == to_move;
 
@@ -542,7 +562,10 @@ fn negamax(
     beta_param: i32,
     search_ctx: SearchContext,
 ) i32 {
-    _ = search_ctx.shared.node_count.fetchAdd(1, .monotonic);
+    const nodes = search_ctx.shared.node_count.fetchAdd(1, .monotonic);
+    if (nodes & 2047 == 0) checkTime(search_ctx.shared);
+    if (search_ctx.shared.stop_flag.load(.monotonic)) return 0;
+
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -876,6 +899,8 @@ fn searchAtDepthWithBounds(
     }
 
     for (0..moves.len) |i| {
+        if (shared.stop_flag.load(.monotonic)) break;
+
         const m = moves.pickNext(i);
         const p = state.mailbox[m.start].?;
         const undo = state.makeMove(m, to_move, p);
@@ -1015,23 +1040,6 @@ fn workerThread(ctx: *ThreadContext) void {
     for (1..ctx.shared.max_depth + 1) |depth_usize| {
         if (ctx.shared.stop_flag.load(.monotonic)) break;
 
-        // Check external stop signal
-        if (ctx.shared.options.stop) |ext_stop| {
-            if (ext_stop.load(.monotonic)) {
-                ctx.shared.stop_flag.store(true, .monotonic);
-                break;
-            }
-        }
-
-        // Check time limit
-        if (ctx.shared.options.max_time_ms) |max_ms| {
-            const elapsed: u64 = @divTrunc(ctx.shared.timer.read(), std.time.ns_per_ms);
-            if (elapsed >= @as(i64, @intCast(max_ms))) {
-                ctx.shared.stop_flag.store(true, .monotonic);
-                break;
-            }
-        }
-
         const depth: u8 = @intCast(depth_usize);
 
         // Get PV hint from TT (may have been populated by other threads)
@@ -1049,6 +1057,8 @@ fn workerThread(ctx: *ThreadContext) void {
 
             while (attempts < 3) : (attempts += 1) {
                 result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves, alpha, beta, ctx.shared);
+
+                if (ctx.shared.stop_flag.load(.monotonic)) break;
 
                 if (result) |r| {
                     if (r.score <= alpha) {
@@ -1069,19 +1079,21 @@ fn workerThread(ctx: *ThreadContext) void {
             }
 
             // If still failing after 3 attempts, do full window search
-            if (result) |r| {
-                if (r.score <= alpha or r.score >= beta) {
-                    result = searchAtDepth(
-                        &ctx.state,
-                        depth,
-                        ctx.tbl,
-                        &ctx.killers,
-                        hint,
-                        &ctx.history,
-                        &ctx.history_table,
-                        &ctx.countermoves,
-                        ctx.shared,
-                    );
+            if (!ctx.shared.stop_flag.load(.monotonic)) {
+                if (result) |r| {
+                    if (r.score <= alpha or r.score >= beta) {
+                        result = searchAtDepth(
+                            &ctx.state,
+                            depth,
+                            ctx.tbl,
+                            &ctx.killers,
+                            hint,
+                            &ctx.history,
+                            &ctx.history_table,
+                            &ctx.countermoves,
+                            ctx.shared,
+                        );
+                    }
                 }
             }
         } else {
@@ -1098,6 +1110,9 @@ fn workerThread(ctx: *ThreadContext) void {
                 ctx.shared,
             );
         }
+
+        // Discard results from an aborted depth - keep previous depth's result
+        if (ctx.shared.stop_flag.load(.monotonic)) break;
 
         if (result) |r| {
             ctx.best_move = r.move;

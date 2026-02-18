@@ -1,7 +1,3 @@
-// UCI protocol binary for Chez chess engine.
-// Speaks the Universal Chess Interface protocol so the engine can be used
-// with any standard chess GUI (Arena, Cutechess, Lichess, etc.).
-
 const std = @import("std");
 const chez = @import("chez.zig");
 const engine = chez.engine;
@@ -15,7 +11,6 @@ const movegen = engine.movegen;
 const engine_name = "Chez";
 const engine_author = "Paul";
 
-// Scores above this threshold indicate a forced mate
 const checkmate_score: i32 = 100000;
 const mate_score_threshold: i32 = 99900;
 
@@ -150,7 +145,7 @@ pub fn main() !void {
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
-    var num_threads: usize = 8;
+    var num_threads: usize = 4;
     var stop_flag = std.atomic.Value(bool).init(false);
     var search_thread: ?std.Thread = null;
     var search_run_args: SearchRunArgs = undefined;
@@ -161,6 +156,8 @@ pub fn main() !void {
     };
 
     while (true) {
+        search_thread = null;
+
         const line_raw = stdin_reader.interface.takeDelimiterExclusive('\n') catch break;
         stdin_reader.interface.toss(1);
         const line = std.mem.trimEnd(u8, line_raw, &std.ascii.whitespace);
@@ -169,7 +166,7 @@ pub fn main() !void {
             stdout_mutex.lock();
             stdout.print("id name {s}\n", .{engine_name}) catch {};
             stdout.print("id author {s}\n", .{engine_author}) catch {};
-            stdout.writeAll("option name Threads type spin default 8 min 1 max 16\n") catch {};
+            stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock();
