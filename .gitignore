@@ -7,3 +7,7 @@ alphazero/__pycache__
 *.data
 /**/__pycache__
 tasks.md
+testing/books/
+testing/.builds/
+testing/results/*.json
+testing/results/*.pgn
