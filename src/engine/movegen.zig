@@ -171,7 +171,7 @@ pub const king_move_mask = [64]u64{
 
 pub const MoveList = struct {
     moves: [256]engine.Move = undefined,
-    scores: [256]i32 = undefined,
+    scores: [256]i32 align(32) = undefined,
     len: u8 = 0,
 
     pub fn append(self: *MoveList, m: Move) void {
@@ -197,15 +197,42 @@ pub const MoveList = struct {
     // Incremental selection: find the best-scored move from index..len,
     // swap it to position index. Used instead of a full sort so only
     // the moves actually examined get ordered (alpha-beta cuts early).
+    // Uses @Vector(8, i32) SIMD reduction to scan scores 8 at a time.
     pub fn pickNext(self: *MoveList, index: usize) Move {
         var best_idx = index;
         var best_score = self.scores[index];
-        for (index + 1..self.len) |i| {
-            if (self.scores[i] > best_score) {
-                best_score = self.scores[i];
-                best_idx = i;
+
+        const start = index + 1;
+        const end: usize = self.len;
+        if (start < end) {
+            const count = end - start;
+            const simd_len = 8;
+            const simd_count = count / simd_len;
+            var i = start;
+
+            for (0..simd_count) |_| {
+                const chunk: @Vector(8, i32) = self.scores[i..][0..8].*;
+                const max_val = @reduce(.Max, chunk);
+                if (max_val > best_score) {
+                    for (0..8) |j| {
+                        if (self.scores[i + j] > best_score) {
+                            best_score = self.scores[i + j];
+                            best_idx = i + j;
+                        }
+                    }
+                }
+                i += simd_len;
+            }
+
+            // Scalar tail
+            while (i < end) : (i += 1) {
+                if (self.scores[i] > best_score) {
+                    best_score = self.scores[i];
+                    best_idx = i;
+                }
             }
         }
+
         if (best_idx != index) {
             const tmp_move = self.moves[index];
             const tmp_score = self.scores[index];

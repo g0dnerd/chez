@@ -10,12 +10,12 @@
   },
   {
     "as": "white",
-    "versus":"komodo 24",
+    "versus": "komodo 24",
     "result": "draw",
     "pgn": "1. e4 c5 2. Nc3 Nc6 3. Nf3 e6 4. Be2 Nf6 5. d4 d5 6. exd5 Nxd5 7. Nxd5 Qxd5 8. Be3 cxd4 9. Nxd4 Nxd4 10. Qxd4 Qxd4 11. Bxd4 Bd7 12. Bf3 Rc8 13. Bxb7 Rxc2 14. O-O Bc5 15. Bxg7 Rg8 16. Bc3 Bb5 17. Be4 Bxf1 18. Rxf1 Rxc3 19. bxc3 h6 20. Bc6+ Ke7 21. Rd1 Rd8 22. Rxd8 Kxd8 23. g3 Ba3 24. Kg2 Ke7 25. Kf3 Bb2 26. c4 Bd4 27. h3 a6 28. Bb7 a5 29. Bc6 Kd6 30. Be8 Ke7 31. Bc6 Kd6 32. Be8 Ke7 33. Bc6 1/2-1/2",
     "depth": 14,
     "threads": 4,
-    "commit":"f267719dee70c9d5df1ef8204423f927b9c61566"
+    "commit": "f267719dee70c9d5df1ef8204423f927b9c61566"
   },
   {
     "as": "white",
@@ -78,7 +78,7 @@
     "pgn": "1. e4 e5 2. Nf3 Nf6 3. Nc3 Nc6 4. Bb5 Bd6 5. O-O O-O 6. d3 a6 7. Bxc6 dxc6 8. Be3 Re8 9. h3 a5 10. Ne2 c5 11. c4 c6 12. b3 Nh5 13. Qd2 Bd7 14. Rad1 Qc7 15. Qc2 f6 16. a4 b6 17. Bd2 Rad8 18. Rfe1 Be6 19. Qb2 Qd7 20. Kh2 g5 21. Bc1 Ng7 22. Be3 Bf7 23. Kg1 Ne6 24. Rf1 h5 25. h4 g4 26. Nh2 Nd4 27. Ng3 Qe6 28. f3 gxf3 29. Bxd4 cxd4 30. Rxf3 Bg6 31. Rdf1 Be7 32. Nf5 Rf8 33. Qf2 Bb4 34. c5 Kh7 35. Qc2 bxc5 36. g4 Rd7 37. Qd1 Rb7 38. Rg3 Ba3 39. Qd2 Bxf5 40. Rxf5 Qxb3 41. Rxh5+ Kg8 42. Qh6 Rg7 43. g5 Qd1+ 44. Kg2 Bc1 45. Qh8+ Kf7 46. g6+ Ke8 47. Qxg7 Qe2+ 48. Kh3 Qxh5 49. Qb7 Bg5 50. Qc8+ Ke7 51. Qc7+ Ke6 52. Qxc6+ Ke7 53. Nf3 Bxh4 54. Qc7+ Ke8 55. Nxh4 Rh8 56. Qf7+ Kd8 57. Qxf6+ Kc7 58. g7 Rg8 59. Qe7+ Kb8 60. Qd6+ Ka7 61. Qd7+ Kb6 62. Rg1 c4 63. Qd6+ Ka7 64. Qc5+ Ka8 65. Qxa5+ Kb7 66. Rb1+ Kc8 67. Qa8+ Kd7 68. Qb7+ Kd8 69. Qb6+ Ke7 70. Qc7+ Ke8 71. Rb8# 1-0",
     "depth": 14,
     "threads": 3,
-    "commit":"f267719dee70c9d5df1ef8204423f927b9c61566"
+    "commit": "f267719dee70c9d5df1ef8204423f927b9c61566"
   },
   {
     "as": "black",
@@ -87,6 +87,33 @@
     "pgn": "1. Nf3 e5 2. Nxe5 Nf6 3. c3 d5 4. g3 Bd6 5. Nf3 O-O 6. Bg2 c5 7. Na3 Nc6 8. O-O Re8 9. Nc2 Qe7 10. d4 Qxe2 11. dxc5 Bxc5 12. Be3 Qxd1 13. Raxd1 Bb6 14. h3 Bf5 15. Nfd4 Bg6 16. Rfe1 Rac8 17. f3 Ne5 18. f4 Nd3 19. f5 Nxe1 20. Rxe1 Bxd4 21. Nxd4 Bh5 22. Kf2 a6 23. g4 Bxg4 24. hxg4 Nxg4+ 25. Kf3 Ne5+ 26. Kg3 Nd3 27. Re2 Nxb2 28. Kf4 Nd3+ 29. Kf3 Rxc3 30. Bg5 Nc1+ 31. Re3 Nxa2 32. Rxc3 Nxc3 33. Nb3 Ne4 34. Be3 Nd6 35. f6 Nf5 36. Bf2 g5 37. Nd4 Nxd4+ 38. Bxd4 Re4 39. Be3 Re5 40. Bc1 h5 41. Bd2 g4+ 42. Kg3 h4+ 43. Kxh4 Re2 44. Bxd5 Rxd2 45. Bxb7 a5 46. Bc6 Rd4 47. Be8 a4 48. Bc6 a3 49. Kh5 a2 50. Kh4 a1=Q 51. Kh5 g3 52. Kh6 Rf4 53. Bd7 g2 54. Bg4 g1=Q 55. Kg5 Qxf6+ 56. Kh5 Qxg4# 0-1",
     "depth": 14,
     "threads": 3,
-    "commit":"f267719dee70c9d5df1ef8204423f927b9c61566"
+    "commit": "f267719dee70c9d5df1ef8204423f927b9c61566"
+  },
+  {
+    "as": "black",
+    "versus": "komodo 24",
+    "result": "loss",
+    "pgn": "1. c4 e6 2. g3 Nc6 3. d4 Bb4+ 4. Bd2 Bxd2+ 5. Qxd2 Nf6 6. Nf3 d5 7. Bg2 Ne4 8. Qd3 Nd6 9. Nbd2 a5 10. O-O O-O 11. e4 b6 12. b3 Nb4 13. Qb1 Bb7 14. exd5 exd5 15. Re1 Nc6 16. a3 Re8 17. Rxe8+ Qxe8 18. Qd3 f6 19. Nh4 Ne7 20. Re1 Qd7 21. c5 Nf7 22. Bh3 Qxh3 23. Rxe7 Qc8 24. Qf5 bxc5 25. Qc2 c4 26. bxc4 Qd8 27. Re3 dxc4 28. Qxc4 Bd5 29. Qc5 Qd6 30. Qc2 g6 31. Ng2 Ng5 32. Nf4 Rd8 33. h4 Ne6 34. Nxe6 Bxe6 35. Ne4 Qxd4 36. Qxc7 Rc8 37. Qxa5 Rc1+ 38. Re1 Rxe1+ 39. Qxe1 Qe5 40. Qe3 Bf5 41. Nc5 Qxe3 42. fxe3 Kf8 43. e4 Bc8 44. Kf2 Ke7 45. Ke3 Kd6 46. Kd4 Bg4 47. a4 Kc6 48. Nd3 Kb7 49. Nb4 Bd7 50. a5 Bc8 51. Nd5 Ka6 52. Nxf6 h5 53. Kd5 Bb7+ 54. Kd6 Kxa5 55. e5 Ba6 56. e6 Bc4 57. Nd5 Bb5 58. e7 Be8 59. Ke6 Ba4 60. Kf7 Bc6 61. Nf6 Kb6 62. Kxg6 Kc5 63. Kf7 Ba4 64. Nxh5 Bb3+ 65. Kf8 Ba4 66. Nf4 Kd4 67. h5 Ke4 68. h6 Kf3 69. h7 Kg4 70. h8=Q Kxg3 71. Nh5+ Kg2 72. e8=Q Bxe8 73. Kxe8 Kf3 74. Qe5 Kg4 75. Qe2+ Kh4 76. Kf7 Kg5 77. Qe4 Kh6 78. Qg6# 1-0",
+    "depth": 15,
+    "threads": 4,
+    "commit": "5c921a3cf68699612640d2162a26cbdbd2b46bb7"
+  },
+  {
+    "as": "black",
+    "versus": "komodo 24",
+    "result": "loss",
+    "pgn": "1. e4 e5 2. Bc4 Nf6 3. d3 Nc6 4. Nf3 Bb4+ 5. c3 Be7 6. O-O O-O 7. Nbd2 d6 8. a4 a5 9. Re1 Bg4 10. Nf1 d5 11. exd5 Nxd5 12. h3 Be6 13. Bb5 Na7 14. Nxe5 Nxb5 15. axb5 Re8 16. Qf3 a4 17. Bd2 Bf8 18. d4 f6 19. Nd3 Bf7 20. Nc5 Rxe1 21. Rxe1 a3 22. bxa3 Rxa3 23. Ne4 Qd7 24. Qe2 f5 25. Nc5 Bxc5 26. dxc5 Nxc3 27. Bxc3 Rxc3 28. Qe5 Rd3 29. Ne3 g6 30. Ra1 Qe8 31. Qxc7 Rd7 32. Qg3 Qe4 33. Ra8+ Kg7 34. Qb8 Qb1+ 35. Kh2 Qe4 36. Qc8 Qe7 37. Qh8+ Kh6 38. Qc3 Rc7 39. Qd2 Qe5+ 40. g3 Kg7 41. Qd8 Kh6 42. b6 Rc6 43. Qf8+ Qg7 44. Qe7 Qb2 45. Qxf7 Qxf2+ 46. Ng2 Qxc5 47. Rh8 Kg5 48. Qxh7 1-0",
+    "depth": 15,
+    "threads": 6,
+    "commit": "5c921a3cf68699612640d2162a26cbdbd2b46bb7"
+  },
+  {
+    "as": "white",
+    "versus": "komodo 24",
+    "result": "",
+    "pgn": "",
+    "depth": 15,
+    "threads": 4,
+    "commit": "5c921a3cf68699612640d2162a26cbdbd2b46bb7"
   }
 ]

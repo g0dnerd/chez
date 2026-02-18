@@ -28,44 +28,60 @@ const max_phase_mg: i32 = 24;
 
 // Packed score holding both middlegame and endgame values.
 // Allows evaluating once and interpolating at the end based on game phase.
-pub const Score = packed struct {
-    midgame: i16,
-    endgame: i16,
+pub const Score = struct {
+    v: @Vector(2, i16),
 
-    pub const zero = Score{ .midgame = 0, .endgame = 0 };
+    pub const zero = Score{ .v = @splat(0) };
+
+    pub fn init(mg: i16, eg: i16) Score {
+        return .{ .v = .{ mg, eg } };
+    }
 
     pub fn add(self: Score, other: Score) Score {
-        return .{ .midgame = self.midgame + other.midgame, .endgame = self.endgame + other.endgame };
+        return .{ .v = self.v + other.v };
     }
 
     pub fn sub(self: Score, other: Score) Score {
-        return .{ .midgame = self.midgame - other.midgame, .endgame = self.endgame - other.endgame };
+        return .{ .v = self.v - other.v };
     }
 
     pub fn mul(self: Score, n: i32) Score {
-        return .{
-            .midgame = @intCast(self.midgame * @as(i16, @intCast(n))),
-            .endgame = @intCast(self.endgame * @as(i16, @intCast(n))),
-        };
+        const factor: @Vector(2, i16) = @splat(@intCast(n));
+        return .{ .v = self.v * factor };
     }
 
     pub fn neg(self: Score) Score {
-        return .{ .midgame = -self.midgame, .endgame = -self.endgame };
+        return .{ .v = -self.v };
     }
 
     // Interpolate between MG and EG based on phase (0 = endgame, 24 = opening)
     pub fn taper(self: Score, phase: i32) i32 {
-        return @divTrunc(@as(i32, self.midgame) * phase + @as(i32, self.endgame) * (max_phase_mg - phase), max_phase_mg);
+        const mg: i32 = self.v[0];
+        const eg: i32 = self.v[1];
+        return @divTrunc(mg * phase + eg * (max_phase_mg - phase), max_phase_mg);
+    }
+
+    pub fn midgame(self: Score) i16 {
+        return self.v[0];
+    }
+
+    pub fn endgame(self: Score) i16 {
+        return self.v[1];
     }
 };
 
+pub fn toCentipawns(val: i32) f32 {
+    const val_f: f32 = @floatFromInt(val);
+    return val_f / @as(f32, @floatFromInt(piece_values[0].endgame()));
+}
+
 pub const piece_values = [6]Score{
-    Score{ .midgame = 126, .endgame = 208 }, // pawn
-    Score{ .midgame = 781, .endgame = 854 }, // knight
-    Score{ .midgame = 825, .endgame = 915 }, // bishop
-    Score{ .midgame = 1276, .endgame = 1380 }, // rook
-    Score{ .midgame = 2538, .endgame = 2682 }, // queen
-    Score{ .midgame = 20000, .endgame = 20000 }, // king
+    Score.init(126, 208), // pawn
+    Score.init(781, 854), // knight
+    Score.init(825, 915), // bishop
+    Score.init(1276, 1380), // rook
+    Score.init(2538, 2682), // queen
+    Score.init(20000, 20000), // king
 };
 
 // For MVV-LVA move ordering (uses middlegame values)
@@ -73,160 +89,160 @@ pub const piece_values_mg = [6]i32{ 126, 781, 825, 1276, 2538, 20000 };
 
 // Passed pawn bonus by rank (from pawn's perspective, rank 1-6 relevant)
 const passed_pawn_bonus = [8]Score{
-    Score{ .midgame = 0, .endgame = 0 }, // rank 0
-    Score{ .midgame = 9, .endgame = 28 }, // rank 1
-    Score{ .midgame = 15, .endgame = 31 }, // rank 2
-    Score{ .midgame = 17, .endgame = 39 }, // rank 3
-    Score{ .midgame = 64, .endgame = 70 }, // rank 4
-    Score{ .midgame = 171, .endgame = 177 }, // rank 5
-    Score{ .midgame = 277, .endgame = 260 }, // rank 6
-    Score{ .midgame = 0, .endgame = 0 }, // rank 7
+    Score.init(0, 0), // rank 0
+    Score.init(9, 28), // rank 1
+    Score.init(15, 31), // rank 2
+    Score.init(17, 39), // rank 3
+    Score.init(64, 70), // rank 4
+    Score.init(171, 177), // rank 5
+    Score.init(277, 260), // rank 6
+    Score.init(0, 0), // rank 7
 };
 
 // Mobility bonus per move (middlegame, endgame)
 const mobility_bonus = [4][28]Score{
     // Knights
     [_]Score{
-        Score{ .midgame = -62, .endgame = -81 },
-        Score{ .midgame = -53, .endgame = -56 },
-        Score{ .midgame = -12, .endgame = -31 },
-        Score{ .midgame = -4, .endgame = -16 },
-        Score{ .midgame = 3, .endgame = 5 },
-        Score{ .midgame = 13, .endgame = 11 },
-        Score{ .midgame = 22, .endgame = 17 },
-        Score{ .midgame = 28, .endgame = 20 },
-        Score{ .midgame = 33, .endgame = 25 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
+        Score.init(-62, -81),
+        Score.init(-53, -56),
+        Score.init(-12, -31),
+        Score.init(-4, -16),
+        Score.init(3, 5),
+        Score.init(13, 11),
+        Score.init(22, 17),
+        Score.init(28, 20),
+        Score.init(33, 25),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
     },
     // Bishops
     [_]Score{
-        Score{ .midgame = -48, .endgame = -59 },
-        Score{ .midgame = -20, .endgame = -23 },
-        Score{ .midgame = 16, .endgame = -3 },
-        Score{ .midgame = 26, .endgame = 13 },
-        Score{ .midgame = 38, .endgame = 24 },
-        Score{ .midgame = 51, .endgame = 42 },
-        Score{ .midgame = 55, .endgame = 54 },
-        Score{ .midgame = 63, .endgame = 57 },
-        Score{ .midgame = 63, .endgame = 65 },
-        Score{ .midgame = 68, .endgame = 73 },
-        Score{ .midgame = 81, .endgame = 78 },
-        Score{ .midgame = 81, .endgame = 86 },
-        Score{ .midgame = 91, .endgame = 88 },
-        Score{ .midgame = 98, .endgame = 97 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
+        Score.init(-48, -59),
+        Score.init(-20, -23),
+        Score.init(16, -3),
+        Score.init(26, 13),
+        Score.init(38, 24),
+        Score.init(51, 42),
+        Score.init(55, 54),
+        Score.init(63, 57),
+        Score.init(63, 65),
+        Score.init(68, 73),
+        Score.init(81, 78),
+        Score.init(81, 86),
+        Score.init(91, 88),
+        Score.init(98, 97),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
     },
     // Rooks
     [_]Score{
-        Score{ .midgame = -60, .endgame = -78 },
-        Score{ .midgame = -20, .endgame = -17 },
-        Score{ .midgame = 2, .endgame = 23 },
-        Score{ .midgame = 3, .endgame = 39 },
-        Score{ .midgame = 3, .endgame = 70 },
-        Score{ .midgame = 11, .endgame = 99 },
-        Score{ .midgame = 22, .endgame = 103 },
-        Score{ .midgame = 31, .endgame = 121 },
-        Score{ .midgame = 40, .endgame = 134 },
-        Score{ .midgame = 40, .endgame = 139 },
-        Score{ .midgame = 41, .endgame = 158 },
-        Score{ .midgame = 48, .endgame = 164 },
-        Score{ .midgame = 57, .endgame = 168 },
-        Score{ .midgame = 57, .endgame = 169 },
-        Score{ .midgame = 62, .endgame = 172 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
-        Score{ .midgame = 0, .endgame = 0 },
+        Score.init(-60, -78),
+        Score.init(-20, -17),
+        Score.init(2, 23),
+        Score.init(3, 39),
+        Score.init(3, 70),
+        Score.init(11, 99),
+        Score.init(22, 103),
+        Score.init(31, 121),
+        Score.init(40, 134),
+        Score.init(40, 139),
+        Score.init(41, 158),
+        Score.init(48, 164),
+        Score.init(57, 168),
+        Score.init(57, 169),
+        Score.init(62, 172),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
+        Score.init(0, 0),
     },
     // Queens
     [_]Score{
-        Score{ .midgame = -30, .endgame = -48 },
-        Score{ .midgame = -12, .endgame = -30 },
-        Score{ .midgame = -8, .endgame = -7 },
-        Score{ .midgame = -9, .endgame = 19 },
-        Score{ .midgame = 20, .endgame = 40 },
-        Score{ .midgame = 23, .endgame = 55 },
-        Score{ .midgame = 23, .endgame = 59 },
-        Score{ .midgame = 35, .endgame = 75 },
-        Score{ .midgame = 38, .endgame = 78 },
-        Score{ .midgame = 53, .endgame = 96 },
-        Score{ .midgame = 64, .endgame = 96 },
-        Score{ .midgame = 65, .endgame = 100 },
-        Score{ .midgame = 65, .endgame = 121 },
-        Score{ .midgame = 66, .endgame = 127 },
-        Score{ .midgame = 67, .endgame = 131 },
-        Score{ .midgame = 67, .endgame = 133 },
-        Score{ .midgame = 72, .endgame = 136 },
-        Score{ .midgame = 72, .endgame = 141 },
-        Score{ .midgame = 77, .endgame = 147 },
-        Score{ .midgame = 79, .endgame = 150 },
-        Score{ .midgame = 93, .endgame = 151 },
-        Score{ .midgame = 108, .endgame = 168 },
-        Score{ .midgame = 108, .endgame = 168 },
-        Score{ .midgame = 108, .endgame = 171 },
-        Score{ .midgame = 110, .endgame = 182 },
-        Score{ .midgame = 114, .endgame = 182 },
-        Score{ .midgame = 114, .endgame = 192 },
-        Score{ .midgame = 116, .endgame = 218 },
+        Score.init(-30, -48),
+        Score.init(-12, -30),
+        Score.init(-8, -7),
+        Score.init(-9, 19),
+        Score.init(20, 40),
+        Score.init(23, 55),
+        Score.init(23, 59),
+        Score.init(35, 75),
+        Score.init(38, 78),
+        Score.init(53, 96),
+        Score.init(64, 96),
+        Score.init(65, 100),
+        Score.init(65, 121),
+        Score.init(66, 127),
+        Score.init(67, 131),
+        Score.init(67, 133),
+        Score.init(72, 136),
+        Score.init(72, 141),
+        Score.init(77, 147),
+        Score.init(79, 150),
+        Score.init(93, 151),
+        Score.init(108, 168),
+        Score.init(108, 168),
+        Score.init(108, 171),
+        Score.init(110, 182),
+        Score.init(114, 182),
+        Score.init(114, 192),
+        Score.init(116, 218),
     },
 };
 
 // Bonus/penalty constants
-const bishop_pair = Score{ .midgame = 30, .endgame = 50 };
-const rook_open_file = Score{ .midgame = 48, .endgame = 27 };
-const rook_semi_open = Score{ .midgame = 19, .endgame = 7 };
-const rook_on_seventh = Score{ .midgame = 20, .endgame = 40 };
-const isolated_pawn = Score{ .midgame = -15, .endgame = -20 };
-const doubled_pawn = Score{ .midgame = -10, .endgame = -20 };
-const backward_pawn = Score{ .midgame = -9, .endgame = -22 };
-const connected_pawn = Score{ .midgame = 7, .endgame = 10 };
-const protected_passed_pawn = Score{ .midgame = 15, .endgame = 30 };
-const blocked_passed_pawn = Score{ .midgame = -10, .endgame = -20 };
-const knight_outpost_defended = Score{ .midgame = 56, .endgame = 34 };
-const bishop_outpost_defended = Score{ .midgame = 31, .endgame = 23 };
-const pawn_shield = Score{ .midgame = 15, .endgame = 0 };
-const pawn_shield_missing = Score{ .midgame = -10, .endgame = 0 };
-const tempo = Score{ .midgame = 28, .endgame = 28 };
+const bishop_pair = Score.init(30, 50);
+const rook_open_file = Score.init(48, 27);
+const rook_semi_open = Score.init(19, 7);
+const rook_on_seventh = Score.init(20, 40);
+const isolated_pawn = Score.init(-15, -20);
+const doubled_pawn = Score.init(-10, -20);
+const backward_pawn = Score.init(-9, -22);
+const connected_pawn = Score.init(7, 10);
+const protected_passed_pawn = Score.init(15, 30);
+const blocked_passed_pawn = Score.init(-10, -20);
+const knight_outpost_defended = Score.init(56, 34);
+const bishop_outpost_defended = Score.init(31, 23);
+const pawn_shield = Score.init(15, 0);
+const pawn_shield_missing = Score.init(-10, 0);
+const tempo = Score.init(28, 28);
 
 const promotion_bonus: i32 = 5000;
 
@@ -279,7 +295,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -307,7 +323,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -335,7 +351,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -363,7 +379,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -391,7 +407,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -419,7 +435,7 @@ pub const pst = [6][64]Score{
         };
         var result: [64]Score = undefined;
         for (0..64) |i| {
-            result[i] = Score{ .midgame = mg[i], .endgame = eg[i] };
+            result[i] = Score.init(mg[i], eg[i]);
         }
         break :blk result;
     },
@@ -912,10 +928,10 @@ pub const EvalTrace = struct {
         try printRow(writer, "Rook bonuses ", self.rook_bonuses);
         try printRow(writer, "Mobility     ", self.mobility);
         try printRow(writer, "King safety  ", self.king_safety);
-        try writer.print("Tempo         | {d:>6}  {d:>6} |                |\n", .{ self.tempo_score.midgame, self.tempo_score.endgame });
+        try writer.print("Tempo         | {d:>6}  {d:>6} |                |\n", .{ self.tempo_score.midgame(), self.tempo_score.endgame() });
         try writer.print("--------------+----------------+----------------+\n", .{});
         try writer.print("Phase: {d}/24\n", .{self.phase});
-        const cp_total: f32 = @as(f32, @floatFromInt(self.total)) / @as(f32, @floatFromInt(piece_values[0].endgame));
+        const cp_total: f32 = @as(f32, @floatFromInt(self.total)) / @as(f32, @floatFromInt(piece_values[0].endgame()));
         const sign: []const u8 = if (cp_total < 0) "-" else if (cp_total > 0) "+" else "±";
         try writer.print("Total: {s}{d:.2} ({d})\n", .{ sign, @abs(cp_total), self.total });
     }
@@ -923,10 +939,10 @@ pub const EvalTrace = struct {
     fn printRow(writer: *std.Io.Writer, label: []const u8, scores: [2]Score) !void {
         try writer.print("{s} | {d:>6}  {d:>6} | {d:>6}  {d:>6} |\n", .{
             label,
-            scores[0].midgame,
-            scores[0].endgame,
-            scores[1].midgame,
-            scores[1].endgame,
+            scores[0].midgame(),
+            scores[0].endgame(),
+            scores[1].midgame(),
+            scores[1].endgame(),
         });
     }
 };
