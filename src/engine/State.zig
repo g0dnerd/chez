@@ -926,7 +926,9 @@ fn initZobristKeys() void {
     } else if (builtin.target.os.tag == .linux) {
         _ = std.os.linux.getrandom(std.mem.asBytes(&seed), @sizeOf(u64), 0);
     } else {
-        std.crypto.random.bytes(std.mem.asBytes(&seed));
+        var threaded: std.Io.Threaded = .init_single_threaded;
+        const io = threaded.io();
+        std.Io.random(io, std.mem.asBytes(&seed));
     }
     var rng = std.Random.DefaultPrng.init(seed);
     const random = rng.random();

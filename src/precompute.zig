@@ -202,7 +202,7 @@ pub fn main() !void {
     if (builtin.target.os.tag == .linux) {
         _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
     } else {
-        std.crypto.random.bytes(std.mem.asBytes(&seed));
+        std.Io.random(io, std.mem.asBytes(&seed));
     }
     var rng = std.Random.DefaultPrng.init(seed);
     try precomputeMagics(alloc, &rng);
