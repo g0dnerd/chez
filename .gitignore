@@ -2,7 +2,6 @@
 /.zig-cache
 /target
 alpha_zero.md
-games.json
 /models
 alphazero/__pycache__
 *.data

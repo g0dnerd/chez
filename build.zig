@@ -1,7 +1,13 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
-    const target = b.standardTargetOptions(.{});
+    const portable = b.option(bool, "portable", "Build without CPU-specific optimizations") orelse false;
+    const target = if (portable)
+        b.standardTargetOptions(.{})
+    else
+        b.resolveTargetQuery(.{
+            .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 },
+        });
 
     const kore_dep = b.dependency("kore", .{});
     const kore = kore_dep.module("kore");
@@ -70,9 +76,25 @@ pub fn build(b: *std.Build) !void {
     const run_puzzle_tests = b.addRunArtifact(puzzle_tests);
     puzzle_test_step.dependOn(&run_puzzle_tests.step);
 
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const bench_step = b.step("bench", "Run search benchmark");
+    const run_bench = b.addRunArtifact(bench);
+    if (b.args) |args| {
+        run_bench.addArgs(args);
+    }
+    bench_step.dependOn(&run_bench.step);
+
     b.installArtifact(libchez);
     b.installArtifact(precompute);
     b.installArtifact(tui);
+    b.installArtifact(bench);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{
