@@ -24,7 +24,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 BUILDS_DIR = SCRIPT_DIR / ".builds"
 RESULTS_DIR = SCRIPT_DIR / "results"
-DEFAULT_BOOK = SCRIPT_DIR / "books" / "8moves_v3.pgn"
+DEFAULT_BOOK = "/home/paul/projects/chez/testing/books/komodo.bin"
 BOOK_URL = "https://www.sp-cc.de/files/8moves_v3.pgn"
 
 # Worktrees created during this run, cleaned up on exit
@@ -241,24 +241,33 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         f"name={args.current_name}",
         f"cmd={engine_current}",
         f"option.Threads={args.threads}",
+        "proto=uci",
+    ]
+
+    # Opening book
+    book = Path(args.book)
+    if book.exists():
+        cmd += [f"option.BookFile={book}"]
+
+    cmd += [
         "-engine",
         f"name={args.baseline_name}",
         f"cmd={engine_baseline}",
         f"option.Threads={args.threads}",
-        "-each",
         "proto=uci",
     ]
 
     # Time control or fixed depth
     if args.depth:
         cmd += [
+            "-each",
             "tc=inf",
             f"depth={args.depth}",
             "restart=on",
             "timemargin=300",
         ]
     else:
-        cmd += [f"tc={tc}", "restart=on", "timemargin=300"]
+        cmd += ["-each", f"tc={tc}", "restart=on", "timemargin=300"]
 
     cmd += [
         "-rounds",
@@ -278,18 +287,6 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "-ratinginterval",
         "10",
     ]
-
-    # Opening book
-    # book = Path(args.book)
-    # if book.exists():
-    #     fmt = "pgn" if book.suffix == ".pgn" else "epd"
-    #     cmd += [
-    #         "-openings",
-    #         f"file={book}",
-    #         f"format={fmt}",
-    #         "order=random",
-    #         "policy=round",
-    #     ]
 
     # PGN output
     if pgn_out:
@@ -470,7 +467,7 @@ def parse_args():
     )
     p.add_argument("--rounds", type=int, default=None, help="Number of game pairs")
     p.add_argument("--tc", default=None, help="Time control (e.g. 1+0.01)")
-    p.add_argument("--threads", type=int, default=1, help="Engine threads (default: 1)")
+    p.add_argument("--threads", type=int, default=4, help="Engine threads (default: 4)")
     p.add_argument(
         "--concurrency", type=int, default=4, help="Parallel games (default: 4)"
     )

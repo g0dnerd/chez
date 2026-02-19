@@ -5,6 +5,7 @@ const precompute = @import("../precompute.zig");
 
 pub const Bitboard = @import("Bitboard.zig");
 pub const State = @import("State.zig");
+pub const book = @import("book.zig");
 pub const castling = @import("castling.zig");
 pub const evaluation = @import("evaluation.zig");
 pub const movegen = @import("movegen.zig");
@@ -74,10 +75,13 @@ pub const Move = packed struct(u16) {
     }
 
     pub fn eql(self: Move, other: Move) bool {
-        return self.start == other.start and
-            self.end == other.end and
-            self.promotion_piece == other.promotion_piece and
-            self.is_promotion == other.is_promotion;
+        // Packed layout: start[0:5] end[6:11] is_promotion[12] promotion_piece[13:15]
+        // Always compare bits 0-12; include bits 13-15 only when both are promotions.
+        const a: u16 = @bitCast(self);
+        const b: u16 = @bitCast(other);
+        const both_promo: u16 = (a & b & 0x1000) >> 12;
+        const mask: u16 = 0x1FFF | ((@as(u16, 0) -% both_promo) & 0xE000);
+        return ((a ^ b) & mask) == 0;
     }
 };
 
@@ -129,4 +133,27 @@ pub const Colors = struct {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "test packed move eql" {
+    {
+        const m1 = Move{ .start = square.a7, .end = square.a8, .is_promotion = false };
+        const m2 = Move{ .start = square.a7, .end = square.a8, .is_promotion = false };
+        try std.testing.expect(m1.eql(m2));
+    }
+    {
+        const m1 = Move{ .start = square.a7, .end = square.a8, .is_promotion = true };
+        const m2 = Move{ .start = square.a7, .end = square.a8, .is_promotion = true };
+        try std.testing.expect(m1.eql(m2));
+    }
+    {
+        const m1 = Move{ .start = square.a7, .end = square.a8, .is_promotion = true };
+        const m2 = Move{ .start = square.a7, .end = square.a8, .is_promotion = false };
+        try std.testing.expect(!m1.eql(m2));
+    }
+    {
+        const m1 = Move{ .start = square.e2, .end = square.e4, .is_promotion = false };
+        const m2 = Move{ .start = square.e2, .end = square.e4, .is_promotion = false };
+        try std.testing.expect(m1.eql(m2));
+    }
 }

@@ -150,6 +150,10 @@ pub fn main() !void {
     var search_thread: ?std.Thread = null;
     var search_run_args: SearchRunArgs = undefined;
 
+    var own_book = true;
+    var opening_book: ?engine.book.Book = null;
+    defer if (opening_book) |*b| b.deinit();
+
     var info_ctx = InfoCtx{
         .writer = stdout,
         .mutex = &stdout_mutex,
@@ -167,6 +171,8 @@ pub fn main() !void {
             stdout.print("id name {s}\n", .{engine_name}) catch {};
             stdout.print("id author {s}\n", .{engine_author}) catch {};
             stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
+            stdout.writeAll("option name OwnBook type check default true\n") catch {};
+            stdout.writeAll("option name BookFile type string default \n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock();
@@ -186,14 +192,22 @@ pub fn main() !void {
             history.push(state.zobrist_hash);
             tbl.newSearch();
         } else if (std.mem.startsWith(u8, line, "setoption ")) {
-            var it = std.mem.splitScalar(u8, line, ' ');
-            _ = it.next(); // "setoption"
-            _ = it.next(); // "name"
-            const opt_name = it.next() orelse continue;
-            _ = it.next(); // "value"
-            const opt_val = it.next() orelse continue;
+            const name_prefix = "setoption name ";
+            if (line.len <= name_prefix.len) continue;
+            const rest = line[name_prefix.len..];
+            const value_sep = std.mem.indexOf(u8, rest, " value ");
+            const opt_name = if (value_sep) |idx| rest[0..idx] else rest;
+            const opt_val = if (value_sep) |idx| rest[idx + " value ".len..] else "";
+
             if (std.mem.eql(u8, opt_name, "Threads")) {
                 num_threads = std.fmt.parseInt(usize, opt_val, 10) catch num_threads;
+            } else if (std.mem.eql(u8, opt_name, "OwnBook")) {
+                own_book = std.mem.eql(u8, opt_val, "true");
+            } else if (std.mem.eql(u8, opt_name, "BookFile")) {
+                if (opt_val.len > 0) {
+                    if (opening_book) |*b| b.deinit();
+                    opening_book = engine.book.Book.load(io, std.heap.page_allocator, opt_val) catch null;
+                }
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
@@ -228,6 +242,19 @@ pub fn main() !void {
             }
         } else if (std.mem.startsWith(u8, line, "go")) {
             if (search_thread != null) continue;
+
+            // Probe opening book before search
+            if (own_book) {
+                if (opening_book) |*b| {
+                    if (b.probe(&state)) |book_move| {
+                        stdout_mutex.lock();
+                        stdout.print("bestmove {f}\n", .{book_move}) catch {};
+                        stdout.flush() catch {};
+                        stdout_mutex.unlock();
+                        continue;
+                    }
+                }
+            }
 
             var max_depth: u8 = 64;
             var max_time_ms: ?u64 = null;

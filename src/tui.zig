@@ -62,6 +62,7 @@ const Args = struct {
     fen: ?[]const u8,
     nn_engine: ?[]const u8, // Path to NN checkpoint, e.g. "models/iter_0100.pt"
     nn_simulations: ?u32, // MCTS simulations for NN engine
+    book: ?[]const u8, // Path to Polyglot opening book (.bin)
 };
 
 // Neural network engine subprocess
@@ -172,7 +173,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         } else break :blk state.to_move;
     };
 
-    const depth: u8 = parsed_args.depth orelse 12;
+    var depth: u8 = parsed_args.depth orelse 14;
     const num_threads: usize = parsed_args.num_threads orelse 4;
 
     // Initialize NN engine if requested
@@ -184,6 +185,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try stdout.writeAll("Starting neural network engine...\n");
         try stdout.flush();
         nn_engine = try NNEngine.init(io, checkpoint, parsed_args.nn_simulations orelse 400);
+    }
+
+    var opening_book: ?engine.book.Book = null;
+    defer if (opening_book) |*b| b.deinit();
+
+    if (parsed_args.book) |book_path| {
+        opening_book = engine.book.Book.load(io, std.heap.page_allocator, book_path) catch null;
     }
 
     var undo_info: [2]engine.State.UndoInfo = undefined;
@@ -247,6 +255,23 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     undo_pieces = undefined;
                     undo_info = undefined;
                     continue :outer;
+                } else if (std.mem.startsWith(u8, move_raw, "depth")) {
+                    const target_depth_raw = move_raw[6..];
+
+                    const target_depth = std.fmt.parseInt(u8, target_depth_raw, 10) catch {
+                        try stdout.print("Invalid depth value '{s}'.\n", .{target_depth_raw});
+                        try stdout.flush();
+                        continue;
+                    };
+                    // if (target_depth > 25) {
+                    //     try stdout.print("Out of bounds depth value '{s}' (maximum 20).\n", .{target_depth_raw});
+                    //     try stdout.flush();
+                    //     continue;
+                    // }
+
+                    try stdout.print("Setting depth to {d}.\n", .{target_depth});
+                    depth = target_depth;
+                    continue;
                 }
 
                 const move = std.mem.trimEnd(u8, move_raw, &std.ascii.whitespace);
@@ -258,6 +283,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
 
                 if (parseMove(move)) |*user_move| {
+                    // try stdout.print("{any}\n", .{moves.moves});
                     if (containsMove(&moves.moves, user_move)) {
                         last_move = user_move.*;
                         const piece = state.pieceAt(user_move.start).?;
@@ -269,7 +295,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         try writeHeader(stdout, &state, depth, num_threads, nn_mode);
                         break;
                     } else {
-                        try stdout.writeAll(" Illegal move! Try again.\n");
+                        try stdout.print(" Illegal move {s}! Try again.\n", .{move});
                         try stdout.flush();
                     }
                 } else {
@@ -286,15 +312,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var best_move: ?engine.Move = null;
         var best_score: f64 = 0.0;
 
-        if (nn_engine) |*eng| {
-            // Use neural network engine
-            var move_buf: [16]u8 = undefined;
-            best_move = try eng.getMove(io, &state, &move_buf);
-        } else {
-            if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl)) |search_res| {
-                // Use traditional search
-                best_move = search_res.move;
-                best_score = search_res.score;
+        // Try opening book first
+        if (opening_book) |*ob| {
+            best_move = ob.probe(&state);
+        }
+
+        if (best_move == null) {
+            if (nn_engine) |*eng| {
+                // Use neural network engine
+                var move_buf: [16]u8 = undefined;
+                best_move = try eng.getMove(io, &state, &move_buf);
+            } else {
+                if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl)) |search_res| {
+                    // Use traditional search
+                    best_move = search_res.move;
+                    best_score = search_res.score;
+                }
             }
         }
 
