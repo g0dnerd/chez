@@ -10,6 +10,7 @@ const Color = engine.Color;
 const Colors = engine.Colors;
 const piece = @import("piece.zig");
 const square = @import("square.zig");
+const Square = square.Square;
 
 const FILE_A: u64 = 0x0101010101010101;
 const FILE_H: u64 = 0x8080808080808080;
@@ -238,6 +239,9 @@ const backward_pawn = Score.init(-9, -22);
 const connected_pawn = Score.init(7, 10);
 const protected_passed_pawn = Score.init(15, 30);
 const blocked_passed_pawn = Score.init(-10, -20);
+const rook_behind_passer = Score.init(16, 29);
+const king_proximity_passer: i16 = 8;
+const free_passed_pawn = Score.init(8, 18);
 const knight_outpost_defended = Score.init(56, 34);
 const bishop_outpost_defended = Score.init(31, 23);
 const pawn_shield = Score.init(15, 0);
@@ -441,7 +445,7 @@ pub const pst = [6][64]Score{
     },
 };
 
-fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
+fn computePassedPawnMask(c: Color, file: Square, rank: Square) u64 {
     if (c == Colors.white) {
         if (rank >= 7) return 0;
         const ranks_ahead: u64 = @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
@@ -461,7 +465,7 @@ fn computePassedPawnMask(c: Color, file: u6, rank: u6) u64 {
 
 // Check if a square is an outpost: in opponent's half and no enemy pawns
 // on adjacent files that could attack it from ahead.
-fn isOutpost(c: Color, file: u6, rank: u6, opp_pawns_bb: Bitboard) bool {
+fn isOutpost(c: Color, file: Square, rank: Square, opp_pawns_bb: Bitboard) bool {
     const in_zone = if (c == Colors.white) rank >= 4 else rank <= 3;
     if (!in_zone) return false;
     if (adjacent_files[file] == 0) return true;
@@ -480,12 +484,12 @@ fn isOutpost(c: Color, file: u6, rank: u6, opp_pawns_bb: Bitboard) bool {
 }
 
 // Check if a square is defended by a friendly pawn (on diagonal behind).
-fn isDefendedByPawn(c: Color, file: u6, rank: u6, our_pawns_bb: Bitboard) bool {
+fn isDefendedByPawn(c: Color, file: Square, rank: Square, our_pawns_bb: Bitboard) bool {
     if ((c == Colors.white and rank == 0) or (c == Colors.black and rank == 7)) return false;
-    const def_rank: u6 = if (c == Colors.white) rank - 1 else rank + 1;
+    const def_rank: Square = if (c == Colors.white) rank - 1 else rank + 1;
     var mask: u64 = 0;
-    if (file > 0) mask |= @as(u64, 1) << (@as(u6, file - 1) + def_rank * 8);
-    if (file < 7) mask |= @as(u64, 1) << (@as(u6, file + 1) + def_rank * 8);
+    if (file > 0) mask |= @as(u64, 1) << (@as(Square, file - 1) + def_rank * 8);
+    if (file < 7) mask |= @as(u64, 1) << (@as(Square, file + 1) + def_rank * 8);
     return (our_pawns_bb.bits & mask) != 0;
 }
 
@@ -503,7 +507,7 @@ fn blockersForKing(state: *const State, c: Color) u64 {
     const our_bb = state.colorBitboard(c).bits;
     const opp_bb = state.colorBitboard(~c).bits;
     const king_bb = state.pieceBitboard(piece.king).bits & our_bb;
-    const king_sq: u6 = @intCast(@ctz(king_bb));
+    const king_sq: Square = @intCast(@ctz(king_bb));
     const all = state.all_pieces.bits;
 
     const enemy_rq = (state.pieceBitboard(piece.rook).bits | state.pieceBitboard(piece.queen).bits) & opp_bb;
@@ -521,7 +525,7 @@ fn blockersForKing(state: *const State, c: Color) u64 {
     var blockers: u64 = 0;
     var sniper_bb = snipers;
     while (sniper_bb != 0) {
-        const sniper_sq: u6 = @intCast(@ctz(sniper_bb));
+        const sniper_sq: Square = @intCast(@ctz(sniper_bb));
         sniper_bb &= sniper_bb - 1;
 
         // Compute between(king, sniper) using intersection of opposing rays
@@ -572,6 +576,12 @@ fn evaluateColor(
     var attacks = PieceAttacks{};
     const occupied = state.all_pieces.bits;
 
+    // Precompute for passed pawn evaluation
+    const opp_pieces_bb = occupied ^ our_pieces;
+    const our_rooks = state.pieceBitboard(piece.rook).bits & our_pieces;
+    const opp_king_sq: Square = @intCast(@ctz(state.pieceBitboard(piece.king).bits & opp_pieces_bb));
+    const opp_pawn_atk = pawnAttacksBB(opp_pawns_bb.bits, ~c);
+
     // X-ray occupancy: bishops see through own queens, rooks see through own rooks+queens
     const our_queens_bb = state.pieceBitboard(piece.queen).bits & our_pieces;
     const occ_without_our_queens = Bitboard{ .bits = occupied ^ our_queens_bb };
@@ -593,11 +603,11 @@ fn evaluateColor(
         }
 
         while (pawns.next()) |s| {
-            const file: u6 = s % 8;
-            const rank: u6 = s / 8;
+            const file: Square = s % 8;
+            const rank: Square = s / 8;
 
             // PST
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             score = score.add(pst[piece.pawn][sq]);
 
             // Connected pawn
@@ -621,7 +631,7 @@ fn evaluateColor(
             // Passed pawn
             const ahead_mask = computePassedPawnMask(c, file, rank);
             if ((opp_pawns_bb.bits & ahead_mask) == 0) {
-                const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
+                const passed_rank = if (c == Colors.white) rank else 7 - rank;
                 score = score.add(passed_pawn_bonus[passed_rank]);
 
                 // Protected passed pawn
@@ -652,6 +662,40 @@ fn evaluateColor(
                 if (blocked) {
                     score = score.add(blocked_passed_pawn);
                 }
+
+                // Rook behind passed pawn
+                {
+                    const ranks_behind: u64 = if (c == Colors.white)
+                        (@as(u64, 1) << (rank * 8)) - 1
+                    else
+                        @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
+                    if ((our_rooks & file_masks[file] & ranks_behind) != 0) {
+                        score = score.add(rook_behind_passer);
+                    }
+                }
+
+                // Enemy king distance to passed pawn (endgame bonus)
+                {
+                    const king_file: Square = opp_king_sq % 8;
+                    const king_rank: Square = opp_king_sq / 8;
+                    const df: Square = if (file > king_file) file - king_file else king_file - file;
+                    const dr: Square = if (rank > king_rank) rank - king_rank else king_rank - rank;
+                    const dist: i16 = @intCast(@max(df, dr));
+                    score = score.add(Score.init(0, dist * king_proximity_passer));
+                }
+
+                // Free passed pawn (advance square not occupied or attacked by enemy pawns)
+                if (!blocked) {
+                    const ahead_sq: u64 = if (c == Colors.white and rank < 7)
+                        @as(u64, 1) << (s + 8)
+                    else if (c == Colors.black and rank > 0)
+                        @as(u64, 1) << (s - 8)
+                    else
+                        0;
+                    if (ahead_sq != 0 and (opp_pawn_atk & ahead_sq) == 0) {
+                        score = score.add(free_passed_pawn);
+                    }
+                }
             }
 
             // Isolated pawn
@@ -670,17 +714,17 @@ fn evaluateColor(
                 };
                 if ((our_pawns_bb.bits & behind_mask) == 0) {
                     // Check if stop square is attacked by enemy pawn
-                    const stop_sq: u6 = if (c == Colors.white) s + 8 else s - 8;
-                    const stop_file: u6 = stop_sq % 8;
-                    const stop_rank: u6 = stop_sq / 8;
+                    const stop_sq: Square = if (c == Colors.white) s + 8 else s - 8;
+                    const stop_file: Square = stop_sq % 8;
+                    const stop_rank: Square = stop_sq / 8;
                     const stop_attacked = blk: {
                         // Enemy pawn attacks the stop square from adjacent files, one rank beyond
-                        const atk_rank: u6 = if (c == Colors.white) stop_rank + 1 else if (stop_rank > 0) stop_rank - 1 else break :blk false;
+                        const atk_rank: Square = if (c == Colors.white) stop_rank + 1 else if (stop_rank > 0) stop_rank - 1 else break :blk false;
                         if (c == Colors.black and stop_rank == 0) break :blk false;
                         if (c == Colors.white and atk_rank > 7) break :blk false;
                         var atk_mask: u64 = 0;
-                        if (stop_file > 0) atk_mask |= @as(u64, 1) << (@as(u6, stop_file - 1) + atk_rank * 8);
-                        if (stop_file < 7) atk_mask |= @as(u64, 1) << (@as(u6, stop_file + 1) + atk_rank * 8);
+                        if (stop_file > 0) atk_mask |= @as(u64, 1) << (@as(Square, stop_file - 1) + atk_rank * 8);
+                        if (stop_file < 7) atk_mask |= @as(u64, 1) << (@as(Square, stop_file + 1) + atk_rank * 8);
                         break :blk (opp_pawns_bb.bits & atk_mask) != 0;
                     };
                     if (stop_attacked) {
@@ -703,14 +747,14 @@ fn evaluateColor(
             const rank: u3 = @intCast(s / 8);
 
             // PST
-            const sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - rank) * 8 + file) else s;
             score = score.add(pst[piece.knight][sq]);
 
             // Mobility (using mobility area instead of ~our_pieces)
             const knight_atk = movegen.knight_move_mask[s];
             attacks.knight |= knight_atk;
             const mob = knight_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             score = score.add(mobility_bonus[0][move_count]);
 
             // Outpost check (only defended outposts rewarded)
@@ -734,18 +778,18 @@ fn evaluateColor(
         }
 
         while (bishops.next()) |s| {
-            const rank: u6 = s / 8;
-            const file: u6 = s % 8;
+            const rank: Square = s / 8;
+            const file: Square = s % 8;
 
             // PST
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             score = score.add(pst[piece.bishop][sq]);
 
             // Mobility (x-ray through own queens, using mobility area)
             const bishop_atk = movegen.sliderMovesWithOccupancy(s, piece.bishop, occ_without_our_queens);
             attacks.bishop |= bishop_atk;
             const mob = bishop_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             score = score.add(mobility_bonus[1][move_count]);
 
             // Bishop outpost (defended only)
@@ -764,21 +808,21 @@ fn evaluateColor(
         score = score.add(piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
 
-        const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
+        const seventh_rank: Square = if (c == Colors.white) 6 else 1;
 
         while (rooks.next()) |s| {
-            const file: u6 = s % 8;
-            const rank: u6 = s / 8;
+            const file: Square = s % 8;
+            const rank: Square = s / 8;
 
             // PST
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             score = score.add(pst[piece.rook][sq]);
 
             // Mobility (x-ray through own rooks+queens, using mobility area)
             const rook_atk = movegen.sliderMovesWithOccupancy(s, piece.rook, occ_without_our_rq);
             attacks.rook |= rook_atk;
             const mob = rook_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             score = score.add(mobility_bonus[2][move_count]);
 
             // Open/semi-open file
@@ -806,9 +850,9 @@ fn evaluateColor(
         phase += queen_count * phase_weights[4];
 
         while (queens.next()) |s| {
-            const rank: u6 = s / 8;
-            const file: u6 = s % 8;
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const rank: Square = s / 8;
+            const file: Square = s % 8;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             score = score.add(pst[piece.queen][sq]);
         }
     }
@@ -816,24 +860,24 @@ fn evaluateColor(
     // --- King: PST + king safety ---
     {
         const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
-        const king_sq: u6 = @intCast(@ctz(king_bb.bits));
+        const king_sq: Square = @intCast(@ctz(king_bb.bits));
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
 
         // PST
-        const pst_sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - king_rank) * 8 + king_file) else king_sq;
+        const pst_sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - king_rank) * 8 + king_file) else king_sq;
         score = score.add(pst[piece.king][pst_sq]);
 
         // King safety: pawn shield (only when king on back ranks)
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
         if (on_back_ranks) {
-            const shield_rank: u6 = if (c == Colors.white) @as(u6, king_rank) + 1 else @as(u6, king_rank) - 1;
+            const shield_rank: Square = if (c == Colors.white) @as(Square, king_rank) + 1 else @as(Square, king_rank) - 1;
             const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
             const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
 
             var file: u4 = min_file;
             while (file <= max_file) : (file += 1) {
-                const shield_sq: u6 = @as(u6, @as(u3, @intCast(file))) + shield_rank * 8;
+                const shield_sq: Square = @as(Square, @as(u3, @intCast(file))) + shield_rank * 8;
                 const shield_mask: u64 = @as(u64, 1) << shield_sq;
                 if ((our_pawns_bb.bits & shield_mask) != 0) {
                     score = score.add(pawn_shield);
@@ -864,7 +908,7 @@ fn evaluateQueenMobility(
         const rook_moves = movegen.sliderMoves(state, s, piece.rook);
         const queen_atk = bishop_moves | rook_moves;
         const mob = queen_atk & mobility_area & ~enemy_minor_rook;
-        const move_count: usize = @intCast(@popCount(mob));
+        const move_count = @popCount(mob);
         score = score.add(mobility_bonus[3][move_count]);
     }
     return score;
@@ -980,6 +1024,12 @@ fn evaluateColorTrace(
     var attacks = PieceAttacks{};
     const occupied = state.all_pieces.bits;
 
+    // Precompute for passed pawn evaluation
+    const opp_pieces_bb = occupied ^ our_pieces;
+    const our_rooks = state.pieceBitboard(piece.rook).bits & our_pieces;
+    const opp_king_sq: Square = @intCast(@ctz(state.pieceBitboard(piece.king).bits & opp_pieces_bb));
+    const opp_pawn_atk = pawnAttacksBB(opp_pawns_bb.bits, ~c);
+
     // X-ray occupancy
     const our_queens_bb = state.pieceBitboard(piece.queen).bits & our_pieces;
     const occ_without_our_queens = Bitboard{ .bits = occupied ^ our_queens_bb };
@@ -1000,9 +1050,9 @@ fn evaluateColorTrace(
         }
 
         while (pawns.next()) |s| {
-            const file: u6 = s % 8;
-            const rank: u6 = s / 8;
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const file: Square = s % 8;
+            const rank: Square = s / 8;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             pst_score = pst_score.add(pst[piece.pawn][sq]);
 
             const connected = blk: {
@@ -1024,7 +1074,7 @@ fn evaluateColorTrace(
 
             const ahead_mask = computePassedPawnMask(c, file, rank);
             if ((opp_pawns_bb.bits & ahead_mask) == 0) {
-                const passed_rank: usize = if (c == Colors.white) rank else 7 - rank;
+                const passed_rank = if (c == Colors.white) rank else 7 - rank;
                 passed_pawns_score = passed_pawns_score.add(passed_pawn_bonus[passed_rank]);
 
                 const is_protected = blk: {
@@ -1053,6 +1103,40 @@ fn evaluateColorTrace(
                 if (blocked) {
                     passed_pawns_score = passed_pawns_score.add(blocked_passed_pawn);
                 }
+
+                // Rook behind passed pawn
+                {
+                    const ranks_behind: u64 = if (c == Colors.white)
+                        (@as(u64, 1) << (rank * 8)) - 1
+                    else
+                        @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
+                    if ((our_rooks & file_masks[file] & ranks_behind) != 0) {
+                        passed_pawns_score = passed_pawns_score.add(rook_behind_passer);
+                    }
+                }
+
+                // Enemy king distance to passed pawn (endgame bonus)
+                {
+                    const king_file: Square = opp_king_sq % 8;
+                    const king_rank: Square = opp_king_sq / 8;
+                    const df: Square = if (file > king_file) file - king_file else king_file - file;
+                    const dr: Square = if (rank > king_rank) rank - king_rank else king_rank - rank;
+                    const dist: i16 = @intCast(@max(df, dr));
+                    passed_pawns_score = passed_pawns_score.add(Score.init(0, dist * king_proximity_passer));
+                }
+
+                // Free passed pawn (advance square not occupied or attacked by enemy pawns)
+                if (!blocked) {
+                    const ahead_sq: u64 = if (c == Colors.white and rank < 7)
+                        @as(u64, 1) << (s + 8)
+                    else if (c == Colors.black and rank > 0)
+                        @as(u64, 1) << (s - 8)
+                    else
+                        0;
+                    if (ahead_sq != 0 and (opp_pawn_atk & ahead_sq) == 0) {
+                        passed_pawns_score = passed_pawns_score.add(free_passed_pawn);
+                    }
+                }
             }
 
             if ((our_pawns_bb.bits & adjacent_files[file]) == 0) {
@@ -1068,16 +1152,16 @@ fn evaluateColorTrace(
                     break :blk adj & at_or_behind;
                 };
                 if ((our_pawns_bb.bits & behind_mask) == 0) {
-                    const stop_sq: u6 = if (c == Colors.white) s + 8 else s - 8;
-                    const stop_file: u6 = stop_sq % 8;
-                    const stop_rank: u6 = stop_sq / 8;
+                    const stop_sq: Square = if (c == Colors.white) s + 8 else s - 8;
+                    const stop_file: Square = stop_sq % 8;
+                    const stop_rank: Square = stop_sq / 8;
                     const stop_attacked = blk: {
-                        const atk_rank: u6 = if (c == Colors.white) stop_rank + 1 else if (stop_rank > 0) stop_rank - 1 else break :blk false;
+                        const atk_rank: Square = if (c == Colors.white) stop_rank + 1 else if (stop_rank > 0) stop_rank - 1 else break :blk false;
                         if (c == Colors.black and stop_rank == 0) break :blk false;
                         if (c == Colors.white and atk_rank > 7) break :blk false;
                         var atk_mask: u64 = 0;
-                        if (stop_file > 0) atk_mask |= @as(u64, 1) << (@as(u6, stop_file - 1) + atk_rank * 8);
-                        if (stop_file < 7) atk_mask |= @as(u64, 1) << (@as(u6, stop_file + 1) + atk_rank * 8);
+                        if (stop_file > 0) atk_mask |= @as(u64, 1) << (@as(Square, stop_file - 1) + atk_rank * 8);
+                        if (stop_file < 7) atk_mask |= @as(u64, 1) << (@as(Square, stop_file + 1) + atk_rank * 8);
                         break :blk (opp_pawns_bb.bits & atk_mask) != 0;
                     };
                     if (stop_attacked) {
@@ -1098,13 +1182,13 @@ fn evaluateColorTrace(
         while (knights.next()) |s| {
             const file: u3 = @intCast(s % 8);
             const rank: u3 = @intCast(s / 8);
-            const sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - rank) * 8 + file) else s;
             pst_score = pst_score.add(pst[piece.knight][sq]);
 
             const knight_atk = movegen.knight_move_mask[s];
             attacks.knight |= knight_atk;
             const mob = knight_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             mobility_score = mobility_score.add(mobility_bonus[0][move_count]);
 
             if (isOutpost(c, file, rank, opp_pawns_bb) and
@@ -1127,15 +1211,15 @@ fn evaluateColorTrace(
         }
 
         while (bishops.next()) |s| {
-            const rank: u6 = s / 8;
-            const file: u6 = s % 8;
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const rank: Square = s / 8;
+            const file: Square = s % 8;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             pst_score = pst_score.add(pst[piece.bishop][sq]);
 
             const bishop_atk = movegen.sliderMovesWithOccupancy(s, piece.bishop, occ_without_our_queens);
             attacks.bishop |= bishop_atk;
             const mob = bishop_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             mobility_score = mobility_score.add(mobility_bonus[1][move_count]);
 
             // Bishop outpost (defended only)
@@ -1154,18 +1238,18 @@ fn evaluateColorTrace(
         material_score = material_score.add(piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
 
-        const seventh_rank: u6 = if (c == Colors.white) 6 else 1;
+        const seventh_rank: Square = if (c == Colors.white) 6 else 1;
 
         while (rooks.next()) |s| {
-            const file: u6 = s % 8;
-            const rank: u6 = s / 8;
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const file: Square = s % 8;
+            const rank: Square = s / 8;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             pst_score = pst_score.add(pst[piece.rook][sq]);
 
             const rook_atk = movegen.sliderMovesWithOccupancy(s, piece.rook, occ_without_our_rq);
             attacks.rook |= rook_atk;
             const mob = rook_atk & mobility_area;
-            const move_count: usize = @intCast(@popCount(mob));
+            const move_count = @popCount(mob);
             mobility_score = mobility_score.add(mobility_bonus[2][move_count]);
 
             const fmask = file_masks[file];
@@ -1191,9 +1275,9 @@ fn evaluateColorTrace(
         phase += queen_count * phase_weights[piece.queen];
 
         while (queens.next()) |s| {
-            const rank: u6 = s / 8;
-            const file: u6 = s % 8;
-            const sq: u6 = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const rank: Square = s / 8;
+            const file: Square = s % 8;
+            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
             pst_score = pst_score.add(pst[piece.queen][sq]);
         }
     }
@@ -1201,21 +1285,21 @@ fn evaluateColorTrace(
     // --- King ---
     {
         const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
-        const king_sq: u6 = @intCast(@ctz(king_bb.bits));
+        const king_sq: Square = @intCast(@ctz(king_bb.bits));
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
-        const pst_sq: u6 = if (c == Colors.black) @intCast((@as(u6, 7) - king_rank) * 8 + king_file) else king_sq;
+        const pst_sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - king_rank) * 8 + king_file) else king_sq;
         pst_score = pst_score.add(pst[piece.king][pst_sq]);
 
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
         if (on_back_ranks) {
-            const shield_rank: u6 = if (c == Colors.white) @as(u6, king_rank) + 1 else @as(u6, king_rank) - 1;
+            const shield_rank: Square = if (c == Colors.white) @as(Square, king_rank) + 1 else @as(Square, king_rank) - 1;
             const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
             const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
 
             var f: u4 = min_file;
             while (f <= max_file) : (f += 1) {
-                const shield_sq: u6 = @as(u6, @as(u3, @intCast(f))) + shield_rank * 8;
+                const shield_sq: Square = @as(Square, @as(u3, @intCast(f))) + shield_rank * 8;
                 const shield_mask: u64 = @as(u64, 1) << shield_sq;
                 if ((our_pawns_bb.bits & shield_mask) != 0) {
                     king_safety_score = king_safety_score.add(pawn_shield);
@@ -1256,7 +1340,7 @@ fn evaluateQueenMobilityTrace(
         const rook_moves = movegen.sliderMoves(state, s, piece.rook);
         const queen_atk = bishop_moves | rook_moves;
         const mob = queen_atk & mobility_area & ~enemy_minor_rook;
-        const move_count: usize = @intCast(@popCount(mob));
+        const move_count = @popCount(mob);
         score = score.add(mobility_bonus[3][move_count]);
     }
     return score;
@@ -1280,10 +1364,6 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
     const our_mob_area = computeMobilityArea(state, to_move, opp_pawn_atk, our_blockers);
     const opp_mob_area = computeMobilityArea(state, opp, our_pawn_atk, opp_blockers);
 
-    // White is index 0, black is index 1 regardless of side to move
-    const white_idx: usize = if (to_move == Colors.white) 0 else 1;
-    const black_idx: usize = 1 - white_idx;
-
     const our = evaluateColorTrace(state, to_move, our_pieces, our_pawns, opp_pawns, our_mob_area);
     const their = evaluateColorTrace(state, opp, opp_pieces, opp_pawns, our_pawns, opp_mob_area);
 
@@ -1292,33 +1372,47 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
     const their_q = evaluateQueenMobilityTrace(state, opp_pieces, opp_mob_area, our.attacks);
 
     var trace: EvalTrace = undefined;
-    trace.material[white_idx] = our.material;
-    trace.material[black_idx] = their.material;
-    trace.pst[white_idx] = our.pst_score;
-    trace.pst[black_idx] = their.pst_score;
-    trace.pawn_structure[white_idx] = our.pawn_structure;
-    trace.pawn_structure[black_idx] = their.pawn_structure;
-    trace.passed_pawns[white_idx] = our.passed_pawns_score;
-    trace.passed_pawns[black_idx] = their.passed_pawns_score;
-    trace.outposts[white_idx] = our.outposts_score;
-    trace.outposts[black_idx] = their.outposts_score;
-    trace.bishop_pair[white_idx] = our.bishop_pair_score;
-    trace.bishop_pair[black_idx] = their.bishop_pair_score;
-    trace.rook_bonuses[white_idx] = our.rook_bonuses_score;
-    trace.rook_bonuses[black_idx] = their.rook_bonuses_score;
-    trace.mobility[white_idx] = our.mobility_score.add(our_q);
-    trace.mobility[black_idx] = their.mobility_score.add(their_q);
-    trace.king_safety[white_idx] = our.king_safety_score;
-    trace.king_safety[black_idx] = their.king_safety_score;
+    trace.material[to_move] = our.material;
+    trace.material[~to_move] = their.material;
+    trace.pst[to_move] = our.pst_score;
+    trace.pst[~to_move] = their.pst_score;
+    trace.pawn_structure[to_move] = our.pawn_structure;
+    trace.passed_pawns[to_move] = our.passed_pawns_score;
+    trace.pawn_structure[~to_move] = their.pawn_structure;
+    trace.passed_pawns[~to_move] = their.passed_pawns_score;
+    trace.outposts[to_move] = our.outposts_score;
+    trace.outposts[~to_move] = their.outposts_score;
+    trace.bishop_pair[to_move] = our.bishop_pair_score;
+    trace.bishop_pair[~to_move] = their.bishop_pair_score;
+    trace.rook_bonuses[to_move] = our.rook_bonuses_score;
+    trace.rook_bonuses[~to_move] = their.rook_bonuses_score;
+    trace.mobility[to_move] = our.mobility_score.add(our_q);
+    trace.mobility[~to_move] = their.mobility_score.add(their_q);
+    trace.king_safety[to_move] = our.king_safety_score;
+    trace.king_safety[~to_move] = their.king_safety_score;
 
     trace.tempo_score = tempo;
     trace.phase = @min(our.phase + their.phase, max_phase_mg);
-    const total = our.material.add(our.pst_score).add(our.pawn_structure).add(our.passed_pawns_score)
-        .add(our.outposts_score).add(our.bishop_pair_score).add(our.rook_bonuses_score)
-        .add(our.mobility_score).add(our_q).add(our.king_safety_score)
-        .sub(their.material).sub(their.pst_score).sub(their.pawn_structure).sub(their.passed_pawns_score)
-        .sub(their.outposts_score).sub(their.bishop_pair_score).sub(their.rook_bonuses_score)
-        .sub(their.mobility_score).sub(their_q).sub(their.king_safety_score)
+    const total = our.material
+        .add(our.pst_score)
+        .add(our.pawn_structure)
+        .add(our.passed_pawns_score)
+        .add(our.outposts_score)
+        .add(our.bishop_pair_score)
+        .add(our.rook_bonuses_score)
+        .add(our.mobility_score)
+        .add(our_q)
+        .add(our.king_safety_score)
+        .sub(their.material)
+        .sub(their.pst_score)
+        .sub(their.pawn_structure)
+        .sub(their.passed_pawns_score)
+        .sub(their.outposts_score)
+        .sub(their.bishop_pair_score)
+        .sub(their.rook_bonuses_score)
+        .sub(their.mobility_score)
+        .sub(their_q)
+        .sub(their.king_safety_score)
         .add(tempo);
     trace.total = total.taper(trace.phase);
 
@@ -1328,15 +1422,19 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
 // History heuristic table: [color][from_square][to_square] -> score
 // Tracks which quiet moves have caused beta cutoffs
 pub const HistoryTable = struct {
-    table: [2][64][64]i32 = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2,
+    table: [2][64][64]i32 = [_][64][64]i32{
+        [_][64]i32{
+            [_]i32{0} ** 64,
+        } ** 64,
+    } ** 2,
 
-    pub fn get(self: *const HistoryTable, color: Color, from: u6, to: u6) i32 {
+    pub fn get(self: *const HistoryTable, color: Color, from: Square, to: Square) i32 {
         return self.table[color][from][to];
     }
 
     const max_history: i32 = 16384;
 
-    pub fn update(self: *HistoryTable, color: Color, from: u6, to: u6, bonus: i32) void {
+    pub fn update(self: *HistoryTable, color: Color, from: Square, to: Square, bonus: i32) void {
         const entry = &self.table[color][from][to];
         // Gravity formula: bonus is damped as value approaches max_history
         // This provides natural aging — large values get smaller effective bonuses
