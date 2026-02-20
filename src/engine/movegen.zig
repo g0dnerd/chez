@@ -185,6 +185,7 @@ pub const MoveList = struct {
         killers: [2]?Move,
         history: ?*const engine.evaluation.HistoryTable,
         countermove: ?Move = null,
+        tt_move: ?Move = null,
     };
 
     // Pre-compute scores for all moves (one scoreMove call per move).

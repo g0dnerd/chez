@@ -244,10 +244,9 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "proto=uci",
     ]
 
-    # Opening book
-    book = Path(args.book)
-    if book.exists():
-        cmd += [f"option.BookFile={book}"]
+    book0 = Path(args.book0)
+    if book0.exists():
+        cmd += [f"option.BookFile={book0}"]
 
     cmd += [
         "-engine",
@@ -256,6 +255,10 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         f"option.Threads={args.threads}",
         "proto=uci",
     ]
+
+    book1 = Path(args.book1)
+    if book1.exists():
+        cmd += [f"option.BookFile={book1}"]
 
     # Time control or fixed depth
     if args.depth:
@@ -474,7 +477,8 @@ def parse_args():
     p.add_argument(
         "--depth", type=int, default=None, help="Fixed search depth (instead of TC)"
     )
-    p.add_argument("--book", default=str(DEFAULT_BOOK), help="Opening book path")
+    p.add_argument("--book0", default=str(DEFAULT_BOOK), help="Opening book path")
+    p.add_argument("--book1", default=str(DEFAULT_BOOK), help="Opening book path")
     p.add_argument("--elo0", type=float, default=None, help="SPRT lower bound")
     p.add_argument("--elo1", type=float, default=None, help="SPRT upper bound")
     p.add_argument("--pgn-out", default=None, help="PGN output path")
@@ -529,14 +533,6 @@ def main():
     print()
     print("Chez Strength Test")
     print("=" * 42)
-
-    # Check for opening book
-    book = Path(args.book)
-    if not book.exists():
-        print(f"\nError: Opening book not found: {book}", file=sys.stderr)
-        print(f"Download it from: {BOOK_URL}", file=sys.stderr)
-        print(f"Place it in: {DEFAULT_BOOK}", file=sys.stderr)
-        sys.exit(1)
 
     # Check for cutechess-cli
     find_cutechess()

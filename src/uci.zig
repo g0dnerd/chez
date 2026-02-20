@@ -172,7 +172,7 @@ pub fn main() !void {
             stdout.print("id author {s}\n", .{engine_author}) catch {};
             stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
             stdout.writeAll("option name OwnBook type check default true\n") catch {};
-            stdout.writeAll("option name BookFile type string default \n") catch {};
+            stdout.writeAll("option name BookFile type string default /home/paul/projects/chez/testing/books/komodo.bin\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock();
@@ -197,7 +197,7 @@ pub fn main() !void {
             const rest = line[name_prefix.len..];
             const value_sep = std.mem.indexOf(u8, rest, " value ");
             const opt_name = if (value_sep) |idx| rest[0..idx] else rest;
-            const opt_val = if (value_sep) |idx| rest[idx + " value ".len..] else "";
+            const opt_val = if (value_sep) |idx| rest[idx + " value ".len ..] else "";
 
             if (std.mem.eql(u8, opt_name, "Threads")) {
                 num_threads = std.fmt.parseInt(usize, opt_val, 10) catch num_threads;

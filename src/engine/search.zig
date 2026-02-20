@@ -582,7 +582,9 @@ fn negamax(
 
     // Probe transposition table
     var beta = beta_param;
+    var tt_move: ?Move = null;
     if (search_ctx.tt.probe(hash)) |entry| {
+        tt_move = entry.best_move;
         if (entry.depth >= depth) {
             const tt_score = scoreFromTT(entry.score, ply);
             switch (entry.flag) {
@@ -606,25 +608,38 @@ fn negamax(
         return quiescence(state, ply, alpha, beta, search_ctx.shared);
     }
 
+    const in_check = state.in_check == to_move;
+    const is_pv_node = beta_param - alpha_initial > 1;
+
+    // Compute static eval once for pruning decisions (depths 1-6, not in check)
+    const static_eval: ?i32 = if (depth <= 6 and !in_check) evaluation.evaluate(state) else null;
+
+    // Reverse futility pruning (static null move pruning):
+    // If eval is far above beta, the position is so good we can prune
+    if (!is_pv_node) {
+        if (static_eval) |eval| {
+            if (eval - 80 * @as(i32, depth) >= beta) {
+                return eval;
+            }
+        }
+    }
+
     var moves = movegen.legalMoves(state, to_move);
 
     if (moves.len == 0) {
-        if (state.in_check == to_move) {
+        if (in_check) {
             return -checkmate_score + @as(i32, @intCast(ply));
         } else {
             return 0;
         }
     }
 
-    const in_check = state.in_check == to_move;
-
     // Futility pruning setup: at shallow depths, if static eval is far below alpha,
     // we can skip quiet moves that are unlikely to improve
-    var can_futility_prune = false;
-    if (depth <= 2 and !in_check) {
-        const static_eval = evaluation.evaluate(state);
-        can_futility_prune = static_eval + futility_margins[depth] <= alpha;
-    }
+    const can_futility_prune = if (static_eval) |eval|
+        depth <= 2 and eval + futility_margins[depth] <= alpha
+    else
+        false;
 
     // Null move pruning: if giving opponent a free move still results in beta cutoff,
     // the position is so good we can prune
@@ -677,6 +692,7 @@ fn negamax(
         .killers = ply_killers,
         .history = search_ctx.history_table,
         .countermove = countermove,
+        .tt_move = tt_move,
     };
     moves.scoreAll(&sort_ctx);
 

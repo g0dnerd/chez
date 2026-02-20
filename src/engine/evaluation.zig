@@ -269,7 +269,7 @@ const adjacent_files: [8]u64 = blk: {
 
 // Piece-square tables: [piece][square] -> Score(mg, eg)
 // Stockfish classical (pre-NNUE) values. Non-pawn tables mirrored from half-tables
-// using edge_distance (A↔H, B↔G, C↔F, D↔E). Pawn table is asymmetric (full 8 files).
+// using edge_distance (A<>H, B<>G, C<>F, D<>E). Pawn table is asymmetric (full 8 files).
 pub const pst = [6][64]Score{
     // Pawns (from Stockfish PBonus, full 8-file asymmetric table)
     blk: {
@@ -1349,6 +1349,13 @@ pub const HistoryTable = struct {
 };
 
 pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
+    // TT move gets maximum priority
+    if (ctx.tt_move) |tt| {
+        if (tt.eql(m)) {
+            return 100_000;
+        }
+    }
+
     var score: i32 = 0;
     const p = ctx.state.mailbox[m.start].?;
 
@@ -1358,8 +1365,7 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
         score += piece_values_mg[captured_piece] * 10 - piece_values_mg[attacker_piece];
     } else {
         // Check for en-passant
-        const ep_square: u6 = @intCast(@as(u6, m.start) + State.pawn_ep_offset[ctx.state.to_move]);
-        if (m.end == ep_square) {
+        if (square.absDiff(m.start, m.end) % 8 != 0) {
             score += piece_values_mg[piece.pawn] * 10 - piece_values_mg[piece.pawn];
         }
     }
