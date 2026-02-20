@@ -244,9 +244,10 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "proto=uci",
     ]
 
-    book0 = Path(args.book0)
-    if book0.exists():
-        cmd += [f"option.BookFile={book0}"]
+    if args.book0:
+        book0 = Path(args.book0)
+        if book0.exists():
+            cmd += [f"option.BookFile={book0}"]
 
     cmd += [
         "-engine",
@@ -256,9 +257,10 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "proto=uci",
     ]
 
-    book1 = Path(args.book1)
-    if book1.exists():
-        cmd += [f"option.BookFile={book1}"]
+    if args.book1:
+        book1 = Path(args.book1)
+        if book1.exists():
+            cmd += [f"option.BookFile={book1}"]
 
     # Time control or fixed depth
     if args.depth:
@@ -477,8 +479,10 @@ def parse_args():
     p.add_argument(
         "--depth", type=int, default=None, help="Fixed search depth (instead of TC)"
     )
-    p.add_argument("--book0", default=str(DEFAULT_BOOK), help="Opening book path")
-    p.add_argument("--book1", default=str(DEFAULT_BOOK), help="Opening book path")
+    # p.add_argument("--book0", default=str(DEFAULT_BOOK), help="Opening book path")
+    # p.add_argument("--book1", default=str(DEFAULT_BOOK), help="Opening book path")
+    p.add_argument("--book0", default=None, help="Opening book path")
+    p.add_argument("--book1", default=None, help="Opening book path")
     p.add_argument("--elo0", type=float, default=None, help="SPRT lower bound")
     p.add_argument("--elo1", type=float, default=None, help="SPRT upper bound")
     p.add_argument("--pgn-out", default=None, help="PGN output path")
