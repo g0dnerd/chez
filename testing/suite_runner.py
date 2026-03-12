@@ -53,10 +53,9 @@ class UCIEngine:
         self.path = str(Path(path).resolve())
         self.threads = threads
         self.name = Path(path).name
-        self.process = None
 
     def start(self):
-        self.process = subprocess.Popen(
+        p = subprocess.Popen(
             [self.path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -64,10 +63,15 @@ class UCIEngine:
             text=True,
             bufsize=1,
         )
+
+        if p is None:
+            raise RuntimeError("Failed to spawn subprocess")
+        self.process = p
+
         self._send("uci")
         for line in self._read_until("uciok"):
             if line.startswith("id name "):
-                self.name = line[len("id name "):]
+                self.name = line[len("id name ") :]
         self._send(f"setoption name Threads value {self.threads}")
         self._send("setoption name OwnBook value false")
         self._send("isready")
@@ -92,7 +96,7 @@ class UCIEngine:
                 return lines
 
     def search(
-        self, fen: str, *, depth: int = None, movetime: int = None
+        self, fen: str, *, depth: int | None = None, movetime: int | None = None
     ) -> tuple[str, int, dict]:
         """Search a position. Returns (bestmove_uci, score_cp, info)."""
         self._send(f"position fen {fen}")
@@ -200,13 +204,19 @@ def parse_sts_scores(board: chess.Board, c0: str) -> dict[str, int]:
         try:
             move = board.parse_san(san)
             scores[move.uci()] = int(pts)
-        except (chess.IllegalMoveError, chess.InvalidMoveError,
-                chess.AmbiguousMoveError, ValueError):
+        except (
+            chess.IllegalMoveError,
+            chess.InvalidMoveError,
+            chess.AmbiguousMoveError,
+            ValueError,
+        ):
             pass
     return scores
 
 
-def parse_epd_file(path: Path, category_override: str = None) -> list[EPDPosition]:
+def parse_epd_file(
+    path: Path, category_override: str | None = None
+) -> list[EPDPosition]:
     """Parse an EPD file into a list of EPDPosition objects."""
     positions = []
     filename = path.name
@@ -235,27 +245,32 @@ def parse_epd_file(path: Path, category_override: str = None) -> list[EPDPositio
             c0 = ops.get("c0", "")
             move_scores = parse_sts_scores(board, c0) if c0 else {}
             max_score = (
-                max(move_scores.values()) if move_scores
+                max(move_scores.values())
+                if move_scores
                 else (1 if best_moves or avoid_moves else 0)
             )
 
             category = category_override or extract_category(position_id, filename)
 
-            positions.append(EPDPosition(
-                fen=fen,
-                best_moves=best_moves,
-                avoid_moves=avoid_moves,
-                position_id=position_id,
-                category=category,
-                move_scores=move_scores,
-                max_score=max_score,
-                raw_line=raw_line,
-            ))
+            positions.append(
+                EPDPosition(
+                    fen=fen,
+                    best_moves=best_moves,
+                    avoid_moves=avoid_moves,
+                    position_id=position_id,
+                    category=category,
+                    move_scores=move_scores,
+                    max_score=max_score,
+                    raw_line=raw_line,
+                )
+            )
 
     return positions
 
 
-def load_positions(path: Path, category_override: str = None) -> list[EPDPosition]:
+def load_positions(
+    path: Path, category_override: str | None = None
+) -> list[EPDPosition]:
     """Load positions from a file or directory of EPD files."""
     if path.is_dir():
         positions = []
@@ -324,8 +339,8 @@ def run_suite(
     engine: UCIEngine,
     positions: list[EPDPosition],
     *,
-    depth: int = None,
-    movetime: int = None,
+    depth: int | None = None,
+    movetime: int | None = None,
     verbose: bool = False,
 ) -> list[PositionResult]:
     """Run all positions through the engine and collect results."""
@@ -340,7 +355,7 @@ def run_suite(
             rate = (i + 1) / elapsed if elapsed > 0 else 0
             eta = (total - i - 1) / rate if rate > 0 else 0
             print(
-                f"\r  [{i+1}/{total}] {pct:.0f}% "
+                f"\r  [{i + 1}/{total}] {pct:.0f}% "
                 f"({rate:.1f} pos/s, ETA {eta:.0f}s)  ",
                 end="",
                 flush=True,
@@ -403,9 +418,7 @@ def generate_report(
 
     for cat_data in categories.values():
         cat_data["pass_rate"] = round(
-            cat_data["correct"] / cat_data["total"]
-            if cat_data["total"]
-            else 0,
+            cat_data["correct"] / cat_data["total"] if cat_data["total"] else 0,
             4,
         )
         cat_data["score_pct"] = round(
@@ -451,14 +464,10 @@ def generate_report(
             ),
             "points": total_points,
             "max_points": total_max,
-            "score_pct": round(
-                total_points / total_max if total_max else 0, 4
-            ),
+            "score_pct": round(total_points / total_max if total_max else 0, 4),
         },
         # Sort categories by score_pct ascending (worst first)
-        "categories": dict(
-            sorted(categories.items(), key=lambda x: x[1]["score_pct"])
-        ),
+        "categories": dict(sorted(categories.items(), key=lambda x: x[1]["score_pct"])),
         "failures": failures,
     }
 
@@ -501,9 +510,7 @@ def print_summary(report: dict):
         print("-" * len(hdr))
         for cat, d in cats.items():
             pct = d["pass_rate"] * 100
-            print(
-                f"{cat:<40} {d['correct']:>8} {d['total']:>6} {pct:>6.1f}%"
-            )
+            print(f"{cat:<40} {d['correct']:>8} {d['total']:>6} {pct:>6.1f}%")
         print("-" * len(hdr))
         pct = s["pass_rate"] * 100
         print(f"{'TOTAL':<40} {s['correct']:>8} {s['total']:>6} {pct:>6.1f}%")
@@ -515,16 +522,13 @@ def print_summary(report: dict):
         print(f"Failures ({len(failures)}):")
         for f in failures[:20]:
             exp = ", ".join(f["expected"][:3])
-            print(
-                f"  {f['id']}: got {f['got']}, expected {exp} ({f['score_cp']}cp)"
-            )
+            print(f"  {f['id']}: got {f['got']}, expected {exp} ({f['score_cp']}cp)")
         if len(failures) > 20:
             print(f"  ... and {len(failures) - 20} more")
         print()
     elif failures:
         print(
-            f"Failures: {len(failures)}/{s['total']} "
-            f"(use --json to save full details)"
+            f"Failures: {len(failures)}/{s['total']} (use --json to save full details)"
         )
         print()
 
@@ -646,8 +650,8 @@ Examples:
     print_summary(report)
 
     # Save JSON report
-    if args.json_out:
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+    if args.json_out is not None:
+        # args.json_out.parent.mkdir(parents=True, exist_ok=True)
         with open(args.json_out, "w") as f:
             json.dump(report, f, indent=2)
         print(f"Report saved to {args.json_out}")
