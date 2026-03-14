@@ -1,9 +1,14 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
+    const gb10 = b.option(bool, "gb10", "Force build for NVIDIA Blackwell GB10 chip") orelse false;
     const portable = b.option(bool, "portable", "Build without CPU-specific optimizations") orelse false;
     const target = if (portable)
         b.standardTargetOptions(.{})
+    else if (gb10)
+        b.resolveTargetQuery(.{
+            .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.gb10 },
+        })
     else
         b.resolveTargetQuery(.{
             .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 },
