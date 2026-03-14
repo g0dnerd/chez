@@ -393,7 +393,8 @@ const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
     node_count: Atomic(u64) = Atomic(u64).init(0),
     max_depth: u8 = 0,
-    timer: std.time.Timer,
+    io: std.Io,
+    start_time: std.Io.Timestamp,
     options: SearchOptions = .{},
 };
 
@@ -407,7 +408,10 @@ fn checkTime(shared: *SharedSearchState) void {
         }
     }
     if (shared.options.max_time_ms) |max_ms| {
-        const elapsed: u64 = @divTrunc(shared.timer.read(), std.time.ns_per_ms);
+        const elapsed: u64 = @intCast(@divTrunc(
+            shared.start_time.untilNow(shared.io, std.Io.Clock.awake).nanoseconds,
+            std.time.ns_per_ms,
+        ));
         if (elapsed >= max_ms) {
             shared.stop_flag.store(true, .monotonic);
         }
@@ -435,7 +439,13 @@ const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
-fn quiescence(state: *State, ply: usize, alpha_initial: i32, beta: i32, shared: *SharedSearchState) i32 {
+fn quiescence(
+    state: *State,
+    ply: usize,
+    alpha_initial: i32,
+    beta: i32,
+    shared: *SharedSearchState,
+) i32 {
     const nodes = shared.node_count.fetchAdd(1, .monotonic);
     if (nodes & 2047 == 0) checkTime(shared);
     if (shared.stop_flag.load(.monotonic)) return 0;
@@ -1072,7 +1082,19 @@ fn workerThread(ctx: *ThreadContext) void {
             var attempts: u8 = 0;
 
             while (attempts < 3) : (attempts += 1) {
-                result = searchAtDepthWithBounds(&ctx.state, depth, ctx.tbl, &ctx.killers, hint, &ctx.history, &ctx.history_table, &ctx.countermoves, alpha, beta, ctx.shared);
+                result = searchAtDepthWithBounds(
+                    &ctx.state,
+                    depth,
+                    ctx.tbl,
+                    &ctx.killers,
+                    hint,
+                    &ctx.history,
+                    &ctx.history_table,
+                    &ctx.countermoves,
+                    alpha,
+                    beta,
+                    ctx.shared,
+                );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
 
@@ -1141,7 +1163,10 @@ fn workerThread(ctx: *ThreadContext) void {
             if (ctx.thread_id == 0) {
                 if (ctx.shared.options.on_info) |cb| {
                     const nodes = ctx.shared.node_count.load(.monotonic);
-                    const elapsed_ms: u64 = @divTrunc(ctx.shared.timer.read(), std.time.ns_per_ms);
+                    const elapsed_ms: u64 = @intCast(@divTrunc(
+                        ctx.shared.start_time.untilNow(ctx.shared.io, std.Io.Clock.awake).nanoseconds,
+                        std.time.ns_per_ms,
+                    ));
                     var pv_buf: [32]Move = undefined;
                     const pv_len = extractPV(&ctx.state, ctx.tbl, &pv_buf);
                     cb.func(cb.context, depth, r.score, nodes, elapsed_ms, pv_buf[0..pv_len]);
@@ -1173,9 +1198,14 @@ pub fn searchParallel(
 
     tbl.newSearch();
 
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    const io = threaded.io();
+    const clock = std.Io.Clock.awake;
+
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .timer = try std.time.Timer.start(),
+        .io = io,
+        .start_time = clock.now(io),
         .options = options,
     };
 
@@ -1294,9 +1324,13 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var sq_start: [2]u8 = undefined;
     var sq_end: [2]u8 = undefined;
 
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const now = std.Io.Clock.awake.now(io);
+
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .start_time = std.time.milliTimestamp(),
+        .start_time = now,
     };
 
     for (1..max_depth + 1) |depth| {

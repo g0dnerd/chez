@@ -73,7 +73,7 @@ const NNEngine = struct {
 
     fn init(io: std.Io, checkpoint: []const u8, simulations: u32) !NNEngine {
         var sim_buf: [16]u8 = undefined;
-        var child = try std.process.spawn(io, .{
+        const child = try std.process.spawn(io, .{
             .argv = &.{
                 "/home/paul/.local/bin/uv",
                 "run",
