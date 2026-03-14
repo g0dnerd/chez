@@ -914,10 +914,14 @@ pub const ZobristKeys = struct {
     en_passant: [8]u64, // One key per file (only file matters for en passant)
 };
 
-var keys_once = std.once(initZobristKeys);
+var init_mutex: std.Io.Mutex = .init;
+var init_done = false;
 var keys_storage: ZobristKeys = undefined;
 
-fn initZobristKeys() void {
+fn initZobristKeys(io: std.Io) void {
+    if (@atomicLoad(bool, &init_done, .monotonic)) return;
+    init_mutex.lock(io) catch unreachable;
+
     const builtin = @import("builtin");
     var seed: u64 = undefined;
     if (builtin.target.os.tag == .freestanding) {
@@ -926,8 +930,6 @@ fn initZobristKeys() void {
     } else if (builtin.target.os.tag == .linux) {
         _ = std.os.linux.getrandom(std.mem.asBytes(&seed), @sizeOf(u64), 0);
     } else {
-        var threaded: std.Io.Threaded = .init_single_threaded;
-        const io = threaded.io();
         std.Io.random(io, std.mem.asBytes(&seed));
     }
     var rng = std.Random.DefaultPrng.init(seed);
@@ -954,10 +956,15 @@ fn initZobristKeys() void {
     for (0..8) |file| {
         keys_storage.en_passant[file] = random.int(u64);
     }
+
+    @atomicStore(bool, &init_done, true, .release);
+    init_mutex.unlock(io);
 }
 
 pub fn getZobristKeys() *const ZobristKeys {
-    keys_once.call();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    initZobristKeys(io);
     return &keys_storage;
 }
 

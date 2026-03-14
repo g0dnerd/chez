@@ -62,7 +62,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
-    var timer = try std.time.Timer.start();
+    const clock = std.Io.Clock.awake;
+    var start = std.Io.Timestamp.now(io, clock);
 
     try stdout.flush();
     for (positions, 1..) |fen, i| {
@@ -87,9 +88,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         tbl.newSearch();
     }
 
-    const elapsed_ns = timer.read();
-    const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
-    const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+    const elapsed = start.untilNow(io, clock);
+    const elapsed_ms = elapsed.toMilliseconds();
+    const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ms)) / @as(f64, @floatFromInt(std.time.ms_per_s));
 
     try stdout.print("\n===========================\n", .{});
     try stdout.print("Total time: {d}ms ({d:.2}s)\n", .{ elapsed_ms, elapsed_s });

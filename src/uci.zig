@@ -53,7 +53,8 @@ fn applyMove(state: *State, notation: []const u8) bool {
 // search thread so the mutex serialises stdout access.
 const InfoCtx = struct {
     writer: *std.Io.Writer,
-    mutex: *std.Thread.Mutex,
+    mutex: *std.Io.Mutex,
+    io: std.Io,
 };
 
 fn infoCallback(
@@ -65,8 +66,8 @@ fn infoCallback(
     pv: []const Move,
 ) void {
     const ctx: *InfoCtx = @ptrCast(@alignCast(ctx_ptr.?));
-    ctx.mutex.lock();
-    defer ctx.mutex.unlock();
+    ctx.mutex.lock(ctx.io) catch unreachable;
+    defer ctx.mutex.unlock(ctx.io);
 
     if (score >= mate_score_threshold) {
         const plies = checkmate_score - score;
@@ -101,7 +102,8 @@ const SearchRunArgs = struct {
     tbl: *search.TranspositionTable,
     options: search.SearchOptions,
     writer: *std.Io.Writer,
-    mutex: *std.Thread.Mutex,
+    mutex: *std.Io.Mutex,
+    io: std.Io,
 };
 
 fn runSearch(args: *SearchRunArgs) void {
@@ -114,8 +116,8 @@ fn runSearch(args: *SearchRunArgs) void {
         args.options,
     ) catch null;
 
-    args.mutex.lock();
-    defer args.mutex.unlock();
+    args.mutex.lock(args.io) catch {};
+    defer args.mutex.unlock(args.io);
 
     if (result) |r| {
         args.writer.print("bestmove {f}\n", .{r.move}) catch {};
@@ -136,7 +138,7 @@ pub fn main() !void {
     var stdin_buf: [4096]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
 
-    var stdout_mutex = std.Thread.Mutex{};
+    var stdout_mutex = std.Io.Mutex.init;
 
     var state = State.defaultPosition();
     var history = search.PositionHistory.init();
@@ -157,6 +159,7 @@ pub fn main() !void {
     var info_ctx = InfoCtx{
         .writer = stdout,
         .mutex = &stdout_mutex,
+        .io = io,
     };
 
     while (true) {
@@ -167,7 +170,7 @@ pub fn main() !void {
         const line = std.mem.trimEnd(u8, line_raw, &std.ascii.whitespace);
 
         if (std.mem.eql(u8, line, "uci")) {
-            stdout_mutex.lock();
+            try stdout_mutex.lock(io);
             stdout.print("id name {s}\n", .{engine_name}) catch {};
             stdout.print("id author {s}\n", .{engine_author}) catch {};
             stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
@@ -175,12 +178,12 @@ pub fn main() !void {
             stdout.writeAll("option name BookFile type string default /home/paul/projects/chez/testing/books/komodo.bin\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
-            stdout_mutex.unlock();
+            stdout_mutex.unlock(io);
         } else if (std.mem.eql(u8, line, "isready")) {
-            stdout_mutex.lock();
+            try stdout_mutex.lock(io);
             stdout.writeAll("readyok\n") catch {};
             stdout.flush() catch {};
-            stdout_mutex.unlock();
+            stdout_mutex.unlock(io);
         } else if (std.mem.eql(u8, line, "ucinewgame")) {
             if (search_thread) |t| {
                 stop_flag.store(true, .release);
@@ -247,10 +250,10 @@ pub fn main() !void {
             if (own_book) {
                 if (opening_book) |*b| {
                     if (b.probe(&state)) |book_move| {
-                        stdout_mutex.lock();
+                        try stdout_mutex.lock(io);
                         stdout.print("bestmove {f}\n", .{book_move}) catch {};
                         stdout.flush() catch {};
-                        stdout_mutex.unlock();
+                        stdout_mutex.unlock(io);
                         continue;
                     }
                 }
@@ -311,6 +314,7 @@ pub fn main() !void {
                         .func = infoCallback,
                     },
                 },
+                .io = io,
                 .writer = stdout,
                 .mutex = &stdout_mutex,
             };
