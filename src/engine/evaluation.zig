@@ -11,8 +11,11 @@ const Colors = engine.Colors;
 const piece = @import("piece.zig");
 const square = @import("square.zig");
 const Square = square.Square;
-const score = @import("score.zig");
-pub const Score = score.Score(i16);
+const score_mod = @import("score.zig");
+const params_mod = @import("params.zig");
+pub const Score = score_mod.Score(i16);
+pub const Params = params_mod.Params;
+const max_phase_mg = score_mod.max_phase_mg;
 
 const FILE_A: u64 = 0x0101010101010101;
 const FILE_H: u64 = 0x8080808080808080;
@@ -30,180 +33,26 @@ const phase_weights = [6]i32{ 0, 1, 1, 2, 4, 0 }; // pawn, knight, bishop, rook,
 
 pub fn toCentipawns(val: i32) f32 {
     const val_f: f32 = @floatFromInt(val);
-    return val_f / @as(f32, @floatFromInt(piece_values[0].endgame()));
+    return val_f / @as(f32, @floatFromInt(params_mod.default_params.piece_values[0].endgame()));
 }
 
-pub const piece_values = [6]Score{
-    Score.init(126, 208), // pawn
-    Score.init(781, 854), // knight
-    Score.init(825, 915), // bishop
-    Score.init(1276, 1380), // rook
-    Score.init(2538, 2682), // queen
-    Score.init(20000, 20000), // king
-};
+// ==============================================================================
+// Backward-compatible re-exports derived from default_params at comptime.
+// search.zig uses piece_values_mg for MVV-LVA; tui.zig and other callers
+// reference pst/piece_values directly.
+// ==============================================================================
+
+pub const pst = params_mod.default_params.pst;
+pub const piece_values = params_mod.default_params.piece_values;
 
 // For MVV-LVA move ordering (uses middlegame values)
-pub const piece_values_mg = [6]i32{ 126, 781, 825, 1276, 2538, 20000 };
-
-// Passed pawn bonus by rank (from pawn's perspective, rank 1-6 relevant)
-const passed_pawn_bonus = [8]Score{
-    Score.init(0, 0), // rank 0
-    Score.init(9, 28), // rank 1
-    Score.init(15, 31), // rank 2
-    Score.init(17, 39), // rank 3
-    Score.init(64, 70), // rank 4
-    Score.init(171, 177), // rank 5
-    Score.init(277, 260), // rank 6
-    Score.init(0, 0), // rank 7
+pub const piece_values_mg = blk: {
+    const vals = params_mod.default_params.piece_values;
+    break :blk [6]i32{
+        vals[0].midgame(), vals[1].midgame(), vals[2].midgame(),
+        vals[3].midgame(), vals[4].midgame(), vals[5].midgame(),
+    };
 };
-
-// Mobility bonus per move (middlegame, endgame)
-const mobility_bonus = [4][28]Score{
-    // Knights
-    [_]Score{
-        Score.init(-62, -81),
-        Score.init(-53, -56),
-        Score.init(-12, -31),
-        Score.init(-4, -16),
-        Score.init(3, 5),
-        Score.init(13, 11),
-        Score.init(22, 17),
-        Score.init(28, 20),
-        Score.init(33, 25),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-    },
-    // Bishops
-    [_]Score{
-        Score.init(-48, -59),
-        Score.init(-20, -23),
-        Score.init(16, -3),
-        Score.init(26, 13),
-        Score.init(38, 24),
-        Score.init(51, 42),
-        Score.init(55, 54),
-        Score.init(63, 57),
-        Score.init(63, 65),
-        Score.init(68, 73),
-        Score.init(81, 78),
-        Score.init(81, 86),
-        Score.init(91, 88),
-        Score.init(98, 97),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-    },
-    // Rooks
-    [_]Score{
-        Score.init(-60, -78),
-        Score.init(-20, -17),
-        Score.init(2, 23),
-        Score.init(3, 39),
-        Score.init(3, 70),
-        Score.init(11, 99),
-        Score.init(22, 103),
-        Score.init(31, 121),
-        Score.init(40, 134),
-        Score.init(40, 139),
-        Score.init(41, 158),
-        Score.init(48, 164),
-        Score.init(57, 168),
-        Score.init(57, 169),
-        Score.init(62, 172),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-        Score.init(0, 0),
-    },
-    // Queens
-    [_]Score{
-        Score.init(-30, -48),
-        Score.init(-12, -30),
-        Score.init(-8, -7),
-        Score.init(-9, 19),
-        Score.init(20, 40),
-        Score.init(23, 55),
-        Score.init(23, 59),
-        Score.init(35, 75),
-        Score.init(38, 78),
-        Score.init(53, 96),
-        Score.init(64, 96),
-        Score.init(65, 100),
-        Score.init(65, 121),
-        Score.init(66, 127),
-        Score.init(67, 131),
-        Score.init(67, 133),
-        Score.init(72, 136),
-        Score.init(72, 141),
-        Score.init(77, 147),
-        Score.init(79, 150),
-        Score.init(93, 151),
-        Score.init(108, 168),
-        Score.init(108, 168),
-        Score.init(108, 171),
-        Score.init(110, 182),
-        Score.init(114, 182),
-        Score.init(114, 192),
-        Score.init(116, 218),
-    },
-};
-
-// Bonus/penalty constants
-const bishop_pair = Score.init(30, 50);
-const rook_open_file = Score.init(48, 27);
-const rook_semi_open = Score.init(19, 7);
-const rook_on_seventh = Score.init(20, 40);
-const isolated_pawn = Score.init(-15, -20);
-const doubled_pawn = Score.init(-10, -20);
-const backward_pawn = Score.init(-9, -22);
-const connected_pawn = Score.init(7, 10);
-const protected_passed_pawn = Score.init(15, 30);
-const blocked_passed_pawn = Score.init(-10, -20);
-const rook_behind_passer = Score.init(16, 29);
-const king_proximity_passer: i16 = 8;
-const free_passed_pawn = Score.init(8, 18);
-const knight_outpost_defended = Score.init(56, 34);
-const bishop_outpost_defended = Score.init(31, 23);
-const pawn_shield = Score.init(15, 0);
-const pawn_shield_missing = Score.init(-10, 0);
-const tempo = Score.init(28, 28);
 
 const promotion_bonus: i32 = 12500;
 
@@ -226,180 +75,6 @@ const adjacent_files: [8]u64 = blk: {
         masks[file] = mask;
     }
     break :blk masks;
-};
-
-// Piece-square tables: [piece][square] -> ScoreI16(mg, eg)
-// Stockfish classical (pre-NNUE) values. Non-pawn tables mirrored from half-tables
-// using edge_distance (A<>H, B<>G, C<>F, D<>E). Pawn table is asymmetric (full 8 files).
-pub const pst = [6][64]Score{
-    // Pawns (from Stockfish PBonus, full 8-file asymmetric table)
-    blk: {
-        const mg = [64]i16{
-            0,  0,   0,   0,   0,  0,   0,   0,
-            3,  3,   10,  19,  16, 19,  7,   -5,
-            -9, -15, 11,  15,  32, 22,  5,   -22,
-            -4, -23, 6,   20,  40, 17,  4,   -8,
-            13, 0,   -13, 1,   11, -2,  -13, 5,
-            5,  -12, -7,  22,  -8, -5,  -15, -8,
-            -7, 7,   -3,  -13, 5,  -16, 10,  -8,
-            0,  0,   0,   0,   0,  0,   0,   0,
-        };
-        const eg = [64]i16{
-            0,   0,   0,   0,  0,   0,   0,   0,
-            -10, -6,  10,  0,  14,  7,   -5,  -19,
-            -10, -10, -10, 4,  4,   3,   -6,  -4,
-            6,   -2,  -8,  -4, -13, -12, -10, -9,
-            10,  5,   4,   -5, -5,  -5,  14,  9,
-            28,  20,  21,  28, 30,  7,   6,   13,
-            0,   -11, 12,  21, 25,  19,  4,   7,
-            0,   0,   0,   0,  0,   0,   0,   0,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
-    // Knights (mirrored: col0=A/H, col1=B/G, col2=C/F, col3=D/E)
-    blk: {
-        const mg = [64]i16{
-            -175, -92, -74, -73, -73, -74, -92, -175,
-            -77,  -41, -27, -15, -15, -27, -41, -77,
-            -61,  -17, 6,   12,  12,  6,   -17, -61,
-            -35,  8,   40,  49,  49,  40,  8,   -35,
-            -34,  13,  44,  51,  51,  44,  13,  -34,
-            -9,   22,  58,  53,  53,  58,  22,  -9,
-            -67,  -27, 4,   37,  37,  4,   -27, -67,
-            -201, -83, -56, -26, -26, -56, -83, -201,
-        };
-        const eg = [64]i16{
-            -96,  -65, -49, -21, -21, -49, -65, -96,
-            -67,  -54, -18, 8,   8,   -18, -54, -67,
-            -40,  -27, -8,  29,  29,  -8,  -27, -40,
-            -35,  -2,  13,  28,  28,  13,  -2,  -35,
-            -45,  -16, 9,   39,  39,  9,   -16, -45,
-            -51,  -44, -16, 17,  17,  -16, -44, -51,
-            -69,  -50, -51, 12,  12,  -51, -50, -69,
-            -100, -88, -56, -17, -17, -56, -88, -100,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
-    // Bishops (mirrored: col0=A/H, col1=B/G, col2=C/F, col3=D/E)
-    blk: {
-        const mg = [64]i16{
-            -53, -5,  -8,  -23, -23, -8,  -5,  -53,
-            -15, 8,   19,  4,   4,   19,  8,   -15,
-            -7,  21,  -5,  17,  17,  -5,  21,  -7,
-            -5,  11,  25,  39,  39,  25,  11,  -5,
-            -12, 29,  22,  31,  31,  22,  29,  -12,
-            -16, 6,   1,   11,  11,  1,   6,   -16,
-            -17, -14, 5,   0,   0,   5,   -14, -17,
-            -48, 1,   -14, -23, -23, -14, 1,   -48,
-        };
-        const eg = [64]i16{
-            -57, -30, -37, -12, -12, -37, -30, -57,
-            -37, -13, -17, 1,   1,   -17, -13, -37,
-            -16, -1,  -2,  10,  10,  -2,  -1,  -16,
-            -20, -6,  0,   17,  17,  0,   -6,  -20,
-            -17, -1,  -14, 15,  15,  -14, -1,  -17,
-            -30, 6,   4,   6,   6,   4,   6,   -30,
-            -31, -20, -1,  1,   1,   -1,  -20, -31,
-            -46, -42, -37, -24, -24, -37, -42, -46,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
-    // Rooks (mirrored: col0=A/H, col1=B/G, col2=C/F, col3=D/E)
-    blk: {
-        const mg = [64]i16{
-            -31, -20, -14, -5, -5, -14, -20, -31,
-            -21, -13, -8,  6,  6,  -8,  -13, -21,
-            -25, -11, -1,  3,  3,  -1,  -11, -25,
-            -13, -5,  -4,  -6, -6, -4,  -5,  -13,
-            -27, -15, -4,  3,  3,  -4,  -15, -27,
-            -22, -2,  6,   12, 12, 6,   -2,  -22,
-            -2,  12,  16,  18, 18, 16,  12,  -2,
-            -17, -19, -1,  9,  9,  -1,  -19, -17,
-        };
-        const eg = [64]i16{
-            -9,  -13, -10, -9, -9, -10, -13, -9,
-            -12, -9,  -1,  -2, -2, -1,  -9,  -12,
-            6,   -8,  -2,  -6, -6, -2,  -8,  6,
-            -6,  1,   -9,  7,  7,  -9,  1,   -6,
-            -5,  8,   7,   -6, -6, 7,   8,   -5,
-            6,   1,   -7,  10, 10, -7,  1,   6,
-            4,   5,   20,  -5, -5, 20,  5,   4,
-            18,  0,   19,  13, 13, 19,  0,   18,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
-    // Queens (mirrored: col0=A/H, col1=B/G, col2=C/F, col3=D/E)
-    blk: {
-        const mg = [64]i16{
-            3,  -5, -5, 4,  4,  -5, -5, 3,
-            -3, 5,  8,  12, 12, 8,  5,  -3,
-            -3, 6,  13, 7,  7,  13, 6,  -3,
-            4,  5,  9,  8,  8,  9,  5,  4,
-            0,  14, 12, 5,  5,  12, 14, 0,
-            -4, 10, 6,  8,  8,  6,  10, -4,
-            -5, 6,  10, 8,  8,  10, 6,  -5,
-            -2, -2, 1,  -2, -2, 1,  -2, -2,
-        };
-        const eg = [64]i16{
-            -69, -57, -47, -26, -26, -47, -57, -69,
-            -55, -31, -22, -4,  -4,  -22, -31, -55,
-            -39, -18, -9,  3,   3,   -9,  -18, -39,
-            -23, -3,  13,  24,  24,  13,  -3,  -23,
-            -29, -6,  9,   21,  21,  9,   -6,  -29,
-            -38, -18, -12, 1,   1,   -12, -18, -38,
-            -50, -27, -24, -8,  -8,  -24, -27, -50,
-            -75, -52, -43, -36, -36, -43, -52, -75,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
-    // Kings (mirrored: col0=A/H, col1=B/G, col2=C/F, col3=D/E)
-    blk: {
-        const mg = [64]i16{
-            271, 327, 271, 198, 198, 271, 327, 271,
-            278, 303, 234, 179, 179, 234, 303, 278,
-            195, 258, 169, 120, 120, 169, 258, 195,
-            164, 190, 138, 98,  98,  138, 190, 164,
-            154, 179, 105, 70,  70,  105, 179, 154,
-            123, 145, 81,  31,  31,  81,  145, 123,
-            88,  120, 65,  33,  33,  65,  120, 88,
-            59,  89,  45,  -1,  -1,  45,  89,  59,
-        };
-        const eg = [64]i16{
-            1,   45,  85,  76,  76,  85,  45,  1,
-            53,  100, 133, 135, 135, 133, 100, 53,
-            88,  130, 169, 175, 175, 169, 130, 88,
-            103, 156, 172, 172, 172, 172, 156, 103,
-            96,  166, 199, 199, 199, 199, 166, 96,
-            92,  172, 184, 191, 191, 184, 172, 92,
-            47,  121, 116, 131, 131, 116, 121, 47,
-            11,  59,  73,  78,  78,  73,  59,  11,
-        };
-        var result: [64]Score = undefined;
-        for (0..64) |i| {
-            result[i] = Score.init(mg[i], eg[i]);
-        }
-        break :blk result;
-    },
 };
 
 fn computePassedPawnMask(c: Color, file: Square, rank: Square) u64 {
@@ -517,18 +192,25 @@ fn computeMobilityArea(state: *const State, c: Color, enemy_pawn_attacks: u64, b
     return ~(enemy_pawn_attacks | blocked_or_low | our_kings | our_queens | blockers);
 }
 
+// ==============================================================================
+// Generic evaluation core
+// ==============================================================================
+
 // Single-pass evaluation for one color. Iterates each piece type once,
 // accumulating material, PST, mobility, and structural scores together.
-// Returns the total ScoreI16, phase accumulator, and accumulated piece attacks.
-fn evaluateColor(
+// Returns the total score, phase accumulator, and accumulated piece attacks.
+// `p` is anytype — either *const Params (i16) or *const ParamsF64 (f64).
+fn evaluateColorGeneric(
     state: *const State,
     c: Color,
     our_pieces: u64,
     our_pawns_bb: Bitboard,
     opp_pawns_bb: Bitboard,
     mobility_area: u64,
-) struct { score: Score, phase: i32, attacks: PieceAttacks } {
-    var ret = Score.zero;
+    p: anytype,
+) struct { score: @TypeOf(p.piece_values[0]), phase: i32, attacks: PieceAttacks } {
+    const ScoreT = @TypeOf(p.piece_values[0]);
+    var score = ScoreT.zero;
     var phase: i32 = 0;
     var attacks = PieceAttacks{};
     const occupied = state.all_pieces.bits;
@@ -549,13 +231,13 @@ fn evaluateColor(
     {
         var pawns = our_pawns_bb;
         const pawn_count: i32 = @intCast(pawns.popCount());
-        ret = ret.add(piece_values[piece.pawn].mul(pawn_count));
+        score = score.add(p.piece_values[piece.pawn].mul(pawn_count));
 
         // Doubled pawn penalty: apply once per extra pawn on each file
         for (0..8) |file| {
             const count: i32 = @intCast(@popCount(our_pawns_bb.bits & file_masks[file]));
             if (count > 1) {
-                ret = ret.add(doubled_pawn.mul(count - 1));
+                score = score.add(p.doubled_pawn.mul(count - 1));
             }
         }
 
@@ -565,7 +247,7 @@ fn evaluateColor(
 
             // PST
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            ret = ret.add(pst[piece.pawn][sq]);
+            score = score.add(p.pst[piece.pawn][sq]);
 
             // Connected pawn
             const connected = blk: {
@@ -582,14 +264,14 @@ fn evaluateColor(
                 break :blk (our_pawns_bb.bits & mask) != 0;
             };
             if (connected) {
-                ret = ret.add(connected_pawn);
+                score = score.add(p.connected_pawn);
             }
 
             // Passed pawn
             const ahead_mask = computePassedPawnMask(c, file, rank);
             if ((opp_pawns_bb.bits & ahead_mask) == 0) {
                 const passed_rank = if (c == Colors.white) rank else 7 - rank;
-                ret = ret.add(passed_pawn_bonus[passed_rank]);
+                score = score.add(p.passed_pawn_bonus[passed_rank]);
 
                 // Protected passed pawn
                 const is_protected = blk: {
@@ -604,7 +286,7 @@ fn evaluateColor(
                     break :blk (our_pawns_bb.bits & def_mask) != 0;
                 };
                 if (is_protected) {
-                    ret = ret.add(protected_passed_pawn);
+                    score = score.add(p.protected_passed_pawn);
                 }
 
                 // Blocked passed pawn
@@ -617,7 +299,7 @@ fn evaluateColor(
                     break :blk false;
                 };
                 if (blocked) {
-                    ret = ret.add(blocked_passed_pawn);
+                    score = score.add(p.blocked_passed_pawn);
                 }
 
                 // Rook behind passed pawn
@@ -627,18 +309,25 @@ fn evaluateColor(
                     else
                         @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
                     if ((our_rooks & file_masks[file] & ranks_behind) != 0) {
-                        ret = ret.add(rook_behind_passer);
+                        score = score.add(p.rook_behind_passer);
                     }
                 }
 
-                // Enemy king distance to passed pawn (endgame bonus)
+                // Enemy king distance to passed pawn (endgame bonus).
+                // king_proximity_passer is i16 in Params and f64 in ParamsF64;
+                // dist is always i16, so we cast to match the score component type.
                 {
                     const king_file: Square = opp_king_sq % 8;
                     const king_rank: Square = opp_king_sq / 8;
                     const df: Square = if (file > king_file) file - king_file else king_file - file;
                     const dr: Square = if (rank > king_rank) rank - king_rank else king_rank - rank;
                     const dist: i16 = @intCast(@max(df, dr));
-                    ret = ret.add(Score.init(0, dist * king_proximity_passer));
+                    const kp_eg: @TypeOf(p.king_proximity_passer) = switch (@TypeOf(p.king_proximity_passer)) {
+                        i16 => dist * p.king_proximity_passer,
+                        f64 => @as(f64, @floatFromInt(dist)) * p.king_proximity_passer,
+                        else => @compileError("unexpected king_proximity_passer type"),
+                    };
+                    score = score.add(ScoreT.init(0, kp_eg));
                 }
 
                 // Free passed pawn (advance square not occupied or attacked by enemy pawns)
@@ -650,14 +339,14 @@ fn evaluateColor(
                     else
                         0;
                     if (ahead_sq != 0 and (opp_pawn_atk & ahead_sq) == 0) {
-                        ret = ret.add(free_passed_pawn);
+                        score = score.add(p.free_passed_pawn);
                     }
                 }
             }
 
             // Isolated pawn
             if ((our_pawns_bb.bits & adjacent_files[file]) == 0) {
-                ret = ret.add(isolated_pawn);
+                score = score.add(p.isolated_pawn);
             } else {
                 // Backward pawn: no friendly pawns on adjacent files at same rank or behind,
                 // and stop square is attacked by enemy pawn
@@ -685,7 +374,7 @@ fn evaluateColor(
                         break :blk (opp_pawns_bb.bits & atk_mask) != 0;
                     };
                     if (stop_attacked) {
-                        ret = ret.add(backward_pawn);
+                        score = score.add(p.backward_pawn);
                     }
                 }
             }
@@ -696,7 +385,7 @@ fn evaluateColor(
     {
         var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
-        ret = ret.add(piece_values[piece.knight].mul(knight_count));
+        score = score.add(p.piece_values[piece.knight].mul(knight_count));
         phase += knight_count * phase_weights[piece.knight];
 
         while (knights.next()) |s| {
@@ -705,20 +394,20 @@ fn evaluateColor(
 
             // PST
             const sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - rank) * 8 + file) else s;
-            ret = ret.add(pst[piece.knight][sq]);
+            score = score.add(p.pst[piece.knight][sq]);
 
             // Mobility (using mobility area instead of ~our_pieces)
             const knight_atk = movegen.knight_move_mask[s];
             attacks.knight |= knight_atk;
             const mob = knight_atk & mobility_area;
             const move_count = @popCount(mob);
-            ret = ret.add(mobility_bonus[0][move_count]);
+            score = score.add(p.mobility_bonus[0][move_count]);
 
             // Outpost check (only defended outposts rewarded)
             if (isOutpost(c, file, rank, opp_pawns_bb) and
                 isDefendedByPawn(c, file, rank, our_pawns_bb))
             {
-                ret = ret.add(knight_outpost_defended);
+                score = score.add(p.knight_outpost_defended);
             }
         }
     }
@@ -727,11 +416,11 @@ fn evaluateColor(
     {
         var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
-        ret = ret.add(piece_values[piece.bishop].mul(bishop_count));
+        score = score.add(p.piece_values[piece.bishop].mul(bishop_count));
         phase += bishop_count * phase_weights[piece.bishop];
 
         if (bishop_count >= 2) {
-            ret = ret.add(bishop_pair);
+            score = score.add(p.bishop_pair);
         }
 
         while (bishops.next()) |s| {
@@ -740,20 +429,20 @@ fn evaluateColor(
 
             // PST
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            ret = ret.add(pst[piece.bishop][sq]);
+            score = score.add(p.pst[piece.bishop][sq]);
 
             // Mobility (x-ray through own queens, using mobility area)
             const bishop_atk = movegen.sliderMovesWithOccupancy(s, piece.bishop, occ_without_our_queens);
             attacks.bishop |= bishop_atk;
             const mob = bishop_atk & mobility_area;
             const move_count = @popCount(mob);
-            ret = ret.add(mobility_bonus[1][move_count]);
+            score = score.add(p.mobility_bonus[1][move_count]);
 
             // Bishop outpost (defended only)
             if (isOutpost(c, file, rank, opp_pawns_bb) and
                 isDefendedByPawn(c, file, rank, our_pawns_bb))
             {
-                ret = ret.add(bishop_outpost_defended);
+                score = score.add(p.bishop_outpost_defended);
             }
         }
     }
@@ -762,7 +451,7 @@ fn evaluateColor(
     {
         var rooks = Bitboard{ .bits = state.pieceBitboard(piece.rook).bits & our_pieces };
         const rook_count: i32 = @intCast(rooks.popCount());
-        ret = ret.add(piece_values[piece.rook].mul(rook_count));
+        score = score.add(p.piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
 
         const seventh_rank: Square = if (c == Colors.white) 6 else 1;
@@ -773,44 +462,44 @@ fn evaluateColor(
 
             // PST
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            ret = ret.add(pst[piece.rook][sq]);
+            score = score.add(p.pst[piece.rook][sq]);
 
             // Mobility (x-ray through own rooks+queens, using mobility area)
             const rook_atk = movegen.sliderMovesWithOccupancy(s, piece.rook, occ_without_our_rq);
             attacks.rook |= rook_atk;
             const mob = rook_atk & mobility_area;
             const move_count = @popCount(mob);
-            ret = ret.add(mobility_bonus[2][move_count]);
+            score = score.add(p.mobility_bonus[2][move_count]);
 
             // Open/semi-open file
             const fmask = file_masks[file];
             const has_our_pawn = (our_pawns_bb.bits & fmask) != 0;
             const has_opp_pawn = (opp_pawns_bb.bits & fmask) != 0;
             if (!has_our_pawn and !has_opp_pawn) {
-                ret = ret.add(rook_open_file);
+                score = score.add(p.rook_open_file);
             } else if (!has_our_pawn and has_opp_pawn) {
-                ret = ret.add(rook_semi_open);
+                score = score.add(p.rook_semi_open);
             }
 
             // Rook on 7th rank
             if (rank == seventh_rank) {
-                ret = ret.add(rook_on_seventh);
+                score = score.add(p.rook_on_seventh);
             }
         }
     }
 
-    // --- Queens: material + PST (mobility deferred to evaluateQueenMobility) ---
+    // --- Queens: material + PST (mobility deferred to evaluateQueenMobilityGeneric) ---
     {
         var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
-        ret = ret.add(piece_values[piece.queen].mul(queen_count));
+        score = score.add(p.piece_values[piece.queen].mul(queen_count));
         phase += queen_count * phase_weights[4];
 
         while (queens.next()) |s| {
             const rank: Square = s / 8;
             const file: Square = s % 8;
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            ret = ret.add(pst[piece.queen][sq]);
+            score = score.add(p.pst[piece.queen][sq]);
         }
     }
 
@@ -823,7 +512,7 @@ fn evaluateColor(
 
         // PST
         const pst_sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - king_rank) * 8 + king_file) else king_sq;
-        ret = ret.add(pst[piece.king][pst_sq]);
+        score = score.add(p.pst[piece.king][pst_sq]);
 
         // King safety: pawn shield (only when king on back ranks)
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
@@ -837,26 +526,29 @@ fn evaluateColor(
                 const shield_sq: Square = @as(Square, @as(u3, @intCast(file))) + shield_rank * 8;
                 const shield_mask: u64 = @as(u64, 1) << shield_sq;
                 if ((our_pawns_bb.bits & shield_mask) != 0) {
-                    ret = ret.add(pawn_shield);
+                    score = score.add(p.pawn_shield);
                 } else {
-                    ret = ret.add(pawn_shield_missing);
+                    score = score.add(p.pawn_shield_missing);
                 }
             }
         }
     }
 
-    return .{ .score = ret, .phase = phase, .attacks = attacks };
+    return .{ .score = score, .phase = phase, .attacks = attacks };
 }
 
 // Evaluate queen mobility separately, after both colors' piece attacks are known.
 // Queen mobility excludes squares defended by enemy minor pieces and rooks.
-fn evaluateQueenMobility(
+// `p` is anytype — either *const Params (i16) or *const ParamsF64 (f64).
+fn evaluateQueenMobilityGeneric(
     state: *const State,
     our_pieces: u64,
     mobility_area: u64,
     enemy_attacks: PieceAttacks,
-) Score {
-    var ret = Score.zero;
+    p: anytype,
+) @TypeOf(p.piece_values[0]) {
+    const ScoreT = @TypeOf(p.piece_values[0]);
+    var score = ScoreT.zero;
     var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
     const enemy_minor_rook = enemy_attacks.knight | enemy_attacks.bishop | enemy_attacks.rook;
 
@@ -866,12 +558,16 @@ fn evaluateQueenMobility(
         const queen_atk = bishop_moves | rook_moves;
         const mob = queen_atk & mobility_area & ~enemy_minor_rook;
         const move_count = @popCount(mob);
-        ret = ret.add(mobility_bonus[3][move_count]);
+        score = score.add(p.mobility_bonus[3][move_count]);
     }
-    return ret;
+    return score;
 }
 
-pub fn evaluate(state: *const State) i32 {
+// Generic implementation shared by evaluate(), evaluateWithParams(), and
+// evaluateWithParamsF64(). `p` is anytype (either *const Params or *const
+// ParamsF64). The return type is i32 for Params and f64 for ParamsF64,
+// inferred from Score(T).taper()'s return type.
+fn evaluateGeneric(state: *const State, p: anytype) @TypeOf(p.piece_values[0].taper(0)) {
     const to_move = state.to_move;
     const opp = ~to_move;
 
@@ -891,17 +587,42 @@ pub fn evaluate(state: *const State) i32 {
     const opp_mob_area = computeMobilityArea(state, opp, our_pawn_atk, opp_blockers);
 
     // Evaluate both colors (accumulates attack maps, defers queen mobility)
-    const our = evaluateColor(state, to_move, our_pieces, our_pawns, opp_pawns, our_mob_area);
-    const their = evaluateColor(state, opp, opp_pieces, opp_pawns, our_pawns, opp_mob_area);
+    const our = evaluateColorGeneric(state, to_move, our_pieces, our_pawns, opp_pawns, our_mob_area, p);
+    const their = evaluateColorGeneric(state, opp, opp_pieces, opp_pawns, our_pawns, opp_mob_area, p);
 
     // Queen mobility using opponent's accumulated attack maps
-    const our_q = evaluateQueenMobility(state, our_pieces, our_mob_area, their.attacks);
-    const their_q = evaluateQueenMobility(state, opp_pieces, opp_mob_area, our.attacks);
+    const our_q = evaluateQueenMobilityGeneric(state, our_pieces, our_mob_area, their.attacks, p);
+    const their_q = evaluateQueenMobilityGeneric(state, opp_pieces, opp_mob_area, our.attacks, p);
 
-    const phase = @min(our.phase + their.phase, score.max_phase_mg);
-    const total = our.score.add(our_q).sub(their.score).sub(their_q).add(tempo);
+    const phase = @min(our.phase + their.phase, max_phase_mg);
+    const total = our.score.add(our_q).sub(their.score).sub(their_q).add(p.tempo);
     return total.taper(phase);
 }
+
+// Production entry point. Passes default_params as a comptime-constant address;
+// LLVM constant-propagates field accesses under ReleaseFast, giving identical
+// performance to the original named constants.
+pub fn evaluate(state: *const State) i32 {
+    return evaluateGeneric(state, &params_mod.default_params);
+}
+
+// Called by the tuner with i16 params (production type). Because the
+// production call passes a comptime-constant address, LLVM inlines field
+// accesses identically to the original named constants.
+pub fn evaluateWithParams(state: *const State, p: *const Params) i32 {
+    return evaluateGeneric(state, p);
+}
+
+// Called by the tuner's MSE computation with f64 params. Returns f64 so that
+// MSE accumulation stays in floating-point and never discards gradient signal
+// through integer truncation.
+pub fn evaluateWithParamsF64(state: *const State, p: *const params_mod.ParamsF64) f64 {
+    return evaluateGeneric(state, p);
+}
+
+// ==============================================================================
+// Trace evaluation (debug-only, not hot path)
+// ==============================================================================
 
 pub const EvalTrace = struct {
     material: [2]Score,
@@ -932,7 +653,7 @@ pub const EvalTrace = struct {
         try writer.print("Tempo         | {d:>6}  {d:>6} |                |\n", .{ self.tempo_score.midgame(), self.tempo_score.endgame() });
         try writer.print("--------------+----------------+----------------+\n", .{});
         try writer.print("Phase: {d}/24\n", .{self.phase});
-        const cp_total: f32 = @as(f32, @floatFromInt(self.total)) / @as(f32, @floatFromInt(piece_values[0].endgame()));
+        const cp_total: f32 = @as(f32, @floatFromInt(self.total)) / @as(f32, @floatFromInt(params_mod.default_params.piece_values[0].endgame()));
         const sign: []const u8 = if (cp_total < 0) "-" else if (cp_total > 0) "+" else "±";
         try writer.print("Total: {s}{d:.2} ({d})\n", .{ sign, @abs(cp_total), self.total });
     }
@@ -948,6 +669,9 @@ pub const EvalTrace = struct {
     }
 };
 
+// Trace variant of evaluateColorGeneric. Not parametric — always references
+// default_params directly, since the trace is a debug tool and does not need
+// to reflect in-flight tuning state.
 fn evaluateColorTrace(
     state: *const State,
     c: Color,
@@ -968,6 +692,7 @@ fn evaluateColorTrace(
     phase: i32,
     attacks: PieceAttacks,
 } {
+    const dp = &params_mod.default_params;
     var material_score = Score.zero;
     var pst_score = Score.zero;
     var pawn_structure_score = Score.zero;
@@ -997,12 +722,12 @@ fn evaluateColorTrace(
     {
         var pawns = our_pawns_bb;
         const pawn_count: i32 = @intCast(pawns.popCount());
-        material_score = material_score.add(piece_values[piece.pawn].mul(pawn_count));
+        material_score = material_score.add(dp.piece_values[piece.pawn].mul(pawn_count));
 
         for (0..8) |file| {
             const count: i32 = @intCast(@popCount(our_pawns_bb.bits & file_masks[file]));
             if (count > 1) {
-                pawn_structure_score = pawn_structure_score.add(doubled_pawn.mul(count - 1));
+                pawn_structure_score = pawn_structure_score.add(dp.doubled_pawn.mul(count - 1));
             }
         }
 
@@ -1010,7 +735,7 @@ fn evaluateColorTrace(
             const file: Square = s % 8;
             const rank: Square = s / 8;
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            pst_score = pst_score.add(pst[piece.pawn][sq]);
+            pst_score = pst_score.add(dp.pst[piece.pawn][sq]);
 
             const connected = blk: {
                 var mask: u64 = 0;
@@ -1026,13 +751,13 @@ fn evaluateColorTrace(
                 break :blk (our_pawns_bb.bits & mask) != 0;
             };
             if (connected) {
-                pawn_structure_score = pawn_structure_score.add(connected_pawn);
+                pawn_structure_score = pawn_structure_score.add(dp.connected_pawn);
             }
 
             const ahead_mask = computePassedPawnMask(c, file, rank);
             if ((opp_pawns_bb.bits & ahead_mask) == 0) {
                 const passed_rank = if (c == Colors.white) rank else 7 - rank;
-                passed_pawns_score = passed_pawns_score.add(passed_pawn_bonus[passed_rank]);
+                passed_pawns_score = passed_pawns_score.add(dp.passed_pawn_bonus[passed_rank]);
 
                 const is_protected = blk: {
                     var def_mask: u64 = 0;
@@ -1046,7 +771,7 @@ fn evaluateColorTrace(
                     break :blk (our_pawns_bb.bits & def_mask) != 0;
                 };
                 if (is_protected) {
-                    passed_pawns_score = passed_pawns_score.add(protected_passed_pawn);
+                    passed_pawns_score = passed_pawns_score.add(dp.protected_passed_pawn);
                 }
 
                 const blocked = blk: {
@@ -1058,7 +783,7 @@ fn evaluateColorTrace(
                     break :blk false;
                 };
                 if (blocked) {
-                    passed_pawns_score = passed_pawns_score.add(blocked_passed_pawn);
+                    passed_pawns_score = passed_pawns_score.add(dp.blocked_passed_pawn);
                 }
 
                 // Rook behind passed pawn
@@ -1068,7 +793,7 @@ fn evaluateColorTrace(
                     else
                         @as(u64, 0xFFFFFFFFFFFFFFFF) << ((rank + 1) * 8);
                     if ((our_rooks & file_masks[file] & ranks_behind) != 0) {
-                        passed_pawns_score = passed_pawns_score.add(rook_behind_passer);
+                        passed_pawns_score = passed_pawns_score.add(dp.rook_behind_passer);
                     }
                 }
 
@@ -1079,7 +804,7 @@ fn evaluateColorTrace(
                     const df: Square = if (file > king_file) file - king_file else king_file - file;
                     const dr: Square = if (rank > king_rank) rank - king_rank else king_rank - rank;
                     const dist: i16 = @intCast(@max(df, dr));
-                    passed_pawns_score = passed_pawns_score.add(Score.init(0, dist * king_proximity_passer));
+                    passed_pawns_score = passed_pawns_score.add(Score.init(0, dist * dp.king_proximity_passer));
                 }
 
                 // Free passed pawn (advance square not occupied or attacked by enemy pawns)
@@ -1091,13 +816,13 @@ fn evaluateColorTrace(
                     else
                         0;
                     if (ahead_sq != 0 and (opp_pawn_atk & ahead_sq) == 0) {
-                        passed_pawns_score = passed_pawns_score.add(free_passed_pawn);
+                        passed_pawns_score = passed_pawns_score.add(dp.free_passed_pawn);
                     }
                 }
             }
 
             if ((our_pawns_bb.bits & adjacent_files[file]) == 0) {
-                pawn_structure_score = pawn_structure_score.add(isolated_pawn);
+                pawn_structure_score = pawn_structure_score.add(dp.isolated_pawn);
             } else {
                 // Backward pawn detection
                 const behind_mask = blk: {
@@ -1122,7 +847,7 @@ fn evaluateColorTrace(
                         break :blk (opp_pawns_bb.bits & atk_mask) != 0;
                     };
                     if (stop_attacked) {
-                        pawn_structure_score = pawn_structure_score.add(backward_pawn);
+                        pawn_structure_score = pawn_structure_score.add(dp.backward_pawn);
                     }
                 }
             }
@@ -1133,25 +858,25 @@ fn evaluateColorTrace(
     {
         var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
-        material_score = material_score.add(piece_values[piece.knight].mul(knight_count));
+        material_score = material_score.add(dp.piece_values[piece.knight].mul(knight_count));
         phase += knight_count * phase_weights[piece.knight];
 
         while (knights.next()) |s| {
             const file: u3 = @intCast(s % 8);
             const rank: u3 = @intCast(s / 8);
             const sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - rank) * 8 + file) else s;
-            pst_score = pst_score.add(pst[piece.knight][sq]);
+            pst_score = pst_score.add(dp.pst[piece.knight][sq]);
 
             const knight_atk = movegen.knight_move_mask[s];
             attacks.knight |= knight_atk;
             const mob = knight_atk & mobility_area;
             const move_count = @popCount(mob);
-            mobility_score = mobility_score.add(mobility_bonus[0][move_count]);
+            mobility_score = mobility_score.add(dp.mobility_bonus[0][move_count]);
 
             if (isOutpost(c, file, rank, opp_pawns_bb) and
                 isDefendedByPawn(c, file, rank, our_pawns_bb))
             {
-                outposts_score = outposts_score.add(knight_outpost_defended);
+                outposts_score = outposts_score.add(dp.knight_outpost_defended);
             }
         }
     }
@@ -1160,30 +885,30 @@ fn evaluateColorTrace(
     {
         var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
-        material_score = material_score.add(piece_values[piece.bishop].mul(bishop_count));
+        material_score = material_score.add(dp.piece_values[piece.bishop].mul(bishop_count));
         phase += bishop_count * phase_weights[piece.bishop];
 
         if (bishop_count >= 2) {
-            bishop_pair_score = bishop_pair_score.add(bishop_pair);
+            bishop_pair_score = bishop_pair_score.add(dp.bishop_pair);
         }
 
         while (bishops.next()) |s| {
             const rank: Square = s / 8;
             const file: Square = s % 8;
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            pst_score = pst_score.add(pst[piece.bishop][sq]);
+            pst_score = pst_score.add(dp.pst[piece.bishop][sq]);
 
             const bishop_atk = movegen.sliderMovesWithOccupancy(s, piece.bishop, occ_without_our_queens);
             attacks.bishop |= bishop_atk;
             const mob = bishop_atk & mobility_area;
             const move_count = @popCount(mob);
-            mobility_score = mobility_score.add(mobility_bonus[1][move_count]);
+            mobility_score = mobility_score.add(dp.mobility_bonus[1][move_count]);
 
             // Bishop outpost (defended only)
             if (isOutpost(c, file, rank, opp_pawns_bb) and
                 isDefendedByPawn(c, file, rank, our_pawns_bb))
             {
-                outposts_score = outposts_score.add(bishop_outpost_defended);
+                outposts_score = outposts_score.add(dp.bishop_outpost_defended);
             }
         }
     }
@@ -1192,7 +917,7 @@ fn evaluateColorTrace(
     {
         var rooks = state.pieceBitboard(piece.rook).bitAnd(u64, our_pieces);
         const rook_count: i32 = @intCast(rooks.popCount());
-        material_score = material_score.add(piece_values[piece.rook].mul(rook_count));
+        material_score = material_score.add(dp.piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
 
         const seventh_rank: Square = if (c == Colors.white) 6 else 1;
@@ -1201,25 +926,25 @@ fn evaluateColorTrace(
             const file: Square = s % 8;
             const rank: Square = s / 8;
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            pst_score = pst_score.add(pst[piece.rook][sq]);
+            pst_score = pst_score.add(dp.pst[piece.rook][sq]);
 
             const rook_atk = movegen.sliderMovesWithOccupancy(s, piece.rook, occ_without_our_rq);
             attacks.rook |= rook_atk;
             const mob = rook_atk & mobility_area;
             const move_count = @popCount(mob);
-            mobility_score = mobility_score.add(mobility_bonus[2][move_count]);
+            mobility_score = mobility_score.add(dp.mobility_bonus[2][move_count]);
 
             const fmask = file_masks[file];
             const has_our_pawn = (our_pawns_bb.bits & fmask) != 0;
             const has_opp_pawn = (opp_pawns_bb.bits & fmask) != 0;
             if (!has_our_pawn and !has_opp_pawn) {
-                rook_bonuses_score = rook_bonuses_score.add(rook_open_file);
+                rook_bonuses_score = rook_bonuses_score.add(dp.rook_open_file);
             } else if (!has_our_pawn and has_opp_pawn) {
-                rook_bonuses_score = rook_bonuses_score.add(rook_semi_open);
+                rook_bonuses_score = rook_bonuses_score.add(dp.rook_semi_open);
             }
 
             if (rank == seventh_rank) {
-                rook_bonuses_score = rook_bonuses_score.add(rook_on_seventh);
+                rook_bonuses_score = rook_bonuses_score.add(dp.rook_on_seventh);
             }
         }
     }
@@ -1228,14 +953,14 @@ fn evaluateColorTrace(
     {
         var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
-        material_score = material_score.add(piece_values[piece.queen].mul(queen_count));
+        material_score = material_score.add(dp.piece_values[piece.queen].mul(queen_count));
         phase += queen_count * phase_weights[piece.queen];
 
         while (queens.next()) |s| {
             const rank: Square = s / 8;
             const file: Square = s % 8;
             const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
-            pst_score = pst_score.add(pst[piece.queen][sq]);
+            pst_score = pst_score.add(dp.pst[piece.queen][sq]);
         }
     }
 
@@ -1246,7 +971,7 @@ fn evaluateColorTrace(
         const king_file: u3 = @intCast(king_sq % 8);
         const king_rank: u3 = @intCast(king_sq / 8);
         const pst_sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - king_rank) * 8 + king_file) else king_sq;
-        pst_score = pst_score.add(pst[piece.king][pst_sq]);
+        pst_score = pst_score.add(dp.pst[piece.king][pst_sq]);
 
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
         if (on_back_ranks) {
@@ -1259,9 +984,9 @@ fn evaluateColorTrace(
                 const shield_sq: Square = @as(Square, @as(u3, @intCast(f))) + shield_rank * 8;
                 const shield_mask: u64 = @as(u64, 1) << shield_sq;
                 if ((our_pawns_bb.bits & shield_mask) != 0) {
-                    king_safety_score = king_safety_score.add(pawn_shield);
+                    king_safety_score = king_safety_score.add(dp.pawn_shield);
                 } else {
-                    king_safety_score = king_safety_score.add(pawn_shield_missing);
+                    king_safety_score = king_safety_score.add(dp.pawn_shield_missing);
                 }
             }
         }
@@ -1288,7 +1013,7 @@ fn evaluateQueenMobilityTrace(
     mobility_area: u64,
     enemy_attacks: PieceAttacks,
 ) Score {
-    var ret = Score.zero;
+    var score = Score.zero;
     var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
     const enemy_minor_rook = enemy_attacks.knight | enemy_attacks.bishop | enemy_attacks.rook;
 
@@ -1298,9 +1023,9 @@ fn evaluateQueenMobilityTrace(
         const queen_atk = bishop_moves | rook_moves;
         const mob = queen_atk & mobility_area & ~enemy_minor_rook;
         const move_count = @popCount(mob);
-        ret = ret.add(mobility_bonus[3][move_count]);
+        score = score.add(params_mod.default_params.mobility_bonus[3][move_count]);
     }
-    return ret;
+    return score;
 }
 
 pub fn evaluateTrace(state: *const State) EvalTrace {
@@ -1348,8 +1073,8 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
     trace.king_safety[to_move] = our.king_safety_score;
     trace.king_safety[~to_move] = their.king_safety_score;
 
-    trace.tempo_score = tempo;
-    trace.phase = @min(our.phase + their.phase, score.max_phase_mg);
+    trace.tempo_score = params_mod.default_params.tempo;
+    trace.phase = @min(our.phase + their.phase, max_phase_mg);
     const total = our.material
         .add(our.pst_score)
         .add(our.pawn_structure)
@@ -1370,11 +1095,15 @@ pub fn evaluateTrace(state: *const State) EvalTrace {
         .sub(their.mobility_score)
         .sub(their_q)
         .sub(their.king_safety_score)
-        .add(tempo);
+        .add(params_mod.default_params.tempo);
     trace.total = total.taper(trace.phase);
 
     return trace;
 }
+
+// ==============================================================================
+// Move ordering
+// ==============================================================================
 
 // History heuristic table: [color][from_square][to_square] -> score
 // Tracks which quiet moves have caused beta cutoffs
@@ -1411,17 +1140,17 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
         }
     }
 
-    var ret: i32 = 0;
+    var score: i32 = 0;
     const p = ctx.state.mailbox[m.start].?;
 
     // MVV-LVA for captures
     if (ctx.state.mailbox[m.end]) |captured_piece| {
         const attacker_piece = ctx.state.mailbox[m.start].?;
-        ret += piece_values_mg[captured_piece] * 10 - piece_values_mg[attacker_piece];
+        score += piece_values_mg[captured_piece] * 10 - piece_values_mg[attacker_piece];
     } else {
         // Check for en-passant
         if (square.absDiff(m.start, m.end) % 8 != 0) {
-            ret += piece_values_mg[piece.pawn] * 10 - piece_values_mg[piece.pawn];
+            score += piece_values_mg[piece.pawn] * 10 - piece_values_mg[piece.pawn];
         }
     }
 
@@ -1430,25 +1159,25 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     if (p == piece.pawn and ((end_rank == 7 and ctx.color == Colors.white) or
         (end_rank == 0 and ctx.color == Colors.black)))
     {
-        ret += promotion_bonus;
+        score += promotion_bonus;
     }
 
     // Killer move bonus (below captures, above quiet moves)
     if (ctx.killers[0]) |k| {
         if (k.start == m.start and k.end == m.end) {
-            ret += 1100;
+            score += 1100;
         }
     }
     if (ctx.killers[1]) |k| {
         if (k.start == m.start and k.end == m.end) {
-            ret += 1000;
+            score += 1000;
         }
     }
 
     // Countermove bonus (between killers and history)
     if (ctx.countermove) |cm| {
         if (cm.start == m.start and cm.end == m.end) {
-            ret += 1050;
+            score += 1050;
         }
     }
 
@@ -1457,9 +1186,9 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
         const is_promotion = ctx.state.mailbox[m.start] == piece.pawn and
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
-            ret += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 32);
+            score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 32);
         }
     }
 
-    return ret;
+    return score;
 }

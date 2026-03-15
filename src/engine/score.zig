@@ -38,18 +38,21 @@ pub fn Score(comptime T: type) type {
             return .{ .v = self.v * vec_factor };
         }
 
-        pub fn taper(self: Self, phase: i32) i32 {
-            const mg: i32 = switch (T) {
-                i16 => self.v[0],
-                f64 => @intFromFloat(self.v[0]),
-                else => unreachable,
-            };
-            const eg: i32 = switch (T) {
-                i16 => self.v[1],
-                f64 => @intFromFloat(self.v[1]),
-                else => unreachable,
-            };
-            return @divTrunc(mg * phase + eg * (max_phase_mg - phase), max_phase_mg);
+        // Returns i32 when T=i16, f64 when T=f64. The f64 path is used by
+        // evaluateWithParamsF64 so that MSE accumulation never truncates gradient
+        // signal through integer rounding mid-run.
+        pub fn taper(self: Self, phase: i32) if (T == f64) f64 else i32 {
+            if (T == f64) {
+                const mg: f64 = self.v[0];
+                const eg: f64 = self.v[1];
+                const p: f64 = @floatFromInt(phase);
+                const mp: f64 = @floatFromInt(max_phase_mg);
+                return (mg * p + eg * (mp - p)) / mp;
+            } else {
+                const mg: i32 = self.v[0];
+                const eg: i32 = self.v[1];
+                return @divTrunc(mg * phase + eg * (max_phase_mg - phase), max_phase_mg);
+            }
         }
 
         pub fn midgame(self: Self) T {

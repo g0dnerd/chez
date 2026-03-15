@@ -165,6 +165,7 @@ pub fn fromFen(fen: []const u8) !State {
     var en_passant_file: ?Square = null;
     var castling_rights = castling.no_legal;
     var halfmove_clock: ?u16 = null;
+    var fullmove_clock: ?u16 = null;
 
     var halfmove_start: usize = 0;
     var fullmove_start: usize = 0;
@@ -346,6 +347,11 @@ pub fn fromFen(fen: []const u8) !State {
                         fullmove_start = i + 1;
                         state = .fullmove;
                     },
+                    '-' => {
+                        halfmove_clock = 0;
+                        fullmove_clock = 1;
+                        break;
+                    },
                     else => return error.InvalidCharacter,
                 }
             },
@@ -358,7 +364,9 @@ pub fn fromFen(fen: []const u8) !State {
         }
     }
 
-    const fullmove_clock = std.fmt.parseInt(u16, fen[fullmove_start..], 10) catch return error.InvalidFullmoveClock;
+    if (!(fullmove_clock == null)) {
+        fullmove_clock = std.fmt.parseInt(u16, fen[fullmove_start..], 10) catch return error.InvalidFullmoveClock;
+    }
 
     const all_pieces = [6]Bitboard{ pawns, knights, bishops, rooks, queens, kings };
     var mailbox: [64]?Piece = @splat(null);
@@ -377,7 +385,7 @@ pub fn fromFen(fen: []const u8) !State {
         .en_passant = en_passant,
         .in_check = null,
         .halfmove_clock = halfmove_clock.?,
-        .fullmove_clock = fullmove_clock,
+        .fullmove_clock = fullmove_clock.?,
         .all_pieces = white_pieces.bitOr(Bitboard, black_pieces),
         .mailbox = mailbox,
     };

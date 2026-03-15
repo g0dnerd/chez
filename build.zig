@@ -96,6 +96,21 @@ pub fn build(b: *std.Build) !void {
     }
     bench_step.dependOn(&run_bench.step);
 
+    const tune_exe = b.addExecutable(.{
+        .name = "tune",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tune.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "chez", .module = chez_mod }},
+        }),
+    });
+    const tune_step = b.step("tune", "Run Texel SPSA tuner");
+    const run_tune = b.addRunArtifact(tune_exe);
+    if (b.args) |args| run_tune.addArgs(args);
+    tune_step.dependOn(&run_tune.step);
+    b.installArtifact(tune_exe);
+
     const uci = b.addExecutable(.{
         .name = "uci",
         .root_module = b.createModule(.{
