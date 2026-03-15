@@ -1372,6 +1372,21 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     }
 }
 
+// Standalone quiescence evaluation for use outside of search (e.g. quiet filtering).
+// Runs qsearch with a full window and no time constraints.
+pub fn quiescenceEval(state: *const State) i32 {
+    var mutable_state = state.*;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const now = std.Io.Clock.awake.now(io);
+    var shared = SharedSearchState{
+        .max_depth = 0,
+        .io = io,
+        .start_time = now,
+    };
+    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared);
+}
+
 pub fn isGameOver(state: *const State) ?GameResult {
     return isGameOverWithHistory(state, null);
 }

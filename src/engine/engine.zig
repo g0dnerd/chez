@@ -8,6 +8,7 @@ pub const State = @import("State.zig");
 pub const book = @import("book.zig");
 pub const castling = @import("castling.zig");
 pub const evaluation = @import("evaluation.zig");
+pub const params = @import("params.zig");
 pub const movegen = @import("movegen.zig");
 pub const piece = @import("piece.zig");
 pub const square = @import("square.zig");
