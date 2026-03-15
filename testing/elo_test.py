@@ -25,7 +25,6 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 BUILDS_DIR = SCRIPT_DIR / ".builds"
 RESULTS_DIR = SCRIPT_DIR / "results"
 DEFAULT_BOOK = "/home/paul/projects/chez/testing/books/komodo.bin"
-BOOK_URL = "https://www.sp-cc.de/files/8moves_v3.pgn"
 
 # Worktrees created during this run, cleaned up on exit
 _active_worktrees: list[Path] = []

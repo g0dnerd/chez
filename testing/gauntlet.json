@@ -1,0 +1,40 @@
+{
+  "_comment": "Opponent ratings: https://www.computerchess.org.uk/ccrl/",
+  "time_control": "2+1",
+  "rounds_per_opponent": 30,
+  "concurrency": 6,
+  "threads": 2,
+  "rating_list": "CCRL Blitz",
+  "opponents": [
+    {
+      "name": "Stockfish (2400)",
+      "cmd": "stockfish",
+      "rating": 2400,
+      "proto": "uci",
+      "options": {
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2400"
+      }
+    },
+    {
+      "name": "Stockfish (2600)",
+      "cmd": "stockfish",
+      "rating": 2600,
+      "proto": "uci",
+      "options": {
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2600"
+      }
+    },
+    {
+      "name": "Stockfish (2800)",
+      "cmd": "stockfish",
+      "rating": 2800,
+      "proto": "uci",
+      "options": {
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2800"
+      }
+    }
+  ]
+}
