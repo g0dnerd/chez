@@ -1,4 +1,5 @@
 /zig-out
+/.claude
 /.zig-cache
 /target
 alpha_zero.md
