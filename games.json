@@ -142,5 +142,14 @@
     "depth": 15,
     "threads": 4,
     "commit": "749f829652a37cf2165d9d44e05e885468044b57"
+  },
+  {
+    "as": "white",
+    "versus": "komodo 25",
+    "result": "draw",
+    "pgn": "1. d4 d5 2. Nf3 Nf6 3. c4 c6 4. Nc3 dxc4 5. a4 Bf5 6. Ne5 Nbd7 7. Nxc4 Nb6 8. Ne5 a5 9. g3 e6 10. Bg2 Bb4 11. O-O O-O 12. e3 Nbd5 13. Bd2 h6 14. Qe2 Nb6 15. e4 Bh7 16. Qe3 Nfd7 17. Nxd7 Qxd7 18. b3 Rfd8 19. Ne2 Bxd2 20. Qxd2 c5 21. Rfd1 cxd4 22. Qxd4 Qxd4 23. Nxd4 Rd7 24. Nb5 Rad8 25. Rxd7 Rxd7 26. Kf1 Rd2 27. Rc1 Bg6 28. Rc7 Bh5 29. f3 f5 30. Rxb7 Nd7 31. exf5 exf5 32. Rc7 Nf6 33. Rc8+ Kh7 34. Bh3 g6 35. Rc6 Nd5 36. g4 fxg4 37. fxg4 Rxh2 38. gxh5 Rxh3 39. hxg6+ Kh8 40. Nd4 Rd3 41. Ne6 Ne7 42. g7+ Kh7 43. Ra6 Re3 44. Kf2 Re5 45. Kg3 h5 46. Kf4 Ng6+ 47. Kf3 Ne7 48. Kf4 Ng6+ 49. Kf3 Ne7 50. Kf4 1/2-1/2",
+    "depth": 17,
+    "threads": 4,
+    "commit": "5d91365ad17660766f8e399554a0c9fbe4aea7f2"
   }
 ]
