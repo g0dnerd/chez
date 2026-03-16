@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{.{ .name = "chez", .module = chez_mod }},
         }),
     });
+    tune_exe.root_module.addImport("kore", kore);
     const tune_step = b.step("tune", "Run Texel SPSA tuner");
     const run_tune = b.addRunArtifact(tune_exe);
     if (b.args) |args| run_tune.addArgs(args);

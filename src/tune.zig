@@ -24,6 +24,7 @@
 //   --skip-k-tune             Skip K-tuning (use K=1.0 unless --k supplied)
 
 const std = @import("std");
+const kore = @import("kore");
 const chez = @import("chez");
 const params_mod = chez.engine.params;
 const PARAM_COUNT = params_mod.PARAM_COUNT;
@@ -35,118 +36,94 @@ const mse = @import("tuner/mse.zig");
 const spsa_mod = @import("tuner/spsa.zig");
 const codegen = @import("tuner/codegen.zig");
 
+const Args = struct {
+    dataset: []const u8,
+    output_path: ?[]const u8,
+    max_positions: ?usize,
+    threads: ?usize,
+    iterations: ?usize,
+    batch_size: ?usize,
+    a: ?f64,
+    big_a: ?f64,
+    alpha: ?f64,
+    c: ?f64,
+    gamma: ?f64,
+    k: ?f64,
+    k_only: ?bool,
+    checkpoint_interval: ?usize,
+    calibrate_n: ?usize,
+    skip_calibrate: ?bool,
+    skip_k_tune: ?bool,
+};
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.page_allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
     const io = threaded.io();
 
-    // ==================================================================
-    // Parse CLI arguments
-    // ==================================================================
+    const arg_parser = try kore.args.declarative.Parser(Args);
 
-    var dataset_path: ?[]const u8 = null;
-    var output_path: []const u8 = "src/engine/params.zig";
-    var max_positions: usize = 5_000_000;
-    var k_value: ?f64 = null;
-    var k_only: bool = false;
-    var skip_calibrate: bool = false;
-    var skip_k_tune: bool = false;
-    var calibrate_n: usize = 50;
+    var args_iter = if (@import("builtin").os.tag == .windows)
+        try init.args.iterateAllocator(std.heap.page_allocator)
+    else
+        init.args.iterate();
+    const args = try arg_parser.parse(&args_iter);
+
+    // Parse CLI arguments
+    const output_path: []const u8 = args.output_path orelse "src/engine/params.zig";
+    const max_positions: usize = args.max_positions orelse 5_000_000;
+    const calibrate_n: usize = args.calibrate_n orelse 50;
     var cfg = spsa_mod.SpsaConfig{};
 
-    var args = try init.args.iterateAllocator(allocator);
-    defer args.deinit();
-    _ = args.skip(); // program name
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--dataset")) {
-            dataset_path = args.next() orelse return cliError("--dataset requires a path");
-        } else if (std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse return cliError("--output requires a path");
-        } else if (std.mem.eql(u8, arg, "--max-positions")) {
-            const v = args.next() orelse return cliError("--max-positions requires a number");
-            max_positions = std.fmt.parseInt(usize, v, 10) catch return cliError("--max-positions: invalid number");
-        } else if (std.mem.eql(u8, arg, "--threads")) {
-            const v = args.next() orelse return cliError("--threads requires a number");
-            cfg.num_threads = std.fmt.parseInt(usize, v, 10) catch return cliError("--threads: invalid number");
-        } else if (std.mem.eql(u8, arg, "--iterations")) {
-            const v = args.next() orelse return cliError("--iterations requires a number");
-            cfg.iterations = std.fmt.parseInt(usize, v, 10) catch return cliError("--iterations: invalid number");
-        } else if (std.mem.eql(u8, arg, "--batch-size")) {
-            const v = args.next() orelse return cliError("--batch-size requires a number");
-            cfg.batch_size = std.fmt.parseInt(usize, v, 10) catch return cliError("--batch-size: invalid number");
-        } else if (std.mem.eql(u8, arg, "--a")) {
-            const v = args.next() orelse return cliError("--a requires a number");
-            cfg.a = std.fmt.parseFloat(f64, v) catch return cliError("--a: invalid number");
-        } else if (std.mem.eql(u8, arg, "--big-a")) {
-            const v = args.next() orelse return cliError("--big-a requires a number");
-            cfg.big_a = std.fmt.parseFloat(f64, v) catch return cliError("--big-a: invalid number");
-        } else if (std.mem.eql(u8, arg, "--alpha")) {
-            const v = args.next() orelse return cliError("--alpha requires a number");
-            cfg.alpha = std.fmt.parseFloat(f64, v) catch return cliError("--alpha: invalid number");
-        } else if (std.mem.eql(u8, arg, "--c")) {
-            const v = args.next() orelse return cliError("--c requires a number");
-            cfg.c = std.fmt.parseFloat(f64, v) catch return cliError("--c: invalid number");
-        } else if (std.mem.eql(u8, arg, "--gamma")) {
-            const v = args.next() orelse return cliError("--gamma requires a number");
-            cfg.gamma = std.fmt.parseFloat(f64, v) catch return cliError("--gamma: invalid number");
-        } else if (std.mem.eql(u8, arg, "--k")) {
-            const v = args.next() orelse return cliError("--k requires a number");
-            k_value = std.fmt.parseFloat(f64, v) catch return cliError("--k: invalid number");
-        } else if (std.mem.eql(u8, arg, "--k-only")) {
-            k_only = true;
-        } else if (std.mem.eql(u8, arg, "--checkpoint-interval")) {
-            const v = args.next() orelse return cliError("--checkpoint-interval requires a number");
-            cfg.checkpoint_interval = std.fmt.parseInt(usize, v, 10) catch return cliError("--checkpoint-interval: invalid number");
-        } else if (std.mem.eql(u8, arg, "--calibrate-n")) {
-            const v = args.next() orelse return cliError("--calibrate-n requires a number");
-            calibrate_n = std.fmt.parseInt(usize, v, 10) catch return cliError("--calibrate-n: invalid number");
-        } else if (std.mem.eql(u8, arg, "--skip-calibrate")) {
-            skip_calibrate = true;
-        } else if (std.mem.eql(u8, arg, "--skip-k-tune")) {
-            skip_k_tune = true;
-        } else {
-            std.debug.print("tune: unknown argument: {s}\n", .{arg});
-            return error.UnknownArgument;
-        }
+    if (args.a) |a| {
+        cfg.a = a;
+    }
+    if (args.big_a) |big_a| {
+        cfg.big_a = big_a;
+    }
+    if (args.alpha) |alpha| {
+        cfg.alpha = alpha;
+    }
+    if (args.c) |c| {
+        cfg.c = c;
+    }
+    if (args.gamma) |gamma| {
+        cfg.gamma = gamma;
+    }
+    if (args.iterations) |iterations| {
+        cfg.iterations = iterations;
+    }
+    if (args.batch_size) |batch_size| {
+        cfg.batch_size = batch_size;
+    }
+    if (args.checkpoint_interval) |checkpoint_interval| {
+        cfg.checkpoint_interval = checkpoint_interval;
+    }
+    if (args.threads) |num_threads| {
+        cfg.num_threads = num_threads;
     }
 
-    const dp = dataset_path orelse {
-        std.debug.print("tune: --dataset is required\n", .{});
-        return error.MissingDataset;
-    };
+    const dataset_path = args.dataset;
 
-    // ==================================================================
     // Load dataset
-    // ==================================================================
-
-    std.debug.print("tune: loading dataset from {s}\n", .{dp});
-    const positions = try dataset.load(io, allocator, dp, max_positions);
-    // Note: positions are never freed — the tuner owns them for its lifetime.
+    std.debug.print("tune: loading dataset from {s}\n", .{dataset_path});
+    const positions = try dataset.load(io, allocator, dataset_path, max_positions);
     std.debug.print("tune: {d} positions loaded\n", .{positions.len});
-
     if (positions.len == 0) {
         std.debug.print("tune: no positions loaded — check dataset path and format\n", .{});
         return error.EmptyDataset;
     }
 
-    // ==================================================================
     // Initialise the float parameter vector from default_params
-    // ==================================================================
-
-    // Using a static array is fine here; PARAM_COUNT = 1055 (8 KB).
     var floats: [PARAM_COUNT]f64 = undefined;
     params_mod.default_params.toFloats(&floats);
 
-    // ==================================================================
     // K-tuning (ternary search over K in [0.5, 3.0])
-    // ==================================================================
-
-    const k: f64 = if (k_value) |kv| blk: {
-        std.debug.print("tune: using supplied K = {d:.4}\n", .{kv});
-        break :blk kv;
-    } else if (skip_k_tune) blk: {
+    const k: f64 = if (args.k) |k| blk: {
+        std.debug.print("tune: using supplied K = {d:.4}\n", .{k});
+        break :blk k;
+    } else if (args.skip_k_tune) |_| blk: {
         std.debug.print("tune: skipping K-tune, using K = 1.0\n", .{});
         break :blk 1.0;
     } else blk: {
@@ -156,41 +133,28 @@ pub fn main(init: std.process.Init.Minimal) !void {
         break :blk tuned_k;
     };
 
-    if (k_only) {
+    if (args.k_only) |_| {
         std.debug.print("tune: --k-only done. K = {d:.4}\n", .{k});
         return;
     }
 
-    // ==================================================================
     // Calibration pass: estimate a good value for the `a` parameter
-    // ==================================================================
-
-    if (!skip_calibrate) {
+    if (args.skip_calibrate == null) {
         try runCalibration(positions, &floats, k, cfg, calibrate_n, allocator);
     }
 
-    // ==================================================================
     // SPSA optimisation
-    // ==================================================================
-
     try spsa_mod.run(io, positions, &floats, k, cfg, output_path, allocator);
 
-    // ==================================================================
     // Write final output
-    // ==================================================================
-
     const final_params = Params.fromFloats(&floats);
     try codegen.write(io, allocator, &final_params, output_path);
     std.debug.print("tune: final params written to {s}\n", .{output_path});
 }
 
-// ==============================================================================
 // K-tuning: ternary search over [0.5, 3.0]
-// ==============================================================================
-//
 // K normalises the engine's internal unit scale to the [0,1] WDL sigmoid. It
 // is tuned once before SPSA and frozen for the entire optimisation run.
-
 fn tuneK(
     positions: []const dataset.Position,
     floats: []const f64,
@@ -220,15 +184,11 @@ fn tuneK(
     return (lo + hi) / 2.0;
 }
 
-// ==============================================================================
 // Calibration pass: suggest an `a` value
-// ==============================================================================
-//
 // Runs `calibrate_n` SPSA iterations on the current float vector without
 // updating it, collecting |g_hat| samples. Prints a suggested `a` value for a
 // desired first-step size of 2.0 float units (a conservative start that avoids
 // over-shooting in early iterations while remaining responsive).
-
 fn runCalibration(
     positions: []const dataset.Position,
     floats: []f64,
