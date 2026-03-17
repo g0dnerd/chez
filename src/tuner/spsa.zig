@@ -38,6 +38,7 @@ pub const SpsaConfig = struct {
     batch_size: usize = 16_384,
     checkpoint_interval: usize = 1_000,
     num_threads: usize = 8,
+    early_stop: bool = true,
 };
 
 // ==============================================================================
@@ -60,9 +61,10 @@ pub const SpsaConfig = struct {
 const FrozenEntry = struct { index: usize, value: f64 };
 
 // Computed at comptime so the freeze loop has no branches.
-const frozen_entries: [38]FrozenEntry = blk: {
-    // 2 (king pv) + 2 (ppb rank0) + 2 (ppb rank7) + 16 (pst rank0) + 16 (pst rank7) = 38
-    var entries: [38]FrozenEntry = undefined;
+// 2 (king pv) + 2 (ppb rank0) + 2 (ppb rank7) + 16 (pst rank0) + 16 (pst rank7)
+// + 92 (dead mobility: knight 9-27, bishop 14-27, rook 15-27) = 130
+const frozen_entries: [130]FrozenEntry = blk: {
+    var entries: [130]FrozenEntry = undefined;
     var i: usize = 0;
 
     // King piece value (MG and EG frozen at 20000).
@@ -101,7 +103,42 @@ const frozen_entries: [38]FrozenEntry = blk: {
         i += 1;
     }
 
+    // Dead mobility slots: knight indices 9-27, bishop 14-27, rook 15-27.
+    // These are never read by the eval (max moves: knight=8, bishop=13, rook=14).
+    // 46 Score slots × 2 floats = 92 entries.
+    const dead = [3][2]usize{ .{ 0, 9 }, .{ 1, 14 }, .{ 2, 15 } };
+    for (dead) |d| {
+        for (d[1]..28) |m| {
+            const flat = 28 + d[0] * 56 + m * 2;
+            entries[i] = .{ .index = flat, .value = 0.0 };
+            i += 1;
+            entries[i] = .{ .index = flat + 1, .value = 0.0 };
+            i += 1;
+        }
+    }
+
     break :blk entries;
+};
+
+// Per-parameter perturbation scale factors (comptime).
+// Groups: piece_values (5.0), passed_pawn (2.0), mobility (1.0),
+//         named scalars + kpp (1.0), PST (0.5).
+pub const c_scales: [PARAM_COUNT]f64 = blk: {
+    @setEvalBranchQuota(PARAM_COUNT * 2);
+    var scales: [PARAM_COUNT]f64 = undefined;
+    for (0..PARAM_COUNT) |i| {
+        scales[i] = if (i < 12)
+            5.0 // piece values
+        else if (i < 28)
+            2.0 // passed pawn bonus
+        else if (i < 252)
+            1.0 // mobility bonus
+        else if (i < 287)
+            1.0 // named scalars + king_proximity_passer
+        else
+            0.5; // PST
+    }
+    break :blk scales;
 };
 
 // Snap all frozen indices back to their default values after a gradient step.
@@ -114,6 +151,10 @@ fn restoreFrozen(floats: []f64) void {
 // ==============================================================================
 // SPSA run
 // ==============================================================================
+
+// Early-stopping ring buffer size. We log full MSE every 100 iterations,
+// so 50 entries = 5,000 iteration lookback window.
+const early_stop_window = 50;
 
 pub fn run(
     io: std.Io,
@@ -143,10 +184,16 @@ pub fn run(
     std.Io.random(io, std.mem.asBytes(&seed));
     var rng = std.Random.DefaultPrng.init(seed);
 
-    std.debug.print("SPSA: starting {d} iterations, batch={d}, threads={d}\n", .{
+    // Early-stopping ring buffer for full-MSE values (logged every 100 iters).
+    var mse_ring: [early_stop_window]f64 = undefined;
+    var mse_ring_idx: usize = 0;
+    var mse_ring_filled: bool = false;
+
+    std.debug.print("SPSA: starting {d} iterations, batch={d}, threads={d}, frozen={d}\n", .{
         cfg.iterations,
         cfg.batch_size,
         cfg.num_threads,
+        frozen_entries.len,
     });
 
     for (1..cfg.iterations + 1) |t| {
@@ -168,12 +215,13 @@ pub fn run(
             d.* = if (rng.random().boolean()) 1.0 else -1.0;
         }
 
-        // Build params_plus and params_minus by applying ±c_t * delta[i].
+        // Build params_plus and params_minus by applying ±c_t * c_scales[i] * delta[i].
         @memcpy(floats_plus, floats);
         @memcpy(floats_minus, floats);
         for (0..PARAM_COUNT) |i| {
-            floats_plus[i] += c_t * delta[i];
-            floats_minus[i] -= c_t * delta[i];
+            const pert = c_t * c_scales[i] * delta[i];
+            floats_plus[i] += pert;
+            floats_minus[i] -= pert;
         }
 
         // Evaluate both perturbations on the batch. ParamsF64 is constructed
@@ -184,13 +232,12 @@ pub fn run(
         const mse_plus = try mse.computeIndexed(positions, batch_indices, &params_plus, k, cfg.num_threads, allocator);
         const mse_minus = try mse.computeIndexed(positions, batch_indices, &params_minus, k, cfg.num_threads, allocator);
 
-        // SPSA gradient estimate: g_hat[i] = (MSE+ - MSE-) / (2 * c_t * delta[i]).
-        // For ±1 delta, 1/delta[i] == delta[i], so:
-        //   floats[i] -= a_t * g_hat * delta[i]
-        //              = a_t * (MSE+ - MSE-) / (2 * c_t) * delta[i]
-        const g_hat_scalar = (mse_plus - mse_minus) / (2.0 * c_t);
+        // SPSA gradient estimate. c_scales affects perturbation size only;
+        // the step size is kept uniform so that c_scales doesn't inversely
+        // scale the update (which would amplify PST noise).
+        const g_scalar = (mse_plus - mse_minus) / (2.0 * c_t);
         for (0..PARAM_COUNT) |i| {
-            floats[i] -= a_t * g_hat_scalar * delta[i];
+            floats[i] -= a_t * g_scalar * delta[i];
         }
 
         // Snap frozen indices back. This must happen every iteration, not just
@@ -202,6 +249,24 @@ pub fn run(
             const current_params = ParamsF64.fromFloats(floats);
             const full_mse = try mse.compute(positions, &current_params, k, cfg.num_threads, allocator);
             std.debug.print("iter {d:>7}  full_mse={d:.6}\n", .{ t, full_mse });
+
+            // Early stopping check.
+            if (cfg.early_stop) {
+                const oldest = mse_ring[mse_ring_idx]; // will be overwritten
+                mse_ring[mse_ring_idx] = full_mse;
+                mse_ring_idx = (mse_ring_idx + 1) % early_stop_window;
+                if (!mse_ring_filled) {
+                    if (mse_ring_idx == 0) mse_ring_filled = true;
+                } else {
+                    // oldest is the value from `early_stop_window` logs ago.
+                    // If relative improvement is below threshold, stop.
+                    const rel_improvement = (oldest - full_mse) / @abs(oldest);
+                    if (rel_improvement < 1e-6) {
+                        std.debug.print("SPSA: early stop at iter {d} (rel improvement {e:.2} < 1e-6)\n", .{ t, rel_improvement });
+                        break;
+                    }
+                }
+            }
         }
 
         // Checkpoint: round to i16 and write params file.

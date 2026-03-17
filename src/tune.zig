@@ -22,6 +22,7 @@
 //   --calibrate-n <n>         Calibration iterations before SPSA [50]
 //   --skip-calibrate          Skip the calibration output pass
 //   --skip-k-tune             Skip K-tuning (use K=1.0 unless --k supplied)
+//   --no-early-stop           Disable early stopping (run all iterations)
 
 const std = @import("std");
 const kore = @import("kore");
@@ -54,6 +55,7 @@ const Args = struct {
     calibrate_n: ?usize,
     skip_calibrate: ?bool,
     skip_k_tune: ?bool,
+    no_early_stop: ?bool,
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -103,6 +105,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (args.threads) |num_threads| {
         cfg.num_threads = num_threads;
     }
+    if (args.no_early_stop != null) {
+        cfg.early_stop = false;
+    }
 
     const dataset_path = args.dataset;
 
@@ -138,9 +143,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return;
     }
 
-    // Calibration pass: estimate a good value for the `a` parameter
+    // Calibration pass: estimate and auto-apply the `a` parameter
     if (args.skip_calibrate == null) {
-        try runCalibration(positions, &floats, k, cfg, calibrate_n, allocator);
+        const suggested_a = try runCalibration(positions, &floats, k, cfg, calibrate_n, allocator);
+        if (args.a == null) {
+            cfg.a = suggested_a;
+            std.debug.print("tune: auto-applied calibrated a = {d:.1}\n", .{suggested_a});
+        }
     }
 
     // SPSA optimisation
@@ -184,9 +193,9 @@ fn tuneK(
     return (lo + hi) / 2.0;
 }
 
-// Calibration pass: suggest an `a` value
+// Calibration pass: estimate a good `a` value
 // Runs `calibrate_n` SPSA iterations on the current float vector without
-// updating it, collecting |g_hat| samples. Prints a suggested `a` value for a
+// updating it, collecting |g_hat| samples. Returns a suggested `a` value for a
 // desired first-step size of 2.0 float units (a conservative start that avoids
 // over-shooting in early iterations while remaining responsive).
 fn runCalibration(
@@ -196,7 +205,7 @@ fn runCalibration(
     cfg: spsa_mod.SpsaConfig,
     calibrate_n: usize,
     allocator: std.mem.Allocator,
-) !void {
+) !f64 {
     std.debug.print("Calibration ({d} iters):\n", .{calibrate_n});
 
     // Temporary buffers for the calibration run.
@@ -227,8 +236,9 @@ fn runCalibration(
         @memcpy(floats_plus, floats);
         @memcpy(floats_minus, floats);
         for (0..PARAM_COUNT) |i| {
-            floats_plus[i] += c_t * delta[i];
-            floats_minus[i] -= c_t * delta[i];
+            const pert = c_t * spsa_mod.c_scales[i] * delta[i];
+            floats_plus[i] += pert;
+            floats_minus[i] -= pert;
         }
 
         const params_plus = ParamsF64.fromFloats(floats_plus);
@@ -258,9 +268,11 @@ fn runCalibration(
         \\  avg |g_hat|    = {d:.6}
         \\  current a      = {d:.1}  ->  avg step = {d:.5}   (a_1 * avg_g_hat, where a_1 = a/(A+1)^alpha)
         \\  suggested a    = {d:.1}  for avg step = {d:.1}
-        \\  (pass --a {d:.1} to apply; or use --skip-calibrate to suppress this output)
+        \\  (auto-applied unless --a is set; use --skip-calibrate to suppress)
         \\
-    , .{ avg_abs_g_hat, cfg.a, current_avg_step, suggested_a, desired_step, suggested_a });
+    , .{ avg_abs_g_hat, cfg.a, current_avg_step, suggested_a, desired_step });
+
+    return suggested_a;
 }
 
 fn cliError(msg: []const u8) error{CliError} {

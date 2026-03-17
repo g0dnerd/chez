@@ -598,17 +598,10 @@ fn evaluateGeneric(state: *const State, p: anytype) @TypeOf(p.piece_values[0].ta
     const total = our.score.add(our_q).sub(their.score).sub(their_q).add(p.tempo);
     return total.taper(phase);
 }
-
-// Production entry point. Passes default_params as a comptime-constant address;
-// LLVM constant-propagates field accesses under ReleaseFast, giving identical
-// performance to the original named constants.
 pub fn evaluate(state: *const State) i32 {
     return evaluateGeneric(state, &params_mod.default_params);
 }
 
-// Called by the tuner with i16 params (production type). Because the
-// production call passes a comptime-constant address, LLVM inlines field
-// accesses identically to the original named constants.
 pub fn evaluateWithParams(state: *const State, p: *const Params) i32 {
     return evaluateGeneric(state, p);
 }
