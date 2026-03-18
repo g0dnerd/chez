@@ -351,35 +351,36 @@ pub const ParamsF64 = struct {
 
 pub const default_params: Params = .{
     .piece_values = .{
-        Score.init(238, 218), // pawn
-        Score.init(1077, 669), // knight
-        Score.init(1057, 657), // bishop
-        Score.init(1386, 1151), // rook
-        Score.init(2575, 2647), // queen
+        Score.init(126, 208), // pawn
+        Score.init(781, 854), // knight
+        Score.init(825, 915), // bishop
+        Score.init(1276, 1380), // rook
+        Score.init(2538, 2682), // queen
+        Score.init(20000, 20000), // king
         Score.init(20000, 20000), // king (frozen)
     },
     .passed_pawn_bonus = .{
         Score.init(0, 0), // rank 0 (frozen)
-        Score.init(16, -116), // rank 1
-        Score.init(-11, -82), // rank 2
-        Score.init(-25, -8), // rank 3
-        Score.init(23, 62), // rank 4
-        Score.init(67, 229), // rank 5
-        Score.init(189, 386), // rank 6
+        Score.init(9, 28), // rank 1
+        Score.init(15, 31), // rank 2
+        Score.init(17, 39), // rank 3
+        Score.init(64, 70), // rank 4
+        Score.init(171, 177), // rank 5
+        Score.init(277, 260), // rank 6
         Score.init(0, 0), // rank 7 (frozen)
     },
     .mobility_bonus = .{
         // Knights (max 8)
         .{
-            Score.init(-88, -91),
-            Score.init(-53, -57),
-            Score.init(-21, -12),
-            Score.init(-4, -3),
-            Score.init(11, -2),
-            Score.init(25, 19),
-            Score.init(42, 9),
-            Score.init(50, 18),
-            Score.init(42, -8),
+            Score.init(-62, -81),
+            Score.init(-53, -56),
+            Score.init(-12, -31),
+            Score.init(-4, -16),
+            Score.init(3, 5),
+            Score.init(13, 11),
+            Score.init(22, 17),
+            Score.init(28, 20),
+            Score.init(33, 25),
             Score.init(0, 0),
             Score.init(0, 0),
             Score.init(0, 0),
@@ -402,20 +403,20 @@ pub const default_params: Params = .{
         },
         // Bishops (max 13)
         .{
-            Score.init(-76, -51),
-            Score.init(-34, -16),
-            Score.init(8, -25),
-            Score.init(17, 9),
-            Score.init(43, 30),
-            Score.init(60, 40),
-            Score.init(66, 61),
-            Score.init(73, 65),
-            Score.init(81, 74),
-            Score.init(93, 64),
-            Score.init(89, 84),
-            Score.init(89, 60),
-            Score.init(104, 81),
-            Score.init(126, 55),
+            Score.init(-48, -59),
+            Score.init(-20, -23),
+            Score.init(16, -3),
+            Score.init(26, 13),
+            Score.init(38, 24),
+            Score.init(51, 42),
+            Score.init(55, 54),
+            Score.init(63, 57),
+            Score.init(63, 65),
+            Score.init(68, 73),
+            Score.init(81, 78),
+            Score.init(81, 86),
+            Score.init(91, 88),
+            Score.init(98, 97),
             Score.init(0, 0),
             Score.init(0, 0),
             Score.init(0, 0),
@@ -433,21 +434,21 @@ pub const default_params: Params = .{
         },
         // Rooks (max 14)
         .{
-            Score.init(-89, -66),
-            Score.init(-8, -17),
-            Score.init(13, 26),
-            Score.init(12, 48),
-            Score.init(-1, 82),
-            Score.init(14, 97),
-            Score.init(13, 109),
-            Score.init(21, 116),
-            Score.init(35, 120),
-            Score.init(43, 134),
-            Score.init(39, 151),
-            Score.init(45, 157),
-            Score.init(66, 162),
-            Score.init(55, 166),
-            Score.init(70, 135),
+            Score.init(-60, -78),
+            Score.init(-20, -17),
+            Score.init(2, 23),
+            Score.init(3, 39),
+            Score.init(3, 70),
+            Score.init(11, 99),
+            Score.init(22, 103),
+            Score.init(31, 121),
+            Score.init(40, 134),
+            Score.init(40, 139),
+            Score.init(41, 158),
+            Score.init(48, 164),
+            Score.init(57, 168),
+            Score.init(57, 169),
+            Score.init(62, 172),
             Score.init(0, 0),
             Score.init(0, 0),
             Score.init(0, 0),
@@ -464,140 +465,123 @@ pub const default_params: Params = .{
         },
         // Queens (max 27)
         .{
-            Score.init(-40, -83),
-            Score.init(-30, -34),
-            Score.init(-14, -23),
-            Score.init(-6, 22),
-            Score.init(8, 23),
-            Score.init(24, 39),
-            Score.init(35, 68),
-            Score.init(43, 79),
-            Score.init(50, 91),
-            Score.init(54, 109),
-            Score.init(60, 94),
-            Score.init(70, 107),
-            Score.init(78, 102),
-            Score.init(67, 147),
-            Score.init(90, 127),
-            Score.init(76, 135),
-            Score.init(68, 147),
-            Score.init(85, 147),
-            Score.init(80, 155),
-            Score.init(85, 156),
-            Score.init(98, 152),
-            Score.init(94, 193),
-            Score.init(103, 168),
-            Score.init(96, 164),
-            Score.init(108, 169),
-            Score.init(127, 188),
-            Score.init(116, 186),
-            Score.init(129, 229),
+            Score.init(-30, -48),
+            Score.init(-12, -30),
+            Score.init(-8, -7),
+            Score.init(-9, 19),
+            Score.init(20, 40),
+            Score.init(23, 55),
+            Score.init(23, 59),
+            Score.init(35, 75),
+            Score.init(38, 78),
+            Score.init(53, 96),
+            Score.init(64, 96),
+            Score.init(65, 100),
+            Score.init(65, 121),
+            Score.init(66, 127),
+            Score.init(67, 131),
+            Score.init(67, 133),
+            Score.init(72, 136),
+            Score.init(72, 141),
+            Score.init(77, 147),
+            Score.init(79, 150),
+            Score.init(93, 151),
+            Score.init(108, 168),
+            Score.init(108, 168),
+            Score.init(108, 171),
+            Score.init(110, 182),
+            Score.init(114, 182),
+            Score.init(114, 192),
+            Score.init(116, 218),
         },
     },
-    .bishop_pair = Score.init(81, 120),
-    .rook_open_file = Score.init(116, -18),
-    .rook_semi_open = Score.init(50, 17),
-    .rook_on_seventh = Score.init(16, 17),
-    .isolated_pawn = Score.init(-43, -10),
-    .doubled_pawn = Score.init(-1, -42),
-    .backward_pawn = Score.init(-24, -17),
-    .connected_pawn = Score.init(16, 9),
-    .protected_passed_pawn = Score.init(50, 16),
-    .blocked_passed_pawn = Score.init(-47, -81),
-    .rook_behind_passer = Score.init(33, 23),
-    .free_passed_pawn = Score.init(-36, -41),
-    .knight_outpost_defended = Score.init(49, 46),
-    .bishop_outpost_defended = Score.init(35, 5),
-    .pawn_shield = Score.init(29, -16),
-    .pawn_shield_missing = Score.init(-16, 13),
-    .tempo = Score.init(69, 63),
-    .king_proximity_passer = 38,
+    .bishop_pair = Score.init(30, 50),
+    .rook_open_file = Score.init(48, 27),
+    .rook_semi_open = Score.init(19, 7),
+    .rook_on_seventh = Score.init(20, 40),
+    .isolated_pawn = Score.init(-15, -20),
+    .doubled_pawn = Score.init(-10, -20),
+    .backward_pawn = Score.init(-9, -22),
+    .connected_pawn = Score.init(7, 10),
+    .protected_passed_pawn = Score.init(15, 30),
+    .blocked_passed_pawn = Score.init(-10, -20),
+    .rook_behind_passer = Score.init(16, 29),
+    .free_passed_pawn = Score.init(8, 18),
+    .knight_outpost_defended = Score.init(56, 34),
+    .bishop_outpost_defended = Score.init(31, 23),
+    .pawn_shield = Score.init(15, 0),
+    .pawn_shield_missing = Score.init(-10, 0),
+    .tempo = Score.init(28, 28),
+    .king_proximity_passer = 8,
     .pst = .{
         // Pawns (rank 0 and 7 frozen at 0)
         .{
-            Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0),
-            Score.init(-42,-11), Score.init(-26,-10), Score.init(-24,10), Score.init(-1,26), Score.init(-5,7), Score.init(57,20), Score.init(72,-19), Score.init(-8,-22),
-            Score.init(-25,-21), Score.init(-39,-10), Score.init(7,-10), Score.init(1,-2), Score.init(47,0), Score.init(11,8), Score.init(72,-12), Score.init(18,-18),
-            Score.init(-32,-7), Score.init(-44,-1), Score.init(-7,-20), Score.init(34,-27), Score.init(27,-24), Score.init(40,-14), Score.init(-8,7), Score.init(-19,-9),
-            Score.init(8,21), Score.init(-5,8), Score.init(-15,20), Score.init(28,-15), Score.init(52,-10), Score.init(20,-9), Score.init(-8,18), Score.init(-5,11),
-            Score.init(10,33), Score.init(-41,24), Score.init(5,46), Score.init(5,4), Score.init(0,18), Score.init(10,-4), Score.init(-13,-1), Score.init(-3,23),
-            Score.init(-27,-2), Score.init(1,10), Score.init(-22,30), Score.init(-17,-10), Score.init(-21,23), Score.init(-14,38), Score.init(5,10), Score.init(-18,22),
-            Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0), Score.init(0,0),
+            Score.init(0, 0),    Score.init(0, 0),     Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),
+            Score.init(3, -10),  Score.init(3, -6),    Score.init(10, 10),  Score.init(19, 0),   Score.init(16, 14),  Score.init(19, 7),   Score.init(7, -5),   Score.init(-5, -19),
+            Score.init(-9, -10), Score.init(-15, -10), Score.init(11, -10), Score.init(15, 4),   Score.init(32, 4),   Score.init(22, 3),   Score.init(5, -6),   Score.init(-22, -4),
+            Score.init(-4, 6),   Score.init(-23, -2),  Score.init(6, -8),   Score.init(20, -4),  Score.init(40, -13), Score.init(17, -12), Score.init(4, -10),  Score.init(-8, -9),
+            Score.init(13, 10),  Score.init(0, 5),     Score.init(-13, 4),  Score.init(1, -5),   Score.init(11, -5),  Score.init(-2, -5),  Score.init(-13, 14), Score.init(5, 9),
+            Score.init(5, 28),   Score.init(-12, 20),  Score.init(-7, 21),  Score.init(22, 28),  Score.init(-8, 30),  Score.init(-5, 7),   Score.init(-15, 6),  Score.init(-8, 13),
+            Score.init(-7, 0),   Score.init(7, -11),   Score.init(-3, 12),  Score.init(-13, 21), Score.init(5, 25),   Score.init(-16, 19), Score.init(10, 4),   Score.init(-8, 7),
+            Score.init(0, 0),    Score.init(0, 0),     Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),    Score.init(0, 0),
         },
         // Knights
         .{
-            Score.init(-166,-105), Score.init(-64,-59), Score.init(-98,-53), Score.init(-81,-26), Score.init(-67,-25), Score.init(-64,-31), Score.init(-72,-61), Score.init(-179,-113),
-            Score.init(-101,-54), Score.init(-44,-80), Score.init(-34,-36), Score.init(-11,-6), Score.init(-1,-22), Score.init(-27,-41), Score.init(-37,-41), Score.init(-64,-64),
-            Score.init(-59,-52), Score.init(-29,-42), Score.init(-7,-4), Score.init(13,38), Score.init(26,27), Score.init(-5,-20), Score.init(-21,-44), Score.init(-72,-46),
-            Score.init(-34,-33), Score.init(3,-13), Score.init(29,16), Score.init(25,30), Score.init(43,18), Score.init(21,33), Score.init(13,-1), Score.init(-41,-33),
-            Score.init(-20,-37), Score.init(2,-5), Score.init(30,2), Score.init(40,53), Score.init(36,25), Score.init(48,19), Score.init(3,-3), Score.init(-12,-48),
-            Score.init(-42,-53), Score.init(-4,-41), Score.init(54,13), Score.init(67,27), Score.init(75,13), Score.init(71,-18), Score.init(13,-30), Score.init(-7,-59),
-            Score.init(-93,-63), Score.init(-3,-55), Score.init(29,-57), Score.init(21,14), Score.init(44,3), Score.init(6,-17), Score.init(-18,-10), Score.init(-67,-67),
-            Score.init(-192,-107), Score.init(-55,-113), Score.init(-63,-89), Score.init(-21,-15), Score.init(-42,-14), Score.init(-74,-40), Score.init(-102,-82), Score.init(-200,-102),
+            Score.init(-175, -96),  Score.init(-92, -65), Score.init(-74, -49), Score.init(-73, -21), Score.init(-73, -21), Score.init(-74, -49), Score.init(-92, -65), Score.init(-175, -96),
+            Score.init(-77, -67),   Score.init(-41, -54), Score.init(-27, -18), Score.init(-15, 8),   Score.init(-15, 8),   Score.init(-27, -18), Score.init(-41, -54), Score.init(-77, -67),
+            Score.init(-61, -40),   Score.init(-17, -27), Score.init(6, -8),    Score.init(12, 29),   Score.init(12, 29),   Score.init(6, -8),    Score.init(-17, -27), Score.init(-61, -40),
+            Score.init(-35, -35),   Score.init(8, -2),    Score.init(40, 13),   Score.init(49, 28),   Score.init(49, 28),   Score.init(40, 13),   Score.init(8, -2),    Score.init(-35, -35),
+            Score.init(-34, -45),   Score.init(13, -16),  Score.init(44, 9),    Score.init(51, 39),   Score.init(51, 39),   Score.init(44, 9),    Score.init(13, -16),  Score.init(-34, -45),
+            Score.init(-9, -51),    Score.init(22, -44),  Score.init(58, -16),  Score.init(53, 17),   Score.init(53, 17),   Score.init(58, -16),  Score.init(22, -44),  Score.init(-9, -51),
+            Score.init(-67, -69),   Score.init(-27, -50), Score.init(4, -51),   Score.init(37, 12),   Score.init(37, 12),   Score.init(4, -51),   Score.init(-27, -50), Score.init(-67, -69),
+            Score.init(-201, -100), Score.init(-83, -88), Score.init(-56, -56), Score.init(-26, -17), Score.init(-26, -17), Score.init(-56, -56), Score.init(-83, -88), Score.init(-201, -100),
         },
         // Bishops
         .{
-            Score.init(-53,-43), Score.init(13,-23), Score.init(0,-28), Score.init(-16,-8), Score.init(-21,-26), Score.init(-31,-32), Score.init(-4,-9), Score.init(-40,-66),
-            Score.init(-20,-24), Score.init(33,-9), Score.init(36,-19), Score.init(-6,0), Score.init(4,13), Score.init(18,-14), Score.init(86,-18), Score.init(-14,-34),
-            Score.init(11,-20), Score.init(1,20), Score.init(16,-5), Score.init(-3,16), Score.init(33,3), Score.init(31,-10), Score.init(24,7), Score.init(-3,-5),
-            Score.init(-4,-22), Score.init(14,-17), Score.init(11,6), Score.init(48,16), Score.init(39,24), Score.init(-1,-5), Score.init(31,-30), Score.init(-15,-21),
-            Score.init(-10,-36), Score.init(-9,10), Score.init(31,-14), Score.init(21,2), Score.init(41,22), Score.init(5,-32), Score.init(4,-11), Score.init(15,-19),
-            Score.init(-28,-54), Score.init(6,-5), Score.init(7,15), Score.init(22,-14), Score.init(29,-12), Score.init(3,12), Score.init(35,17), Score.init(19,-42),
-            Score.init(-13,-18), Score.init(-29,-27), Score.init(4,1), Score.init(-14,-4), Score.init(-33,-10), Score.init(10,7), Score.init(-27,-11), Score.init(-3,-42),
-            Score.init(-52,-60), Score.init(4,-54), Score.init(1,-32), Score.init(-20,-8), Score.init(-21,-9), Score.init(-35,-48), Score.init(-21,-58), Score.init(-76,-46),
+            Score.init(-53, -57), Score.init(-5, -30),  Score.init(-8, -37),  Score.init(-23, -12), Score.init(-23, -12), Score.init(-8, -37),  Score.init(-5, -30),  Score.init(-53, -57),
+            Score.init(-15, -37), Score.init(8, -13),   Score.init(19, -17),  Score.init(4, 1),     Score.init(4, 1),     Score.init(19, -17),  Score.init(8, -13),   Score.init(-15, -37),
+            Score.init(-7, -16),  Score.init(21, -1),   Score.init(-5, -2),   Score.init(17, 10),   Score.init(17, 10),   Score.init(-5, -2),   Score.init(21, -1),   Score.init(-7, -16),
+            Score.init(-5, -20),  Score.init(11, -6),   Score.init(25, 0),    Score.init(39, 17),   Score.init(39, 17),   Score.init(25, 0),    Score.init(11, -6),   Score.init(-5, -20),
+            Score.init(-12, -17), Score.init(29, -1),   Score.init(22, -14),  Score.init(31, 15),   Score.init(31, 15),   Score.init(22, -14),  Score.init(29, -1),   Score.init(-12, -17),
+            Score.init(-16, -30), Score.init(6, 6),     Score.init(1, 4),     Score.init(11, 6),    Score.init(11, 6),    Score.init(1, 4),     Score.init(6, 6),     Score.init(-16, -30),
+            Score.init(-17, -31), Score.init(-14, -20), Score.init(5, -1),    Score.init(0, 1),     Score.init(0, 1),     Score.init(5, -1),    Score.init(-14, -20), Score.init(-17, -31),
+            Score.init(-48, -46), Score.init(1, -42),   Score.init(-14, -37), Score.init(-23, -24), Score.init(-23, -24), Score.init(-14, -37), Score.init(1, -42),   Score.init(-48, -46),
         },
         // Rooks
         .{
-            Score.init(-20,-8), Score.init(-21,-5), Score.init(-7,-13), Score.init(-6,0), Score.init(4,1), Score.init(11,7), Score.init(-7,-10), Score.init(-3,-23),
-            Score.init(-24,-14), Score.init(-33,-12), Score.init(-5,-19), Score.init(-12,-10), Score.init(-4,-2), Score.init(-2,5), Score.init(-12,23), Score.init(-28,0),
-            Score.init(-35,-1), Score.init(-36,1), Score.init(-1,-12), Score.init(-5,-1), Score.init(25,-5), Score.init(1,4), Score.init(-28,-14), Score.init(2,7),
-            Score.init(-24,-12), Score.init(-27,9), Score.init(14,-29), Score.init(-1,11), Score.init(-29,18), Score.init(12,-10), Score.init(2,-4), Score.init(-19,-8),
-            Score.init(-27,-12), Score.init(-9,13), Score.init(16,-15), Score.init(7,-14), Score.init(6,-25), Score.init(-14,5), Score.init(0,9), Score.init(-23,0),
-            Score.init(-41,15), Score.init(18,5), Score.init(24,-3), Score.init(41,-11), Score.init(5,4), Score.init(13,-4), Score.init(1,24), Score.init(-20,19),
-            Score.init(-35,18), Score.init(2,5), Score.init(21,16), Score.init(40,-13), Score.init(22,-12), Score.init(-11,16), Score.init(34,-22), Score.init(-6,18),
-            Score.init(-7,30), Score.init(-20,23), Score.init(9,32), Score.init(8,14), Score.init(36,19), Score.init(13,14), Score.init(-31,13), Score.init(-11,9),
+            Score.init(-31, -9),  Score.init(-20, -13), Score.init(-14, -10), Score.init(-5, -9), Score.init(-5, -9), Score.init(-14, -10), Score.init(-20, -13), Score.init(-31, -9),
+            Score.init(-21, -12), Score.init(-13, -9),  Score.init(-8, -1),   Score.init(6, -2),  Score.init(6, -2),  Score.init(-8, -1),   Score.init(-13, -9),  Score.init(-21, -12),
+            Score.init(-25, 6),   Score.init(-11, -8),  Score.init(-1, -2),   Score.init(3, -6),  Score.init(3, -6),  Score.init(-1, -2),   Score.init(-11, -8),  Score.init(-25, 6),
+            Score.init(-13, -6),  Score.init(-5, 1),    Score.init(-4, -9),   Score.init(-6, 7),  Score.init(-6, 7),  Score.init(-4, -9),   Score.init(-5, 1),    Score.init(-13, -6),
+            Score.init(-27, -5),  Score.init(-15, 8),   Score.init(-4, 7),    Score.init(3, -6),  Score.init(3, -6),  Score.init(-4, 7),    Score.init(-15, 8),   Score.init(-27, -5),
+            Score.init(-22, 6),   Score.init(-2, 1),    Score.init(6, -7),    Score.init(12, 10), Score.init(12, 10), Score.init(6, -7),    Score.init(-2, 1),    Score.init(-22, 6),
+            Score.init(-2, 4),    Score.init(12, 5),    Score.init(16, 20),   Score.init(18, -5), Score.init(18, -5), Score.init(16, 20),   Score.init(12, 5),    Score.init(-2, 4),
+            Score.init(-17, 18),  Score.init(-19, 0),   Score.init(-1, 19),   Score.init(9, 13),  Score.init(9, 13),  Score.init(-1, 19),   Score.init(-19, 0),   Score.init(-17, 18),
         },
         // Queens
         .{
-            Score.init(-10,-70), Score.init(1,-58), Score.init(-15,-7), Score.init(4,-37), Score.init(-16,-34), Score.init(-3,-53), Score.init(-15,-68), Score.init(-10,-98),
-            Score.init(4,-76), Score.init(-13,-16), Score.init(7,-46), Score.init(13,-13), Score.init(16,27), Score.init(8,-7), Score.init(-13,-7), Score.init(26,-61),
-            Score.init(-27,-58), Score.init(-9,-23), Score.init(13,-8), Score.init(-9,34), Score.init(7,9), Score.init(33,-51), Score.init(8,-18), Score.init(-9,-23),
-            Score.init(-23,-45), Score.init(15,4), Score.init(17,12), Score.init(-4,43), Score.init(16,34), Score.init(0,16), Score.init(10,7), Score.init(17,-25),
-            Score.init(-28,-63), Score.init(-1,-2), Score.init(-2,5), Score.init(10,34), Score.init(15,4), Score.init(3,29), Score.init(23,-19), Score.init(10,-28),
-            Score.init(-22,-49), Score.init(27,-13), Score.init(20,-38), Score.init(19,-2), Score.init(-8,27), Score.init(-1,-17), Score.init(24,-33), Score.init(17,-23),
-            Score.init(-43,-60), Score.init(-34,-23), Score.init(10,-10), Score.init(3,-9), Score.init(-9,1), Score.init(11,-5), Score.init(13,-12), Score.init(9,-57),
-            Score.init(-17,-97), Score.init(-14,-61), Score.init(12,-41), Score.init(17,-61), Score.init(33,-11), Score.init(-12,-25), Score.init(14,-59), Score.init(19,-42),
+            Score.init(3, -69),  Score.init(-5, -57), Score.init(-5, -47), Score.init(4, -26),  Score.init(4, -26),  Score.init(-5, -47), Score.init(-5, -57), Score.init(3, -69),
+            Score.init(-3, -55), Score.init(5, -31),  Score.init(8, -22),  Score.init(12, -4),  Score.init(12, -4),  Score.init(8, -22),  Score.init(5, -31),  Score.init(-3, -55),
+            Score.init(-3, -39), Score.init(6, -18),  Score.init(13, -9),  Score.init(7, 3),    Score.init(7, 3),    Score.init(13, -9),  Score.init(6, -18),  Score.init(-3, -39),
+            Score.init(4, -23),  Score.init(5, -3),   Score.init(9, 13),   Score.init(8, 24),   Score.init(8, 24),   Score.init(9, 13),   Score.init(5, -3),   Score.init(4, -23),
+            Score.init(0, -29),  Score.init(14, -6),  Score.init(12, 9),   Score.init(5, 21),   Score.init(5, 21),   Score.init(12, 9),   Score.init(14, -6),  Score.init(0, -29),
+            Score.init(-4, -38), Score.init(10, -18), Score.init(6, -12),  Score.init(8, 1),    Score.init(8, 1),    Score.init(6, -12),  Score.init(10, -18), Score.init(-4, -38),
+            Score.init(-5, -50), Score.init(6, -27),  Score.init(10, -24), Score.init(8, -8),   Score.init(8, -8),   Score.init(10, -24), Score.init(6, -27),  Score.init(-5, -50),
+            Score.init(-2, -75), Score.init(-2, -52), Score.init(1, -43),  Score.init(-2, -36), Score.init(-2, -36), Score.init(1, -43),  Score.init(-2, -52), Score.init(-2, -75),
         },
         // Kings
         .{
-            Score.init(287,-27), Score.init(312,43), Score.init(259,101), Score.init(172,69), Score.init(268,67), Score.init(230,74), Score.init(343,50), Score.init(289,9),
-            Score.init(282,43), Score.init(286,77), Score.init(225,127), Score.init(164,126), Score.init(164,132), Score.init(210,137), Score.init(290,108), Score.init(286,76),
-            Score.init(213,98), Score.init(250,139), Score.init(145,153), Score.init(113,174), Score.init(139,165), Score.init(174,163), Score.init(269,136), Score.init(193,101),
-            Score.init(149,102), Score.init(177,149), Score.init(139,160), Score.init(105,169), Score.init(90,175), Score.init(147,179), Score.init(203,148), Score.init(163,119),
-            Score.init(146,83), Score.init(153,180), Score.init(89,172), Score.init(67,182), Score.init(29,201), Score.init(123,207), Score.init(199,159), Score.init(150,114),
-            Score.init(116,100), Score.init(137,167), Score.init(64,192), Score.init(23,200), Score.init(48,186), Score.init(95,186), Score.init(146,193), Score.init(137,120),
-            Score.init(78,69), Score.init(123,97), Score.init(30,111), Score.init(51,148), Score.init(12,142), Score.init(54,133), Score.init(98,125), Score.init(102,64),
-            Score.init(64,24), Score.init(95,55), Score.init(55,72), Score.init(-3,65), Score.init(42,77), Score.init(53,77), Score.init(85,50), Score.init(54,1),
+            Score.init(271, 1),   Score.init(327, 45),  Score.init(271, 85),  Score.init(198, 76),  Score.init(198, 76),  Score.init(271, 85),  Score.init(327, 45),  Score.init(271, 1),
+            Score.init(278, 53),  Score.init(303, 100), Score.init(234, 133), Score.init(179, 135), Score.init(179, 135), Score.init(234, 133), Score.init(303, 100), Score.init(278, 53),
+            Score.init(195, 88),  Score.init(258, 130), Score.init(169, 169), Score.init(120, 175), Score.init(120, 175), Score.init(169, 169), Score.init(258, 130), Score.init(195, 88),
+            Score.init(164, 103), Score.init(190, 156), Score.init(138, 172), Score.init(98, 172),  Score.init(98, 172),  Score.init(138, 172), Score.init(190, 156), Score.init(164, 103),
+            Score.init(154, 96),  Score.init(179, 166), Score.init(105, 199), Score.init(70, 199),  Score.init(70, 199),  Score.init(105, 199), Score.init(179, 166), Score.init(154, 96),
+            Score.init(123, 92),  Score.init(145, 172), Score.init(81, 184),  Score.init(31, 191),  Score.init(31, 191),  Score.init(81, 184),  Score.init(145, 172), Score.init(123, 92),
+            Score.init(88, 47),   Score.init(120, 121), Score.init(65, 116),  Score.init(33, 131),  Score.init(33, 131),  Score.init(65, 116),  Score.init(120, 121), Score.init(88, 47),
+            Score.init(59, 11),   Score.init(89, 59),   Score.init(45, 73),   Score.init(-1, 78),   Score.init(-1, 78),   Score.init(45, 73),   Score.init(89, 59),   Score.init(59, 11),
         },
     },
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ==============================================================================
 // Internal helpers

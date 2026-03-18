@@ -2,6 +2,7 @@
 /.claude
 /.zig-cache
 /target
+/data
 alpha_zero.md
 /models
 alphazero/__pycache__

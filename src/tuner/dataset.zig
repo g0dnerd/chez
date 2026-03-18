@@ -1,14 +1,20 @@
 // src/tuner/dataset.zig
 //
-// Loads quiet-labeled EPD positions into a flat Position slice for Texel tuning.
+// Loads EPD positions into a flat Position slice for Texel tuning.
 //
-// Expected line format (Zurichess quiet-labeled EPD):
+// Supports two EPD annotation formats:
 //
-//   rnbqkb1r/... w KQkq - 2 3 c9 "0.5";
+// 1. Game outcome (Zurichess quiet-labeled):
+//    rnbqkb1r/... w KQkq - 2 3 c9 "1/2-1/2";
+//    Results: "1-0" = white wins, "1/2-1/2" = draw, "0-1" = black wins.
 //
-// The FEN is everything before the `c9` annotation.
-// Results: "1.0" = white wins, "0.5" = draw, "0.0" = black wins.
-// Stored in side-to-move perspective: if black to move, result = 1.0 - raw.
+// 2. Centipawn evaluation (Stockfish-labeled):
+//    rnbqkb1r/... w KQkq - ce "150";
+//    The integer is Stockfish's eval from white's perspective.
+//    Converted to [0,1] via sigmoid: 1 / (1 + exp(-cp / 400)).
+//
+// Both formats are auto-detected per line. Results are stored in side-to-move
+// perspective: if black to move, result = 1.0 - raw.
 
 const std = @import("std");
 const chez = @import("chez");
@@ -73,24 +79,30 @@ pub fn load(
 // Line parsing
 // ==============================================================================
 
-// Parses one EPD line into a Position.
-//
-// Expected format: <FEN> c9 "<result>";
-// The FEN may contain 4 or 6 space-separated fields (EPD or full FEN).
+// Parses one EPD line into a Position. Auto-detects c9 (game outcome) vs ce
+// (centipawn eval) annotation format.
 fn parseLine(line: []const u8) !Position {
-    // Locate the c9 annotation to split FEN from result.
     const c9_marker = " c9 \"";
-    const c9_pos = std.mem.indexOf(u8, line, c9_marker) orelse return error.MissingC9;
+    const ce_marker = " ce \"";
 
-    const fen_str = std.mem.trimEnd(u8, line[0..c9_pos], " \t");
+    if (std.mem.indexOf(u8, line, ce_marker)) |ce_pos| {
+        return parseCeLine(line, ce_pos, ce_marker.len);
+    } else if (std.mem.indexOf(u8, line, c9_marker)) |c9_pos| {
+        return parseC9Line(line, c9_pos, c9_marker.len);
+    } else {
+        return error.MissingAnnotation;
+    }
+}
+
+// Parse game-outcome format: <FEN> c9 "<result>";
+fn parseC9Line(line: []const u8, marker_pos: usize, marker_len: usize) !Position {
+    const fen_str = std.mem.trimEnd(u8, line[0..marker_pos], " \t");
     if (fen_str.len == 0) return error.EmptyFen;
 
-    // Extract the quoted result value after "c9 \"".
-    const after_c9 = line[c9_pos + c9_marker.len ..];
-    const quote_end = std.mem.indexOfScalar(u8, after_c9, '"') orelse return error.UnclosedQuote;
-    const result_str = after_c9[0..quote_end];
+    const after = line[marker_pos + marker_len ..];
+    const quote_end = std.mem.indexOfScalar(u8, after, '"') orelse return error.UnclosedQuote;
+    const result_str = after[0..quote_end];
 
-    // Parse the raw result: "1.0" = white wins, "0.5" = draw, "0.0" = black wins.
     const raw: f32 = if (std.mem.eql(u8, result_str, "1-0"))
         1.0
     else if (std.mem.eql(u8, result_str, "1/2-1/2"))
@@ -100,11 +112,29 @@ fn parseLine(line: []const u8) !Position {
     else
         return error.UnknownResult;
 
-    // Parse the FEN into a State, fail hard on invalid FEN.
     const state = try State.fromFen(fen_str);
-
-    // Convert to side-to-move perspective.
     const result: f32 = if (state.to_move == Colors.black) 1.0 - raw else raw;
+    return Position{ .state = state, .result = result };
+}
 
+// Parse centipawn-eval format: <FEN> ce "<centipawns>";
+// Converts centipawn value to [0,1] via sigmoid: 1 / (1 + exp(-cp / 400))
+fn parseCeLine(line: []const u8, marker_pos: usize, marker_len: usize) !Position {
+    const fen_str = std.mem.trimEnd(u8, line[0..marker_pos], " \t");
+    if (fen_str.len == 0) return error.EmptyFen;
+
+    const after = line[marker_pos + marker_len ..];
+    const quote_end = std.mem.indexOfScalar(u8, after, '"') orelse return error.UnclosedQuote;
+    const cp_str = after[0..quote_end];
+
+    // Parse centipawn integer (may be negative, e.g. "-150")
+    const cp = std.fmt.parseInt(i32, cp_str, 10) catch return error.InvalidCentipawn;
+
+    // Sigmoid mapping: 1 / (1 + exp(-cp / 400))
+    const raw: f32 = 1.0 / (1.0 + @exp(-@as(f32, @floatFromInt(cp)) / 400.0));
+
+    const state = try State.fromFen(fen_str);
+    // ce values are from white's perspective; convert to side-to-move
+    const result: f32 = if (state.to_move == Colors.black) 1.0 - raw else raw;
     return Position{ .state = state, .result = result };
 }

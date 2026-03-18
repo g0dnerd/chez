@@ -112,6 +112,16 @@ pub fn build(b: *std.Build) !void {
     tune_step.dependOn(&run_tune.step);
     b.installArtifact(tune_exe);
 
+    const quiet_filter = b.addExecutable(.{
+        .name = "quiet-filter",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/quiet_filter.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "chez", .module = chez_mod }},
+        }),
+    });
+
     const uci = b.addExecutable(.{
         .name = "uci",
         .root_module = b.createModule(.{
@@ -126,6 +136,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(tui);
     b.installArtifact(bench);
     b.installArtifact(uci);
+    b.installArtifact(quiet_filter);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{
