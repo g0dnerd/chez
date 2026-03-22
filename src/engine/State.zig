@@ -170,7 +170,7 @@ pub fn fromFen(fen: []const u8) !State {
     var halfmove_start: usize = 0;
     var fullmove_start: usize = 0;
 
-    for (fen, 0..) |c, i| {
+    loop: for (fen, 0..) |c, i| {
         switch (state) {
             .placement => {
                 switch (c) {
@@ -350,7 +350,7 @@ pub fn fromFen(fen: []const u8) !State {
                     '-' => {
                         halfmove_clock = 0;
                         fullmove_clock = 1;
-                        break;
+                        break :loop;
                     },
                     else => return error.InvalidCharacter,
                 }
@@ -364,7 +364,7 @@ pub fn fromFen(fen: []const u8) !State {
         }
     }
 
-    if (!(fullmove_clock == null)) {
+    if (fullmove_clock == null) {
         fullmove_clock = std.fmt.parseInt(u16, fen[fullmove_start..], 10) catch return error.InvalidFullmoveClock;
     }
 

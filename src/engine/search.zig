@@ -1218,9 +1218,10 @@ pub fn searchParallel(
             for (0..gh.len) |j| {
                 history.push(gh.hashes[j]);
             }
+        } else {
+            // Push the root position
+            history.push(state.zobrist_hash);
         }
-        // Push the root position
-        history.push(state.zobrist_hash);
 
         contexts[i] = ThreadContext{
             .state = state.*,
@@ -1587,4 +1588,242 @@ test "repetition only checks same side to move" {
     // 0xBBBB at position 1 should not match anything checked from position 4
     // (we check positions 2, 0 - not 1, 3)
     try expect(!history.isTwofold(0xBBBB, 5));
+}
+
+test "repetition detection with empty and minimal histories" {
+    var history = PositionHistory.init();
+
+    // Empty history should not crash or detect anything
+    try expect(!history.isTwofold(0x1234, 0));
+    try expect(!history.isThreefold(0x1234, 0));
+
+    // 1 entry
+    history.push(0x1234);
+    try expect(!history.isTwofold(0x1234, 10));
+
+    // 2 entries
+    history.push(0x5678);
+    try expect(!history.isTwofold(0x1234, 10));
+
+    // 3 entries
+    history.push(0x1234);
+    try expect(!history.isTwofold(0x1234, 10));
+
+    // 4 entries - still below the len < 5 guard
+    history.push(0x5678);
+    try expect(!history.isTwofold(0x1234, 10));
+
+    // 5 entries - now twofold should work
+    // [0x1234, 0x5678, 0x1234, 0x5678, 0x1234]
+    history.push(0x1234);
+    try expect(history.isTwofold(0x1234, 10));
+}
+
+test "halfmove clock boundary: exact match and off-by-one" {
+    var history = PositionHistory.init();
+
+    // [A, B, C, D, A] - A at indices 0 and 4
+    history.push(0xAAAA);
+    history.push(0xBBBB);
+    history.push(0xCCCC);
+    history.push(0xDDDD);
+    history.push(0xAAAA);
+
+    // halfmove_clock = 4: max_lookback = 4, i=4 checks index 0 → match
+    try expect(history.isTwofold(0xAAAA, 4));
+
+    // halfmove_clock = 3: max_lookback = 3 < 4 → false (can't look back far enough)
+    try expect(!history.isTwofold(0xAAAA, 3));
+
+    // halfmove_clock = 5: max_lookback = min(5, 4) = 4 → still works
+    try expect(history.isTwofold(0xAAAA, 5));
+}
+
+test "threefold with non-adjacent occurrences" {
+    var history = PositionHistory.init();
+
+    // Position A appears at indices 0, 4, 10 (distances 10, 6 from current)
+    // This simulates a real game where the same position recurs after different intervals
+    history.push(0xAAAA); // 0: A
+    history.push(0x1111); // 1
+    history.push(0x2222); // 2
+    history.push(0x3333); // 3
+    history.push(0xAAAA); // 4: A (2nd)
+    history.push(0x4444); // 5
+    history.push(0x5555); // 6
+    history.push(0x6666); // 7
+    history.push(0x7777); // 8
+    history.push(0x8888); // 9
+    history.push(0xAAAA); // 10: A (3rd, current)
+
+    // threefold: need 2 matches at even distances
+    // i=4: idx=6 → 0x5555 no
+    // i=6: idx=4 → 0xAAAA yes (count=1)
+    // i=8: idx=2 → 0x2222 no
+    // i=10: idx=0 → 0xAAAA yes (count=2) → threefold!
+    try expect(history.isThreefold(0xAAAA, 10));
+
+    // twofold also works
+    try expect(history.isTwofold(0xAAAA, 10));
+}
+
+test "push and pop maintain correct state" {
+    var history = PositionHistory.init();
+
+    history.push(0x1111);
+    history.push(0x2222);
+    history.push(0x3333);
+    history.push(0x4444);
+    history.push(0x1111); // twofold of position at index 0
+    try expect(history.isTwofold(0x1111, 5));
+
+    // Pop the repeated position, restoring pre-repetition state
+    history.pop();
+    // Now: [0x1111, 0x2222, 0x3333, 0x4444], len=4
+    // len < 5 → false
+    try expect(!history.isTwofold(0x1111, 5));
+
+    // Push the same hash back - repetition should be detectable again
+    history.push(0x1111);
+    try expect(history.isTwofold(0x1111, 5));
+
+    // Pop and push something different
+    history.pop();
+    history.push(0x5555);
+    // Now: [0x1111, 0x2222, 0x3333, 0x4444, 0x5555], len=5
+    // 0x5555 is only at index 4, no repetition
+    try expect(!history.isTwofold(0x5555, 5));
+}
+
+test "real chess: twofold repetition via knight shuffle" {
+    // Start from a simple position with knights
+    // Play Ng1-f3, Ng8-f6, Nf3-g1, Nf6-g8 to return to start
+    var state = State.defaultPosition();
+    var history = PositionHistory.init();
+    history.push(state.zobrist_hash);
+
+    const initial_hash = state.zobrist_hash;
+
+    // 1. Nf3
+    var undo = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    const after_nf3 = state.zobrist_hash;
+    try expect(after_nf3 != initial_hash);
+
+    // 1... Nf6
+    undo = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // 2. Ng1
+    undo = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // 2... Ng8
+    undo = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // Position should now equal the initial position
+    try expectEqual(initial_hash, state.zobrist_hash);
+    // History: [init, Nf3, Nf6, Ng1, Ng8] len=5, halfmove_clock=4
+    try expectEqual(@as(u16, 4), state.halfmove_clock);
+    try expect(history.isTwofold(state.zobrist_hash, state.halfmove_clock));
+    try expect(!history.isThreefold(state.zobrist_hash, state.halfmove_clock));
+}
+
+test "real chess: threefold repetition via knight shuffle" {
+    var state = State.defaultPosition();
+    var history = PositionHistory.init();
+    history.push(state.zobrist_hash);
+
+    const initial_hash = state.zobrist_hash;
+
+    // Cycle 1: Nf3 Nf6 Ng1 Ng8
+    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    // 2nd occurrence
+    try expectEqual(initial_hash, state.zobrist_hash);
+    try expect(!history.isThreefold(state.zobrist_hash, state.halfmove_clock));
+
+    // Cycle 2: Nf3 Nf6 Ng1 Ng8
+    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    // 3rd occurrence
+    try expectEqual(initial_hash, state.zobrist_hash);
+    try expectEqual(@as(u16, 8), state.halfmove_clock);
+    try expect(history.isThreefold(state.zobrist_hash, state.halfmove_clock));
+}
+
+test "real chess: pawn move resets halfmove clock and prevents repetition lookback" {
+    // After a pawn move, repetition should not look past it
+    var state = State.defaultPosition();
+    var history = PositionHistory.init();
+    history.push(state.zobrist_hash);
+
+    // 1. Nf3 Nf6 2. Ng1 Ng8 → back to start (twofold)
+    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // Confirm twofold works
+    try expect(history.isTwofold(state.zobrist_hash, state.halfmove_clock));
+
+    // 3. e4 - pawn move resets halfmove_clock to 0
+    _ = state.makeMove(.{ .start = square.e2, .end = square.e4 }, engine.Colors.white, piece.pawn);
+    history.push(state.zobrist_hash);
+    try expectEqual(@as(u16, 0), state.halfmove_clock);
+
+    // Even though we have lots of history, halfmove_clock=0 prevents any lookback
+    try expect(!history.isTwofold(state.zobrist_hash, state.halfmove_clock));
+}
+
+test "isGameOverWithHistory detects threefold" {
+    var state = State.defaultPosition();
+    var history = PositionHistory.init();
+    history.push(state.zobrist_hash);
+
+    // No game over at start
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // Cycle 1: Nf3 Nf6 Ng1 Ng8
+    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // 2nd occurrence - not yet threefold
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // Cycle 2: Nf3 Nf6 Ng1 Ng8
+    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
+    history.push(state.zobrist_hash);
+    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
+    history.push(state.zobrist_hash);
+
+    // 3rd occurrence - should detect threefold
+    try expectEqual(GameResult.threefoldRepetition, isGameOverWithHistory(&state, &history));
 }
