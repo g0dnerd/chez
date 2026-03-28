@@ -1,18 +1,18 @@
 const std = @import("std");
-const expect = std.testing.expect;
-const expectEqual = std.testing.expectEqual;
-
 const Bitboard = @import("Bitboard.zig");
-const piece = @import("piece.zig");
-const Piece = piece.Piece;
-const square = @import("square.zig");
-const Square = square.Square;
-const castling = @import("castling.zig");
-const CastlingRights = castling.CastlingRights;
 const engine = @import("engine.zig");
+const piece = @import("piece.zig");
+const square = @import("square.zig");
+const castling = @import("castling.zig");
+
+const CastlingRights = castling.CastlingRights;
 const Colors = engine.Colors;
 const Color = engine.Color;
 const Move = engine.Move;
+const Piece = piece.Piece;
+const Square = square.Square;
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 const isSquareAttackedBy = @import("movegen.zig").isSquareAttackedBy;
 
 const State = @This();
@@ -27,7 +27,7 @@ pub const UndoInfo = struct {
     in_check: ?Color,
     zobrist_hash: u64,
     was_promotion: bool,
-    promotion_piece: ?Piece, // Actual promotion piece (not always queen)
+    promotion_piece: ?Piece,
     was_castling: bool,
     castling_side: Color, // 0 = kingside, 1 = queenside (only valid if was_castling)
 };
@@ -44,8 +44,9 @@ zobrist_hash: u64 = 0,
 all_pieces: Bitboard,
 mailbox: [64]?Piece,
 
-const pawn_start_rank: [2]Square = .{ 1, 6 };
-const pawn_double_rank: [2]Square = .{ 3, 4 };
+pub const pawn_start_rank: [2]Square = .{ 1, 6 };
+pub const pawn_double_rank: [2]Square = .{ 3, 4 };
+pub const pawn_ep_rank: [2]Square = .{ 5, 2 };
 pub const pawn_promo_rank: [2]Square = .{ 7, 0 };
 pub const pawn_ep_offset: [2]i8 = .{ -8, 8 };
 
@@ -341,7 +342,7 @@ pub fn fromFen(fen: []const u8) !State {
             },
             .halfmove => {
                 switch (c) {
-                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => continue,
+                    '0'...'9' => continue,
                     ' ' => {
                         halfmove_clock = std.fmt.parseInt(u16, fen[halfmove_start..i], 10) catch return error.InvalidHalfmoveClock;
                         fullmove_start = i + 1;
@@ -357,15 +358,21 @@ pub fn fromFen(fen: []const u8) !State {
             },
             .fullmove => {
                 switch (c) {
-                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => continue,
+                    '0'...'9' => continue,
                     else => return error.InvalidCharacter,
                 }
             },
         }
     }
 
-    if (!(fullmove_clock == null)) {
-        fullmove_clock = std.fmt.parseInt(u16, fen[fullmove_start..], 10) catch return error.InvalidFullmoveClock;
+    if (fullmove_clock == null) {
+        // EPD case
+        if (halfmove_clock == null) {
+            halfmove_clock = 0;
+            fullmove_clock = 1;
+        } else {
+            fullmove_clock = std.fmt.parseInt(u16, fen[fullmove_start..], 10) catch return error.InvalidFullmoveClock;
+        }
     }
 
     const all_pieces = [6]Bitboard{ pawns, knights, bishops, rooks, queens, kings };
@@ -592,7 +599,7 @@ pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     return self.makeMoveInner(m, c, p, true);
 }
 
-// Skip in_check detection — for movegen legality testing where caller
+// Skip in_check detection: for movegen legality testing where caller
 // checks king safety separately. Avoids a redundant isSquareAttackedBy call.
 pub fn makeMoveNoCheck(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     return self.makeMoveInner(m, c, p, false);
@@ -758,12 +765,10 @@ inline fn makeMoveInner(self: *State, m: Move, c: Color, p: Piece, comptime dete
     return undo;
 }
 
-// Unmake a move, restoring the previous state
 pub fn unmakeMove(self: *State, m: Move, c: Color, p: Piece, undo: UndoInfo) void {
     const start = m.start;
     const end = m.end;
 
-    // Restore simple fields from undo info
     self.*.castling_rights = undo.castling_rights;
     self.*.en_passant = undo.en_passant;
     self.*.halfmove_clock = undo.halfmove_clock;
@@ -772,7 +777,7 @@ pub fn unmakeMove(self: *State, m: Move, c: Color, p: Piece, undo: UndoInfo) voi
     self.*.fullmove_clock -= c; // Undo the increment (only increments when black moves)
     self.*.to_move = c;
 
-    // Handle promotion: piece on end square is promoted piece, but we need to restore pawn
+    // Handle promotion: piece on end square is promoted piece, but we need to restore a pawn
     const actual_piece = if (undo.was_promotion) undo.promotion_piece.? else p;
 
     // Move piece back from end to start
@@ -786,7 +791,6 @@ pub fn unmakeMove(self: *State, m: Move, c: Color, p: Piece, undo: UndoInfo) voi
     // Handle castling: unmove the rook
     if (undo.was_castling) {
         const data = castling.castle_data[c][undo.castling_side];
-        // Move rook back
         self.*.pieces[piece.rook].bitXorAssign(Square, data.rook_to);
         self.*.colors[c].bitXorAssign(Square, data.rook_to);
         self.*.mailbox[data.rook_to] = null;
@@ -974,6 +978,71 @@ pub fn getZobristKeys() *const ZobristKeys {
     const io = threaded.io();
     initZobristKeys(io);
     return &keys_storage;
+}
+
+pub fn eql(self: State, other: State) bool {
+    for (self.pieces, 0..) |pc_bb, i| {
+        if (other.pieces[i].bits != pc_bb.bits) {
+            std.log.err("Piece bitboard {d} is {d} for self and {d} for other", .{ i + 1, other.pieces[i].bits, pc_bb.bits });
+            return false;
+        }
+    }
+
+    for (self.colors, 0..) |c_bb, i| {
+        if (other.colors[i].bits != c_bb.bits) {
+            std.log.err("Color bitboard {d} is {d} for self and {d} for other", .{ i + 1, other.colors[i].bits, c_bb.bits });
+            return false;
+        }
+    }
+
+    if (other.to_move != self.to_move) {
+        std.log.err("To move is {d} for self and {d} for other", .{ self.to_move, other.to_move });
+        return false;
+    }
+
+    if (other.castling_rights != self.castling_rights) {
+        std.log.err("Castling rights are {d} for self and {d} for other", .{ self.castling_rights, other.castling_rights });
+        return false;
+    }
+
+    if (other.en_passant != self.en_passant) {
+        std.log.err("En passant is {any} for self and {any} for other", .{ self.en_passant, other.en_passant });
+        return false;
+    }
+
+    if (other.in_check != self.in_check) {
+        std.log.err("In check is {any} for self and {any} for other", .{ self.in_check, other.in_check });
+        return false;
+    }
+
+    if (other.halfmove_clock != self.halfmove_clock) {
+        std.log.err("HM clock is {d} for self and {d} for other", .{ self.halfmove_clock, other.halfmove_clock });
+        return false;
+    }
+
+    if (other.halfmove_clock != self.halfmove_clock) {
+        std.log.err("HM clock is {d} for self and {d} for other", .{ self.halfmove_clock, other.halfmove_clock });
+        return false;
+    }
+
+    if (other.zobrist_hash != self.zobrist_hash) {
+        std.log.err("Zobrist hash is {d} for self and {d} for other", .{ self.zobrist_hash, other.zobrist_hash });
+        return false;
+    }
+
+    if (other.all_pieces.bits != self.all_pieces.bits) {
+        std.log.err("All pieces is {d} for self and {d} for other", .{ self.all_pieces.bits, other.all_pieces.bits });
+        return false;
+    }
+
+    for (self.mailbox, 0..) |p, sq| {
+        if (other.mailbox[sq] != p) {
+            std.log.err("Mailbox at square {d} is {any} for self and {any} for other", .{ sq, p, other.mailbox[sq] });
+            return false;
+        }
+    }
+
+    return true;
 }
 
 test "piece at sanity" {

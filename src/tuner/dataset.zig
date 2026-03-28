@@ -1,5 +1,3 @@
-// src/tuner/dataset.zig
-//
 // Loads EPD positions into a flat Position slice for Texel tuning.
 //
 // Supports two EPD annotation formats:
@@ -18,6 +16,7 @@
 
 const std = @import("std");
 const chez = @import("chez");
+
 const State = chez.engine.State;
 const Colors = chez.engine.Colors;
 
@@ -75,10 +74,6 @@ pub fn load(
     return positions.toOwnedSlice(allocator);
 }
 
-// ==============================================================================
-// Line parsing
-// ==============================================================================
-
 // Parses one EPD line into a Position. Auto-detects c9 (game outcome) vs ce
 // (centipawn eval) annotation format.
 fn parseLine(line: []const u8) !Position {
@@ -127,7 +122,7 @@ fn parseCeLine(line: []const u8, marker_pos: usize, marker_len: usize) !Position
     const quote_end = std.mem.indexOfScalar(u8, after, '"') orelse return error.UnclosedQuote;
     const cp_str = after[0..quote_end];
 
-    // Parse centipawn integer (may be negative, e.g. "-150")
+    // Parse centipawn integer, may be negative
     const cp = std.fmt.parseInt(i32, cp_str, 10) catch return error.InvalidCentipawn;
 
     // Sigmoid mapping: 1 / (1 + exp(-cp / 400))

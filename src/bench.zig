@@ -3,8 +3,6 @@ const chez = @import("chez.zig");
 const search = chez.engine.search;
 const State = chez.engine.State;
 
-// Standard bench positions covering various game phases and structures.
-// Sourced from common engine bench suites (Ethereal, Stockfish).
 const positions = [_][]const u8{
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -28,7 +26,7 @@ const positions = [_][]const u8{
     "2kr3r/pp3ppp/2nbbn2/3p4/3P4/2NBBN2/PP3PPP/2KR3R w - - 8 14",
 };
 
-const depth_default: u8 = 11;
+const depth_default: u8 = 16;
 const threads_default: usize = 1;
 
 pub fn main(init: std.process.Init.Minimal) !void {

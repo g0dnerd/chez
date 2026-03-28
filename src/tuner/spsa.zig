@@ -1,19 +1,16 @@
-// src/tuner/spsa.zig
-//
 // SPSA (Simultaneous Perturbation Stochastic Approximation) optimiser for
 // Texel tuning. Operates entirely in float space ([]f64) to avoid i16
-// quantisation noise — see pitfall #1 in the tuning plan.
-//
-// Key design choices:
-//   - Perturbations are applied to the raw float vector; ParamsF64 is
-//     reconstructed from it on each MSE call. Params.fromFloats (which rounds
-//     to i16) is only called at checkpoint writes.
-//   - Frozen indices are snapped back after every gradient step, not just at
-//     checkpoint writes (pitfall #2).
-//   - Batch MSE uses index-based access to avoid copying Position structs.
+// quantisation noise.
+// - Perturbations are applied to the raw float vector; ParamsF64 is
+//   reconstructed from it on each MSE call. Params.fromFloats (which rounds
+//   to i16) is only called at checkpoint writes.
+// - Frozen indices are snapped back after every gradient step, not just at
+//   checkpoint writes.
+// - Batch MSE uses index-based access to avoid copying Position structs.
 
 const std = @import("std");
 const chez = @import("chez");
+
 const params_mod = chez.engine.params;
 const PARAM_COUNT = params_mod.PARAM_COUNT;
 const Params = params_mod.Params;
@@ -23,10 +20,6 @@ const dataset = @import("dataset.zig");
 const Position = dataset.Position;
 const mse = @import("mse.zig");
 const codegen = @import("codegen.zig");
-
-// ==============================================================================
-// SPSA configuration
-// ==============================================================================
 
 pub const SpsaConfig = struct {
     a: f64 = 10.0,
@@ -41,10 +34,6 @@ pub const SpsaConfig = struct {
     early_stop: bool = true,
 };
 
-// ==============================================================================
-// Frozen parameter indices
-// ==============================================================================
-//
 // These indices (into the flat f64 parameter vector) must stay at their default
 // values throughout tuning. They are snapped back after every gradient step.
 //
@@ -148,10 +137,6 @@ fn restoreFrozen(floats: []f64) void {
     }
 }
 
-// ==============================================================================
-// SPSA run
-// ==============================================================================
-
 // Early-stopping ring buffer size. We log full MSE every 100 iterations,
 // so 50 entries = 5,000 iteration lookback window.
 const early_stop_window = 50;
@@ -225,19 +210,18 @@ pub fn run(
         }
 
         // Evaluate both perturbations on the batch. ParamsF64 is constructed
-        // from the float vector — no i16 rounding at this stage.
+        // from the float vector: no i16 rounding at this stage.
         const params_plus = ParamsF64.fromFloats(floats_plus);
         const params_minus = ParamsF64.fromFloats(floats_minus);
 
         const mse_plus = try mse.computeIndexed(positions, batch_indices, &params_plus, k, cfg.num_threads, allocator);
         const mse_minus = try mse.computeIndexed(positions, batch_indices, &params_minus, k, cfg.num_threads, allocator);
 
-        // SPSA gradient estimate. c_scales affects perturbation size only;
-        // the step size is kept uniform so that c_scales doesn't inversely
-        // scale the update (which would amplify PST noise).
+        // SPSA gradient estimate. Dividing by c_scales[i] cancels the
+        // per-parameter perturbation scaling so the gradient is unbiased.
         const g_scalar = (mse_plus - mse_minus) / (2.0 * c_t);
         for (0..PARAM_COUNT) |i| {
-            floats[i] -= a_t * g_scalar * delta[i];
+            floats[i] -= a_t * g_scalar * delta[i] / c_scales[i];
         }
 
         // Snap frozen indices back. This must happen every iteration, not just

@@ -1,23 +1,14 @@
-// src/tuner/codegen.zig
-//
 // Regenerates src/engine/params.zig from a tuned Params value.
 //
-// Strategy: read the existing params.zig, splice out the `pub const
-// default_params` block, emit a freshly generated block with the tuned i16
-// values, and write the result to a .tmp file before atomically renaming.
+// Reads the existing params.zig, splices out the `pub const default_params`
+// block, emits a freshly generated block with the tuned i16 values,
+// and writes the result to a .tmp file before atomically renaming.
 // This keeps the Params/ParamsF64 struct definitions and helper functions
 // verbatim, so the file remains self-contained and hand-editable after tuning.
-//
-// Write flow:
-//   1. Read output_path into memory.
-//   2. Locate `pub const default_params: Params = .{` via marker search.
-//   3. Find the matching `};` via brace counting.
-//   4. Emit: preamble + generated block + suffix to a .tmp file.
-//   5. Rename .tmp → output_path (atomic on Linux).
-//   6. Run `zig fmt output_path` to normalise whitespace (best-effort).
 
 const std = @import("std");
 const chez = @import("chez");
+
 const params_mod = chez.engine.params;
 const Params = params_mod.Params;
 const Score = params_mod.Score;
@@ -33,34 +24,14 @@ pub fn write(
     p: *const Params,
     output_path: []const u8,
 ) !void {
-    // ==================================================================
-    // Step 1: Read existing params.zig.
-    // ==================================================================
-
     const source = try readFile(io, allocator, output_path);
     defer allocator.free(source);
-
-    // ==================================================================
-    // Step 2: Find the start of the default_params block.
-    // ==================================================================
 
     const block_start = std.mem.indexOf(u8, source, start_marker) orelse
         return error.DefaultParamsMarkerNotFound;
 
-    // ==================================================================
-    // Step 3: Find the end of the block via brace counting.
-    //
-    // We start at the `= .{` that opens the struct literal and count
-    // nesting depth. When depth returns to 0 we have passed the matching
-    // `}`, then we skip the `;` that follows.
-    // ==================================================================
-
     const block_end = findBlockEnd(source, block_start) orelse
         return error.UnmatchedBraces;
-
-    // ==================================================================
-    // Step 4: Write preamble + generated block + suffix to .tmp.
-    // ==================================================================
 
     const tmp_path = try std.mem.concat(allocator, u8, &.{ output_path, ".tmp" });
     defer allocator.free(tmp_path);
@@ -71,29 +42,18 @@ pub fn write(
     var writer = out_file.writer(io, &writer_buf);
     const w: *std.Io.Writer = &writer.interface;
 
-    // Preamble: everything before the old block.
     try w.writeAll(source[0..block_start]);
 
-    // Generated default_params block with tuned values.
     try emitDefaultParams(w, p);
 
-    // Suffix: everything after the old block (the closing `};`).
     try w.writeAll(source[block_end..]);
-
     try w.flush();
-    out_file.close(io);
 
-    // ==================================================================
-    // Step 5: Atomic rename .tmp → output_path.
-    // ==================================================================
+    out_file.close(io);
 
     const cwd = std.Io.Dir.cwd();
     try std.Io.Dir.rename(cwd, tmp_path, cwd, output_path, io);
 }
-
-// ==============================================================================
-// Internal: read file into an allocator-owned slice
-// ==============================================================================
 
 fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
@@ -115,13 +75,8 @@ fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf[0..total_read];
 }
 
-// ==============================================================================
-// Internal: brace-counting to find the end of the default_params block
-// ==============================================================================
-//
 // Returns the index just after the `;` that closes the block (so the suffix
 // starts there). Returns null if the braces are unmatched.
-
 fn findBlockEnd(source: []const u8, block_start: usize) ?usize {
     var i = block_start;
 
@@ -151,10 +106,6 @@ fn findBlockEnd(source: []const u8, block_start: usize) ?usize {
 
     return null;
 }
-
-// ==============================================================================
-// Internal: emit the default_params block as a Zig struct literal
-// ==============================================================================
 
 fn emitDefaultParams(w: *std.Io.Writer, p: *const Params) !void {
     try w.writeAll("pub const default_params: Params = .{\n");

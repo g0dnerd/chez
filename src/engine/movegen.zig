@@ -621,7 +621,7 @@ fn isLegalMove(state: *const State, m: Move, c: Color, p: Piece, king_square: Sq
 }
 
 // Check if there's a slider pinning this piece to the king.
-// If so, return the ray from king to pinner (inclusive) — the piece may only move along it.
+// If so, return the ray from king to pinner (inclusive): the piece may only move along it.
 fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboard {
     if (s == king_square) return Bitboard.empty;
 

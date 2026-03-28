@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Absolute Elo estimation via gauntlet against rated engines.
 
-Runs Chez against a set of opponents with known ratings (e.g. CCRL) using
-cutechess-cli, then computes a weighted-average absolute rating estimate.
+Run an engine against a set of opponents with known ratings (e.g. CCRL) using
+fastchess, then compute a weighted-average absolute rating estimate.
 
 Usage:
-  python gauntlet.py                              # Run with gauntlet.json
+  python gauntlet.py                               # Run with gauntlet.json
   python gauntlet.py --config my_config.json       # Custom config
   python gauntlet.py --init-config                 # Generate template config
   python gauntlet.py --engine /path/to/uci         # Use pre-built binary
@@ -75,10 +75,13 @@ def git(*args, **kwargs):
     return run(["git", *args], cwd=PROJECT_ROOT, **kwargs)
 
 
-def find_cutechess():
-    path = shutil.which("cutechess-cli")
+def find_fastchess():
+    path = shutil.which("fastchess")
     if not path:
-        print("Error: cutechess-cli not found on PATH.", file=sys.stderr)
+        print("Error: fastchess not found on PATH.", file=sys.stderr)
+        print(
+            "Install it from: https://github.com/Disservin/fastchess", file=sys.stderr
+        )
         sys.exit(1)
     return path
 
@@ -178,16 +181,16 @@ def elo_error_95(wins, draws, losses):
     if n == 0:
         return float("inf")
 
-    w = wins / n
-    d = draws / n
-    l = losses / n
-    score = w + d / 2
+    ws = wins / n
+    ds = draws / n
+    ls = losses / n
+    score = ws + ds / 2
 
     if score <= 0.0 or score >= 1.0:
         return float("inf")
 
     # Trinomial variance of the score
-    var_score = (w * (1 - score) ** 2 + d * (0.5 - score) ** 2 + l * score**2) / n
+    var_score = (ws * (1 - score) ** 2 + ds * (0.5 - score) ** 2 + ls * score**2) / n
     if var_score <= 0:
         return float("inf")
 
@@ -218,10 +221,10 @@ def compute_estimates(match_results):
             )
             continue
 
-        w, d, l = m["wins"], m["draws"], m["losses"]
-        score = (w + d / 2) / n
+        ws, ds, ls = m["wins"], m["draws"], m["losses"]
+        score = (ws + ds / 2) / n
         elo_diff = score_to_elo(score)
-        ci = elo_error_95(w, d, l)
+        ci = elo_error_95(ws, ds, ls)
         est = m["rating"] + elo_diff
 
         estimates.append(
@@ -257,11 +260,8 @@ def compute_estimates(match_results):
     return weighted_avg, combined_ci, estimates
 
 
-# -- Match running ------------------------------------------------------------
-
-
 def run_match(
-    cutechess,
+    fastchess,
     chez_binary,
     opponent,
     tc,
@@ -277,7 +277,7 @@ def run_match(
     opp_proto = opponent.get("proto", "uci")
 
     cmd = [
-        cutechess,
+        fastchess,
         "-engine",
         "name=Chez",
         f"cmd={chez_binary}",
@@ -300,7 +300,6 @@ def run_match(
         "-rounds",
         str(rounds),
         "-repeat",
-        "2",
         "-recover",
         "-concurrency",
         str(concurrency),
@@ -313,6 +312,8 @@ def run_match(
         "score=1000",
         "-ratinginterval",
         "10",
+        "-output",
+        "format=cutechess",
     ]
 
     if openings:
@@ -322,7 +323,7 @@ def run_match(
             cmd += ["-openings", f"file={book}", f"format={fmt}", "order=random"]
 
     if pgn_out:
-        cmd += ["-pgnout", str(pgn_out)]
+        cmd += ["-pgnout", f"file={pgn_out}"]
 
     print(f"Running command {cmd}")
     proc = subprocess.Popen(
@@ -331,7 +332,11 @@ def run_match(
         stderr=subprocess.STDOUT,
         text=True,
     )
+    if proc.stdout is None:
+        raise RuntimeError("Could not open subprocess stdout.")
+
     output_lines = []
+
     for line in proc.stdout:
         output_lines.append(line)
         if line.startswith("Score of"):
@@ -352,9 +357,6 @@ def run_match(
             games = int(m.group(5))
 
     return {"wins": wins, "losses": losses, "draws": draws, "games": games}
-
-
-# -- Output -------------------------------------------------------------------
 
 
 def print_results(estimates, weighted_avg, combined_ci, config):
@@ -437,8 +439,6 @@ def save_results(estimates, weighted_avg, combined_ci, config, pgn_path):
     return json_path
 
 
-# -- Config template ----------------------------------------------------------
-
 TEMPLATE_CONFIG = {
     "_comment": "Opponent ratings: https://www.computerchess.org.uk/ccrl/",
     "time_control": "2+1",
@@ -446,7 +446,6 @@ TEMPLATE_CONFIG = {
     "concurrency": 4,
     "threads": 4,
     "rating_list": "CCRL Blitz",
-    "opening_book": "books/8moves_v3.pgn",
     "opponents": [
         {
             "name": "Engine Name",
@@ -471,14 +470,6 @@ def init_config(path):
     print(
         "Each opponent needs: name, cmd (path to binary), rating, proto (uci/xboard)."
     )
-    print()
-    print("Tips:")
-    print("  - Pick 5-8 opponents spanning the range you think brackets Chez")
-    print("  - Match the TC to the rating list (e.g. CCRL Blitz uses ~2+1)")
-    print("  - 100 round pairs (200 games) per opponent gives decent precision")
-
-
-# -- Main ---------------------------------------------------------------------
 
 
 def parse_args():
@@ -540,20 +531,7 @@ def main():
     if openings and not Path(openings).is_absolute():
         openings = str(SCRIPT_DIR / openings)
 
-    # Validate opponent binaries
-    for opp in opponents:
-        # opp_path = Path(opp["cmd"])
-        # if not opp_path.exists():
-        #     print(
-        #         f"Error: binary not found: {opp['cmd']} ({opp['name']})",
-        #         file=sys.stderr,
-        #     )
-        #     sys.exit(1)
-        if "rating" not in opp:
-            print(f"Error: no rating for {opp['name']}", file=sys.stderr)
-            sys.exit(1)
-
-    cutechess = find_cutechess()
+    fastchess = find_fastchess()
 
     print()
     print("Chez Gauntlet")
@@ -593,7 +571,7 @@ def main():
     for i, opp in enumerate(opponents, 1):
         print(f"\n  [{i}/{n_opp}] Chez vs {opp['name']} (rated {opp['rating']})...")
         result = run_match(
-            cutechess,
+            fastchess,
             chez_binary,
             opp,
             tc,
@@ -605,8 +583,8 @@ def main():
         )
         match_results.append({"name": opp["name"], "rating": opp["rating"], **result})
 
-        w, l, d = result["wins"], result["losses"], result["draws"]
-        print(f"    Final: +{w} -{l} ={d}")
+        ws, ls, ds = result["wins"], result["losses"], result["draws"]
+        print(f"    Final: +{ws} -{ls} ={ds}")
 
     # Compute estimates
     weighted_avg, combined_ci, estimates = compute_estimates(match_results)

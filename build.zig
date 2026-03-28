@@ -53,14 +53,6 @@ pub fn build(b: *std.Build) !void {
         .version = .{ .major = 0, .minor = 0, .patch = 1 },
     });
 
-    const test_step = b.step("test", "Run unit tests");
-    const unit_tests = b.addTest(.{
-        .name = "chez_tests",
-        .root_module = chez_mod,
-    });
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-    test_step.dependOn(&run_unit_tests.step);
-
     const puzzle_mod = b.addModule("puzzles", .{
         .root_source_file = b.path("tests/puzzles.zig"),
         .target = target,
@@ -121,6 +113,7 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{.{ .name = "chez", .module = chez_mod }},
         }),
     });
+    quiet_filter.root_module.addImport("kore", kore);
 
     const uci = b.addExecutable(.{
         .name = "uci",
@@ -131,12 +124,49 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    const selfplay = b.addExecutable(.{
+        .name = "selfplay",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/selfplay.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "chez", .module = chez_mod },
+                .{ .name = "kore", .module = kore },
+            },
+        }),
+    });
+
+    const test_step = b.step("test", "Run unit tests");
+    const test_filters: []const []const u8 = b.option(
+        []const []const u8,
+        "test_filter",
+        "Skip tests that do not match any of the specified filters",
+    ) orelse &.{};
+    const unit_tests = b.addTest(.{
+        .name = "chez_tests",
+        .root_module = chez_mod,
+        .filters = test_filters,
+    });
+    const selfplay_unit_tests = b.addTest(.{
+        .name = "selfplay_tests",
+        .root_module = selfplay.root_module,
+        .filters = test_filters,
+    });
+    selfplay_unit_tests.root_module.addImport("kore", kore);
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const run_selfplay_unit_tests = b.addRunArtifact(selfplay_unit_tests);
+    test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_selfplay_unit_tests.step);
+
     b.installArtifact(libchez);
     b.installArtifact(precompute);
     b.installArtifact(tui);
     b.installArtifact(bench);
     b.installArtifact(uci);
     b.installArtifact(quiet_filter);
+    b.installArtifact(selfplay);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{

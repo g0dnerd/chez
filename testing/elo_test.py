@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Strength testing framework for Chez chess engine.
+"""Strength testing framework for chess engines.
 
-Uses cutechess-cli to run engine-vs-engine matches with two modes:
+Uses fastchess to run engine-vs-engine matches with two modes:
   quick  - fast regression check (100 games, 1+0.01)
   full   - SPRT-based Elo measurement (up to 10000 games, 5+0.05)
   custom - all defaults from quick, but no preset overrides
@@ -60,9 +60,6 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
-# -- Utilities ----------------------------------------------------------------
-
-
 def run(cmd, **kwargs):
     """Run a command, returning CompletedProcess. Raises on failure by default."""
     kwargs.setdefault("check", True)
@@ -96,19 +93,16 @@ def is_dirty():
     return bool(result.stdout.strip())
 
 
-def find_cutechess():
-    """Find cutechess-cli on PATH."""
-    path = shutil.which("cutechess-cli")
+def find_fastchess():
+    """Find fastchess on PATH."""
+    path = shutil.which("fastchess")
     if not path:
-        print("Error: cutechess-cli not found on PATH.", file=sys.stderr)
+        print("Error: fastchess not found on PATH.", file=sys.stderr)
         print(
-            "Install it from: https://github.com/cutechess/cutechess", file=sys.stderr
+            "Install it from: https://github.com/Disservin/fastchess", file=sys.stderr
         )
         sys.exit(1)
     return path
-
-
-# -- Build management ---------------------------------------------------------
 
 
 def build_from_worktree(commit, name):
@@ -225,17 +219,14 @@ def prepare_engine(spec, name, is_current=False):
     return binary, display, commit
 
 
-# -- cutechess-cli invocation -------------------------------------------------
-
-
-def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
-    """Build the cutechess-cli command line."""
-    cutechess = find_cutechess()
+def build_fastchess_cmd(args, engine_current, engine_baseline, pgn_out):
+    """Build the fastchess command line."""
+    fastchess = find_fastchess()
     tc = args.tc
     rounds = args.rounds
 
     cmd = [
-        cutechess,
+        fastchess,
         "-engine",
         f"name={args.current_name}",
         f"cmd={engine_current}",
@@ -277,7 +268,6 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "-rounds",
         str(rounds),
         "-repeat",
-        "2",
         "-recover",
         "-concurrency",
         str(args.concurrency),
@@ -290,11 +280,13 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         "score=1000",
         "-ratinginterval",
         "10",
+        "-output",
+        "format=cutechess",
     ]
 
     # PGN output
     if pgn_out:
-        cmd += ["-pgnout", str(pgn_out)]
+        cmd += ["-pgnout", f"file={pgn_out}"]
 
     # SPRT
     if args.mode == "full" or (args.elo0 is not None and args.elo1 is not None):
@@ -302,15 +294,12 @@ def build_cutechess_cmd(args, engine_current, engine_baseline, pgn_out):
         elo1 = args.elo1 if args.elo1 is not None else 5
         cmd += ["-sprt", f"elo0={elo0}", f"elo1={elo1}", "alpha=0.05", "beta=0.05"]
 
-    print(f"cutechess-cli Command:\n {cmd}")
+    print(f"fastchess Command:\n {cmd}")
     return cmd
 
 
-# -- Result parsing -----------------------------------------------------------
-
-
 def parse_results(output):
-    """Parse cutechess-cli output for results."""
+    """Parse fastchess output for results (using cutechess output format)."""
     results = {
         "wins": 0,
         "losses": 0,
@@ -359,9 +348,6 @@ def parse_results(output):
             results["sprt_result"] = m.group(1)
 
     return results
-
-
-# -- Output -------------------------------------------------------------------
 
 
 def print_results(results, args, current_display, baseline_display):
@@ -446,12 +432,9 @@ def save_results(
     return json_path
 
 
-# -- Main ---------------------------------------------------------------------
-
-
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Chez engine strength testing via cutechess-cli"
+        description="Chez engine strength testing via fastchess"
     )
     p.add_argument(
         "--mode",
@@ -486,7 +469,7 @@ def parse_args():
     p.add_argument("--elo1", type=float, default=None, help="SPRT upper bound")
     p.add_argument("--pgn-out", default=None, help="PGN output path")
     p.add_argument("--no-save", action="store_true", help="Don't save result JSON")
-    p.add_argument("--verbose", action="store_true", help="Stream cutechess output")
+    p.add_argument("--verbose", action="store_true", help="Stream fastchess output")
     return p.parse_args()
 
 
@@ -537,8 +520,8 @@ def main():
     print("Chez Strength Test")
     print("=" * 42)
 
-    # Check for cutechess-cli
-    find_cutechess()
+    # Check for fastchess
+    find_fastchess()
 
     # Build engines
     print("\nPreparing engines...")
@@ -559,8 +542,8 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         pgn_out = RESULTS_DIR / f"{timestamp}.pgn"
 
-    # Build and run cutechess command
-    cmd = build_cutechess_cmd(args, current_binary, baseline_binary, pgn_out)
+    # Build and run fastchess command
+    cmd = build_fastchess_cmd(args, current_binary, baseline_binary, pgn_out)
 
     tc_str = f"depth {args.depth}" if args.depth else args.tc
     print(f"\nRunning {args.rounds} game pairs ({args.rounds * 2} games)")
@@ -580,6 +563,9 @@ def main():
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+            if proc.stdout is None:
+                raise RuntimeError("Could not open subprocess stdout.")
+
             output_lines = []
             for line in proc.stdout:
                 print(line, end="")
@@ -588,7 +574,7 @@ def main():
             output = "".join(output_lines)
             if proc.returncode != 0:
                 print(
-                    f"\ncutechess-cli exited with code {proc.returncode}",
+                    f"\nfastchess exited with code {proc.returncode}",
                     file=sys.stderr,
                 )
         else:
@@ -599,6 +585,9 @@ def main():
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+            if proc.stdout is None:
+                raise RuntimeError("Could not open subprocess stdout.")
+
             output_lines = []
             for line in proc.stdout:
                 output_lines.append(line)
@@ -610,7 +599,7 @@ def main():
             proc.wait()
             output = "".join(output_lines)
     except FileNotFoundError:
-        print("Error: cutechess-cli not found", file=sys.stderr)
+        print("Error: fastchess not found", file=sys.stderr)
         sys.exit(1)
 
     # Parse and display results

@@ -200,7 +200,7 @@ pub fn main() !void {
 
     var seed: u64 = undefined;
     if (builtin.target.os.tag == .linux) {
-        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 1, 0);
+        _ = std.os.linux.getrandom(std.mem.asBytes(&seed), 8, 0);
     } else {
         std.Io.random(io, std.mem.asBytes(&seed));
     }

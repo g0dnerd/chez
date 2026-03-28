@@ -159,7 +159,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
 
     // Initialize position history for repetition detection
-    var history = engine.search.PositionHistory.init();
+    var history = engine.search.PositionHistory{};
     history.push(state.zobrist_hash);
 
     var tbl = try engine.search.TranspositionTable.init(std.heap.page_allocator);

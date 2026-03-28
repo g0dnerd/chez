@@ -26,7 +26,7 @@ import chess
 import chess.engine
 
 
-# Sentinel for "no result" — filtered or errored positions
+# Sentinel for "no result": filtered or errored positions
 SKIP = None
 
 
@@ -95,25 +95,58 @@ def fen_to_epd_base(fen):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Label positions with Stockfish evaluations")
-    parser.add_argument("--input", required=True, help="Input FEN file (one FEN per line)")
-    parser.add_argument("--output", default=None, help="Output EPD file (default: stdout)")
-    parser.add_argument("--stockfish", default="stockfish",
-                        help="Path to Stockfish binary (default: 'stockfish' in PATH)")
-    parser.add_argument("--depth", type=int, default=15,
-                        help="Stockfish search depth (default: 15)")
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Number of parallel Stockfish instances (default: CPU count)")
-    parser.add_argument("--batch-size", type=int, default=256,
-                        help="Positions per Stockfish batch (default: 256)")
-    parser.add_argument("--max-eval", type=int, default=1000,
-                        help="Discard positions with |eval| > this (cp, default: 1000)")
-    parser.add_argument("--time-limit", type=float, default=10.0,
-                        help="Per-position time limit in seconds (default: 10)")
-    parser.add_argument("--max-positions", type=int, default=0,
-                        help="Stop after labeling this many positions (0 = unlimited)")
-    parser.add_argument("--dedup", action="store_true",
-                        help="Deduplicate positions by EPD base (first 4 FEN fields)")
+    parser = argparse.ArgumentParser(
+        description="Label positions with Stockfish evaluations"
+    )
+    parser.add_argument(
+        "--input", required=True, help="Input FEN file (one FEN per line)"
+    )
+    parser.add_argument(
+        "--output", default=None, help="Output EPD file (default: stdout)"
+    )
+    parser.add_argument(
+        "--stockfish",
+        default="stockfish",
+        help="Path to Stockfish binary (default: 'stockfish' in PATH)",
+    )
+    parser.add_argument(
+        "--depth", type=int, default=15, help="Stockfish search depth (default: 15)"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel Stockfish instances (default: CPU count)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=256,
+        help="Positions per Stockfish batch (default: 256)",
+    )
+    parser.add_argument(
+        "--max-eval",
+        type=int,
+        default=1000,
+        help="Discard positions with |eval| > this (cp, default: 1000)",
+    )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=10.0,
+        help="Per-position time limit in seconds (default: 10)",
+    )
+    parser.add_argument(
+        "--max-positions",
+        type=int,
+        default=0,
+        help="Stop after labeling this many positions (0 = unlimited)",
+    )
+    parser.add_argument(
+        "--dedup",
+        action="store_true",
+        help="Deduplicate positions by EPD base (first 4 FEN fields)",
+    )
     args = parser.parse_args()
 
     workers = args.workers or os.cpu_count() or 1
@@ -125,18 +158,24 @@ def main():
     print(f"Loaded {len(fens)} FENs", file=sys.stderr)
 
     if args.max_positions > 0:
-        fens = fens[:args.max_positions * 2]  # overshoot to account for filtering
+        fens = fens[: args.max_positions * 2]  # overshoot to account for filtering
 
     # Split into batches
-    batches = [fens[i:i + args.batch_size] for i in range(0, len(fens), args.batch_size)]
-    print(f"Processing {len(batches)} batches with {workers} workers at depth {args.depth}...",
-          file=sys.stderr)
+    batches = [
+        fens[i : i + args.batch_size] for i in range(0, len(fens), args.batch_size)
+    ]
+    print(
+        f"Processing {len(batches)} batches with {workers} workers at depth {args.depth}...",
+        file=sys.stderr,
+    )
 
-    eval_fn = partial(evaluate_batch,
-                      stockfish_path=args.stockfish,
-                      depth=args.depth,
-                      max_eval_cp=args.max_eval,
-                      time_limit=args.time_limit)
+    eval_fn = partial(
+        evaluate_batch,
+        stockfish_path=args.stockfish,
+        depth=args.depth,
+        max_eval_cp=args.max_eval,
+        time_limit=args.time_limit,
+    )
 
     out = open(args.output, "w") if args.output else sys.stdout
     seen = set() if args.dedup else None
@@ -172,8 +211,10 @@ def main():
                         break
 
                 if kept % 10000 < args.batch_size:
-                    print(f"  processed={total} kept={kept} filtered={filtered_eval} dupes={duplicates}",
-                          file=sys.stderr)
+                    print(
+                        f"  processed={total} kept={kept} filtered={filtered_eval} dupes={duplicates}",
+                        file=sys.stderr,
+                    )
 
                 if args.max_positions > 0 and kept >= args.max_positions:
                     break
@@ -182,8 +223,10 @@ def main():
         if args.output:
             out.close()
 
-    print(f"Done. total={total} kept={kept} filtered_eval={filtered_eval} duplicates={duplicates}",
-          file=sys.stderr)
+    print(
+        f"Done. total={total} kept={kept} filtered_eval={filtered_eval} duplicates={duplicates}",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

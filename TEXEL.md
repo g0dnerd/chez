@@ -9,8 +9,8 @@ to [0,1]) and position labels from a dataset. The implementation lives in
 
 ## Algorithm
 
-**SPSA (Simultaneous Perturbation Stochastic Approximation)** rather than the more
-common analytical gradient approach. The eval function is linear in its features, so
+SPSA rather than the more common analytical gradient approach.
+The eval function is linear in its features, so
 analytical gradients are feasible and would converge faster per-iteration. SPSA was
 chosen for **implementation simplicity**: it requires only two MSE evaluations per
 iteration regardless of parameter count, and avoids the need to derive and maintain
@@ -23,7 +23,7 @@ implementation burden was prioritized over convergence speed.
 - **Perturbation**: Rademacher ±1 delta vector (all params perturbed simultaneously)
 - **Batch size**: 16,384 positions sampled with replacement per iteration
 - **Schedule**: Standard SPSA gains sequences — `a_t = a/(t+A)^alpha`, `c_t = c/t^gamma`
-- **Calibration pass**: Estimates a good `a` value by running ~50 dry iterations and
+- **Calibration pass**: Estimates a good `a` value by running dry iterations and
   measuring average |g_hat|, targeting a first-step size of 2.0 float units. The
   calibrated value is auto-applied unless `--a` is explicitly provided.
 - **Float-space optimization**: All SPSA work happens in f64 space (`ParamsF64`) to
@@ -38,9 +38,9 @@ implementation burden was prioritized over convergence speed.
 ### Perturbation Scaling
 
 Per-parameter perturbation scaling via comptime `c_scales` array: piece values 5×,
-passed pawn bonuses 2×, PSTs 0.5×, mobility/scalars 1×. `c_scales` only appears in
-perturbation construction, not in the gradient denominator — dividing by it would
-inversely scale step sizes and cause PSTs to random-walk.
+passed pawn bonuses 2×, PSTs 0.5×, mobility/scalars 1×. `c_scales` appears in both
+perturbation construction and the gradient denominator (dividing by `c_scales[i]`)
+so that the gradient estimate is unbiased regardless of perturbation scale.
 
 ## Parameter Space
 

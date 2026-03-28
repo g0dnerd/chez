@@ -1,39 +1,33 @@
 const std = @import("std");
-const expectEqual = std.testing.expectEqual;
-const expect = std.testing.expect;
-const Atomic = std.atomic.Value;
-
 const engine = @import("engine.zig");
 const Bitboard = @import("Bitboard.zig");
 const State = @import("State.zig");
 const movegen = @import("movegen.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
+
+const Atomic = std.atomic.Value;
+const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const GameResult = engine.GameResult;
 const Move = engine.Move;
 const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
 const checkmate_score: i32 = 100000;
+const max_ply: usize = 64;
 const mate_score_threshold: i32 = checkmate_score - max_ply;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
 const beta_init: i32 = std.math.maxInt(i32);
-const max_ply: usize = 64;
 const max_threads: usize = 16;
 const default_threads: usize = 8;
-
-// Maximum game length - 1024 half-moves (512 full moves)
 const max_game_length: usize = 1024;
 
-// Position history for threefold repetition detection
+// Position history for threefold repetition detection.
 // Stores Zobrist hashes of positions since game start
 pub const PositionHistory = struct {
     hashes: [max_game_length]u64 = undefined,
     len: usize = 0,
-
-    pub fn init() PositionHistory {
-        return .{};
-    }
 
     pub fn push(self: *PositionHistory, hash: u64) void {
         if (self.len < max_game_length) {
@@ -48,9 +42,9 @@ pub const PositionHistory = struct {
         }
     }
 
-    // Check if current position is a repetition
-    // halfmove_clock tells us how far back we need to look (since last irreversible move)
-    // For search: returns true for 2-fold (implies 3-fold in game context)
+    // Check if current position is a repetition.
+    // halfmove_clock tells us how far back we need to look since last irreversible move.
+    // For search: returns true for 2-fold (implies 3-fold in game context).
     // For game: set require_threefold=true to check for actual threefold
     pub fn isRepetition(self: *const PositionHistory, hash: u64, halfmove_clock: u16, require_threefold: bool) bool {
         if (self.len < 5) return false; // Need at least 5 positions for a repetition
@@ -63,10 +57,13 @@ pub const PositionHistory = struct {
         if (max_lookback < 4) return false;
 
         var count: u8 = 0;
-        const target = if (require_threefold) @as(u8, 2) else @as(u8, 1);
+        const target: u8 = if (require_threefold)
+            2
+        else
+            1;
 
         // Check every 2 positions (same side to move)
-        // i represents how many ply back from current position (len-1)
+        // i represents how many ply back from current position (len - 1)
         var i: usize = 4;
         while (i <= max_lookback) : (i += 2) {
             const idx = self.len - 1 - i;
@@ -78,27 +75,26 @@ pub const PositionHistory = struct {
         return false;
     }
 
-    // Check for threefold repetition (for game-over detection)
     pub fn isThreefold(self: *const PositionHistory, hash: u64, halfmove_clock: u16) bool {
         return self.isRepetition(hash, halfmove_clock, true);
     }
 
-    // Check for twofold repetition (for search pruning)
     pub fn isTwofold(self: *const PositionHistory, hash: u64, halfmove_clock: u16) bool {
         return self.isRepetition(hash, halfmove_clock, false);
     }
 };
 
-// Killer move table: stores 2 killer moves per ply
-// Killer moves are quiet moves that caused beta cutoffs
+// Killer move table: stores 2 killer moves per ply.
+// Killer moves are quiet moves that caused beta cutoffs.
 const KillerTable = struct {
     moves: [max_ply][2]?Move = [_][2]?Move{.{ null, null }} ** max_ply,
 
     fn store(self: *KillerTable, ply: usize, m: Move) void {
         if (ply >= max_ply) return;
+
         // Don't store if it's already the first killer
         if (self.moves[ply][0]) |k| {
-            if (k.start == m.start and k.end == m.end) return;
+            if (m.eql(k)) return;
         }
         // Shift first killer to second slot, store new as first
         self.moves[ply][1] = self.moves[ply][0];
@@ -107,11 +103,12 @@ const KillerTable = struct {
 
     fn isKiller(self: *const KillerTable, ply: usize, m: Move) bool {
         if (ply >= max_ply) return false;
+
         if (self.moves[ply][0]) |k| {
-            if (k.start == m.start and k.end == m.end) return true;
+            if (m.eql(k)) return true;
         }
         if (self.moves[ply][1]) |k| {
-            if (k.start == m.start and k.end == m.end) return true;
+            if (m.eql(k)) return true;
         }
         return false;
     }
@@ -121,8 +118,8 @@ const KillerTable = struct {
     }
 };
 
-// Countermove table: stores the move that refuted the opponent's previous move
-// Indexed by [from_square][to_square] of the previous move
+// Countermove table: stores the move that refuted the opponent's previous move.
+// Indexed by [from_square][to_square] of the previous move.
 pub const CountermoveTable = struct {
     table: [64][64]?Move = [_][64]?Move{[_]?Move{null} ** 64} ** 64,
 
@@ -144,7 +141,7 @@ pub const CountermoveTable = struct {
     }
 };
 
-const Flag = enum(u2) {
+const TranspositionFlag = enum(u2) {
     empty = 0,
     exact = 1,
     lowerBound = 2,
@@ -155,29 +152,32 @@ const TranspositionEntry = struct {
     hash: u64 = 0,
     score: i32 = 0,
     depth: u8 = 0,
-    flag: Flag = .empty,
+    flag: TranspositionFlag = .empty,
     best_move: ?Move = null,
 };
 
 // Lock-free transposition table entry packed into two 64-bit words
-// This allows atomic read/write without locks (Stockfish-style)
 // Word 1: hash XOR data (for validation)
 // Word 2: data (score:16, depth:8, flag:2, move_start:6, move_end:6, move_valid:1,
 //          is_promotion:1, promotion_piece:3 = 43 bits)
-//
-// On 32-bit platforms (WASM), we use non-atomic access since search is single-threaded.
 const builtin = @import("builtin");
 const is_wasm = builtin.target.cpu.arch == .wasm32;
 
+// For WASM, provide aliased methods to allow the "generic" type to function.
 const TTWord = if (is_wasm) struct {
+    const Self = @This();
+
     raw: u64 = 0,
-    fn init(v: u64) @This() {
+
+    fn init(v: u64) Self {
         return .{ .raw = v };
     }
-    fn load(self: *const @This(), _: std.builtin.AtomicOrder) u64 {
+
+    fn load(self: *const Self, _: std.builtin.AtomicOrder) u64 {
         return self.raw;
     }
-    fn store(self: *@This(), v: u64, _: std.builtin.AtomicOrder) void {
+
+    fn store(self: *Self, v: u64, _: std.builtin.AtomicOrder) void {
         self.raw = v;
     }
 } else Atomic(u64);
@@ -186,18 +186,16 @@ const PackedTTEntry = struct {
     key: TTWord = TTWord.init(0),
     data: TTWord = TTWord.init(0),
 
-    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move, generation: u8) struct { key: u64, data: u64 } {
-        // Pack data into 64 bits:
-        // bits 0-15: score (as u16, offset by 32768 to handle negatives)
-        // bits 16-23: depth
-        // bits 24-25: flag
-        // bits 26-31: move start
-        // bits 32-37: move end
-        // bit 38: move valid
-        // bit 39: is_promotion
-        // bits 40-42: promotion_piece
-        // bits 43-50: generation
-        // Clamp score to i16 range to avoid corruption of mate scores
+    // bits 0-15: score (as u16, offset by 32768 to handle negatives)
+    // bits 16-23: depth
+    // bits 24-25: flag
+    // bits 26-31: move start
+    // bits 32-37: move end
+    // bit 38: move valid
+    // bit 39: is_promotion
+    // bits 40-42: promotion_piece
+    // bits 43-50: generation
+    fn pack(hash: u64, score: i32, depth: u8, flag: TranspositionFlag, best_move: ?Move, generation: u8) struct { key: u64, data: u64 } {
         const clamped_score = std.math.clamp(score, std.math.minInt(i16), std.math.maxInt(i16));
         const score_u: u16 = @bitCast(@as(i16, @intCast(clamped_score)));
         var data: u64 = score_u;
@@ -213,19 +211,19 @@ const PackedTTEntry = struct {
             }
         }
         data |= @as(u64, generation) << 43;
-        // XOR hash with data for validation
+
         const key = hash ^ data;
         return .{ .key = key, .data = data };
     }
 
     fn unpack(key: u64, data: u64, hash: u64) ?TranspositionEntry {
-        // Validate: key XOR data should equal original hash
+        // Key XOR data should equal original hash
         if ((key ^ data) != hash) return null;
 
         const score_u: u16 = @truncate(data);
         const score: i32 = @as(i16, @bitCast(score_u));
         const depth: u8 = @truncate(data >> 16);
-        const flag: Flag = @enumFromInt(@as(u2, @truncate(data >> 24)));
+        const flag: TranspositionFlag = @enumFromInt(@as(u2, @truncate(data >> 24)));
         const move_start: u6 = @truncate(data >> 26);
         const move_end: u6 = @truncate(data >> 32);
         const move_valid: u1 = @truncate(data >> 38);
@@ -254,14 +252,14 @@ const PackedTTEntry = struct {
 // When storing, we add ply so the stored score is distance from root.
 // When retrieving, we subtract ply to get distance from the retrieval node.
 fn scoreToTT(score: i32, ply: usize) i32 {
-    const p = @as(i32, @intCast(ply));
+    const p: i32 = @intCast(ply);
     if (score > mate_score_threshold) return score + p;
     if (score < -mate_score_threshold) return score - p;
     return score;
 }
 
 fn scoreFromTT(score: i32, ply: usize) i32 {
-    const p = @as(i32, @intCast(ply));
+    const p: i32 = @intCast(ply);
     if (score > mate_score_threshold) return score - p;
     if (score < -mate_score_threshold) return score + p;
     return score;
@@ -274,7 +272,7 @@ pub const TranspositionTable = struct {
 
     // Multi-bucket transposition table: 4 entries per bucket = 1 cache line (64 bytes)
     const bucket_size: usize = 4;
-    const num_buckets_bits = 18; // 2^18 buckets
+    const num_buckets_bits = 18;
     const num_buckets: usize = 1 << num_buckets_bits;
     const bucket_mask: u64 = num_buckets - 1;
     const num_entries: usize = num_buckets * bucket_size;
@@ -308,7 +306,7 @@ pub const TranspositionTable = struct {
         return null;
     }
 
-    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) void {
+    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: TranspositionFlag, best_move: ?Move) void {
         const base: usize = @intCast((hash & bucket_mask) * bucket_size);
         const gen = self.generation;
 
@@ -321,7 +319,7 @@ pub const TranspositionTable = struct {
             const idx = base + i;
             const entry = &self.entries[idx];
             const old_data = entry.data.load(.monotonic);
-            const old_flag: Flag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
+            const old_flag: TranspositionFlag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
 
             // Empty slot: use immediately
             if (old_flag == .empty) {
@@ -428,13 +426,13 @@ const ThreadContext = struct {
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
-    // Each thread reports its best result here
     best_move: ?Move = null,
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
 };
 
 // Delta pruning margin - captures unlikely to improve alpha if below this threshold
+// FIXME: Check/tune this.
 const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
@@ -447,6 +445,7 @@ fn quiescence(
     shared: *SharedSearchState,
 ) i32 {
     const nodes = shared.node_count.fetchAdd(1, .monotonic);
+
     if (nodes & 2047 == 0) checkTime(shared);
     if (shared.stop_flag.load(.monotonic)) return 0;
 
@@ -548,11 +547,11 @@ fn quiescence(
 }
 
 // Futility pruning margins by depth
+// FIXME: Check/tune these.
 const futility_margins = [_]i32{ 0, 300, 600 };
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
-// More conservative: 5 + depth^2
-const lmp_thresholds = [4]u8{ 5, 6, 9, 14 }; // depth 0, 1, 2, 3
+const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
 
 const SearchContext = struct {
     tt: *TranspositionTable,
@@ -622,7 +621,10 @@ fn negamax(
     const is_pv_node = beta_param - alpha_initial > 1;
 
     // Compute static eval once for pruning decisions (depths 1-6, not in check)
-    const static_eval: ?i32 = if (depth <= 6 and !in_check) evaluation.evaluate(state) else null;
+    const static_eval: ?i32 = if (depth <= 6 and !in_check)
+        evaluation.evaluate(state)
+    else
+        null;
 
     // Reverse futility pruning (static null move pruning):
     // If eval is far above beta, the position is so good we can prune
@@ -637,22 +639,21 @@ fn negamax(
     var moves = movegen.legalMoves(state, to_move);
 
     if (moves.len == 0) {
-        if (in_check) {
-            return -checkmate_score + @as(i32, @intCast(ply));
-        } else {
+        if (in_check)
+            return -checkmate_score + @as(i32, @intCast(ply))
+        else
             return 0;
-        }
     }
 
     // Futility pruning setup: at shallow depths, if static eval is far below alpha,
-    // we can skip quiet moves that are unlikely to improve
+    // we can skip quiet moves that are unlikely to improve.
     const can_futility_prune = if (static_eval) |eval|
         depth <= 2 and eval + futility_margins[depth] <= alpha
     else
         false;
 
     // Null move pruning: if giving opponent a free move still results in beta cutoff,
-    // the position is so good we can prune
+    // the position is so good we can prune.
     if (depth >= 3 and !in_check and state.hasNonPawnMaterial(to_move)) {
         const keys = State.getZobristKeys();
         // Save state for null move
@@ -749,7 +750,10 @@ fn negamax(
             }
         }
 
-        const extension: u8 = if (gives_check) 1 else 0;
+        const extension: u8 = if (gives_check)
+            1
+        else
+            0;
         const new_depth = depth - 1 + extension;
 
         var score: i32 = undefined;
@@ -771,6 +775,7 @@ fn negamax(
             var reduction: u8 = 0;
             if (i >= 3 and depth >= 3 and !is_capture and !gives_check and !in_check) {
                 // Base reduction + increase for later moves and higher depths
+                // FIXME: un-simplify this?
                 // Formula: 1 + ln(depth) * ln(moveIndex) / 2 (simplified integer version)
                 reduction = 1;
                 if (i >= 6) reduction += 1;
@@ -844,8 +849,8 @@ fn negamax(
                 search_ctx.killers.store(ply, m);
                 search_ctx.history_table.update(to_move, m.start, m.end, bonus);
                 // Malus: penalize all quiet moves tried before the cutoff move
-                // If cutoff move is quiet it's the last entry in quiets_tried; skip it.
-                // If cutoff move is a promotion it's not in quiets_tried; penalize all.
+                // If cutoff move is quiet it's the last entry in quiets_tried: skip it.
+                // If cutoff move is a promotion it's not in quiets_tried: penalize all.
                 const malus_count = if (!is_promotion) num_quiets - 1 else num_quiets;
                 for (0..malus_count) |qi| {
                     search_ctx.history_table.update(to_move, quiets_tried[qi].start, quiets_tried[qi].end, -bonus);
@@ -860,7 +865,7 @@ fn negamax(
     }
 
     // Determine flag for TT entry
-    const flag: Flag = if (max_score <= alpha_initial)
+    const flag: TranspositionFlag = if (max_score <= alpha_initial)
         .upperBound
     else if (max_score >= beta)
         .lowerBound
@@ -1020,6 +1025,7 @@ fn searchAtDepth(
 }
 
 // Aspiration window initial size (centipawns)
+// FIXME: Check/tune this.
 const aspiration_window: i32 = 25;
 
 // Extract the principal variation from the transposition table
@@ -1063,10 +1069,10 @@ fn workerThread(ctx: *ThreadContext) void {
     var prev_score: i32 = 0;
 
     // Each thread does iterative deepening up to max_depth
-    for (1..ctx.shared.max_depth + 1) |depth_usize| {
+    for (1..ctx.shared.max_depth + 1) |d| {
         if (ctx.shared.stop_flag.load(.monotonic)) break;
 
-        const depth: u8 = @intCast(depth_usize);
+        const depth: u8 = @intCast(d);
 
         // Get PV hint from TT (may have been populated by other threads)
         const tt_move = if (ctx.tbl.probe(ctx.state.zobrist_hash)) |entry| entry.best_move else null;
@@ -1076,7 +1082,7 @@ fn workerThread(ctx: *ThreadContext) void {
 
         // Use aspiration windows after depth 1
         if (depth > 1) {
-            var window: i32 = aspiration_window;
+            var window = aspiration_window;
             var alpha = prev_score - window;
             var beta = prev_score + window;
             var attempts: u8 = 0;
@@ -1174,6 +1180,7 @@ fn workerThread(ctx: *ThreadContext) void {
             }
 
             // Early exit if checkmate found
+            // FIXME: why -100? Check this
             if (r.score >= checkmate_score - 100) {
                 ctx.shared.stop_flag.store(true, .monotonic);
                 break;
@@ -1213,7 +1220,7 @@ pub fn searchParallel(
     var contexts: [max_threads]ThreadContext = undefined;
     for (0..actual_threads) |i| {
         // Initialize history with game history if provided
-        var history = PositionHistory.init();
+        var history = PositionHistory{};
         if (game_history) |gh| {
             for (0..gh.len) |j| {
                 history.push(gh.hashes[j]);
@@ -1270,11 +1277,6 @@ pub fn searchParallel(
     }
 
     if (best_move) |m| {
-        var sq_start: [2]u8 = undefined;
-        var sq_end: [2]u8 = undefined;
-        square.toAlgebraic(m.start, &sq_start) catch {};
-        square.toAlgebraic(m.end, &sq_end) catch {};
-
         return .{
             .move = m,
             .score = best_score,
@@ -1285,8 +1287,6 @@ pub fn searchParallel(
     }
 }
 
-// Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
-// Uses parallel search with default thread count.
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     return searchParallel(state, max_depth, default_threads, null, &tbl, .{});
@@ -1309,7 +1309,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     defer tbl.deinit();
 
     var killers = KillerTable{};
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
     var history_table = evaluation.HistoryTable{};
     var countermoves = CountermoveTable{};
     history.push(state.zobrist_hash);
@@ -1320,9 +1320,6 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var best_move: ?Move = null;
     var best_score: i32 = undefined;
     var best_depth: u8 = 0;
-
-    var sq_start: [2]u8 = undefined;
-    var sq_end: [2]u8 = undefined;
 
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
@@ -1348,10 +1345,6 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
         if (result) |r| {
             best_move = r.move;
             best_score = r.score;
-
-            try square.toAlgebraic(best_move.?.start, &sq_start);
-            try square.toAlgebraic(best_move.?.end, &sq_end);
-
             best_depth = r.depth;
 
             // Early exit if we found a checkmate
@@ -1501,7 +1494,7 @@ test "search avoids stalemate when winning" {
 
 // Repetition detection tests
 test "twofold repetition detection" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Push some positions
     history.push(0x1234);
@@ -1522,7 +1515,7 @@ test "twofold repetition detection" {
 }
 
 test "threefold repetition detection" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Simulate a game with repetitions:
     // For threefold, we need position A to appear 3 times at same-side-to-move positions
@@ -1552,7 +1545,7 @@ test "threefold repetition detection" {
 }
 
 test "repetition respects halfmove clock" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Push positions
     history.push(0x1111);
@@ -1570,7 +1563,7 @@ test "repetition respects halfmove clock" {
 }
 
 test "repetition only checks same side to move" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // In a real game, positions with same side to move are at even intervals
     // Push 6 positions: 0, 1, 2, 3, 4, 5

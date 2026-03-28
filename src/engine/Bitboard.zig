@@ -1,7 +1,7 @@
 const std = @import("std");
-const expectEqual = std.testing.expectEqual;
-
 const square = @import("square.zig");
+
+const expectEqual = std.testing.expectEqual;
 const Square = square.Square;
 
 pub const Bitboard = @This();

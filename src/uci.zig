@@ -141,7 +141,7 @@ pub fn main() !void {
     var stdout_mutex = std.Io.Mutex.init;
 
     var state = State.defaultPosition();
-    var history = search.PositionHistory.init();
+    var history = search.PositionHistory{};
     history.push(state.zobrist_hash);
 
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
@@ -191,7 +191,7 @@ pub fn main() !void {
                 search_thread = null;
             }
             state = State.defaultPosition();
-            history = search.PositionHistory.init();
+            history = search.PositionHistory{};
             history.push(state.zobrist_hash);
             tbl.newSearch();
         } else if (std.mem.startsWith(u8, line, "setoption ")) {
@@ -219,7 +219,7 @@ pub fn main() !void {
 
             if (std.mem.startsWith(u8, rest, " startpos")) {
                 state = State.defaultPosition();
-                history = search.PositionHistory.init();
+                history = search.PositionHistory{};
                 history.push(state.zobrist_hash);
                 rest = rest[" startpos".len..];
             } else if (std.mem.startsWith(u8, rest, " fen ")) {
@@ -227,7 +227,7 @@ pub fn main() !void {
                 const moves_idx = std.mem.indexOf(u8, rest, " moves");
                 const fen = if (moves_idx) |idx| rest[0..idx] else rest;
                 state = State.fromFen(fen) catch continue;
-                history = search.PositionHistory.init();
+                history = search.PositionHistory{};
                 history.push(state.zobrist_hash);
                 rest = if (moves_idx) |idx| rest[idx..] else "";
             }
