@@ -19,10 +19,10 @@ Scale factors: FT = 127 (fills i16 range relative to ClippedReLU [0,127]), hidde
 
 | Layer | Weights | Biases | Activations | Float→Quant |
 |-------|---------|--------|-------------|-------------|
-| Accumulator | i16 | i16 | i16 → clamp [0, 127] → u8 | ×127 |
-| FC1 (512→32) | i8 | i32 | i8×u8→i32, ÷64, clamp [0, 127] → u8 | weights ×64, biases ×(127×64) |
-| FC2 (32→32) | i8 | i32 | i8×u8→i32, ÷64, clamp [0, 127] → u8 | weights ×64, biases ×(127×64) |
-| Output (32→1) | i8 | i32 | i8×u8→i32, ÷(127×64) → centipawns | weights ×64, biases ×(127×64) |
+| Accumulator | i16 | i16 | i16 → clamp [0, 127] → i8 | ×127 |
+| FC1 (512→32) | i8 | i32 | i8×i8→i32, ÷64, clamp [0, 127] → i8 | weights ×64, biases ×(127×64) |
+| FC2 (32→32) | i8 | i32 | i8×i8→i32, ÷64, clamp [0, 127] → i8 | weights ×64, biases ×(127×64) |
+| Output (32→1) | i8 | i32 | i8×i8→i32, ÷(127×64) → centipawns | weights ×64, biases ×(127×64) |
 
 ## .nnue File Format
 
@@ -124,12 +124,12 @@ nnue.expected_file_size // 20,989,748
 **Forward pass (quantized i16/i8), using `kore.ml.cpu` for SIMD primitives:**
 
 1. Compute active features for both perspectives via `activeFeatures()`
-2. Accumulator = `ft_biases` + sum of `ft_weights[idx]` for each active feature (i16, via `kore.ml.cpu.ops`)
-3. ClippedReLU: `clamp(x, 0, 127)` → cast to u8
-4. Concatenate accumulators: side-to-move perspective first → `[512]u8`
-5. FC1: i8 weights × u8 activations → i32 (via `kore.ml.cpu.quantized`), add i32 bias, ÷64, ClippedReLU → u8
+2. Accumulator = `ft_biases` + sum of `ft_weights[idx]` for each active feature (i16, via `kore.ml.cpu.ops.addVec_i16`)
+3. ClippedReLU: `clamp(x, 0, 127)` → i8 (via `kore.ml.cpu.ops.clippedRelu_i16`)
+4. Concatenate accumulators: side-to-move perspective first → `[512]i8`
+5. FC1: i8 weights × i8 activations → i32 (via `kore.ml.cpu.quantized.matmul(i8, ...)`), add i32 bias, ÷64, ClippedReLU → i8
 6. FC2: same
-7. Output: i8 weights × u8 activations → i32, add bias, ÷(127×64) → centipawns
+7. Output: i8 weights × i8 activations → i32, add bias, ÷(127×64) → centipawns
 
 **New function:**
 
@@ -158,15 +158,19 @@ The NNUE forward pass is not a simple sequential chain — it has a shared-weigh
 
 ```
 // Shared feature transformer (SparseLinear, same weights for both perspectives)
-stm_acc = ft.forward(stm_features, tape)     // SparseLinear(40960, 256)
-opp_acc = ft.forward(opp_features, tape)     // same layer, weight sharing via tape
-stm_relu = crelu.forward(stm_acc, tape)      // ClippedReLU(max=1.0)
-opp_relu = crelu.forward(opp_acc, tape)
-combined = concat(stm_relu, opp_relu, tape)  // [batch, 512], STM first
+ft.setIndices(stm_indices, stm_num_active, batch_size)
+stm_acc = ft.forward(dummy, graph)            // SparseLinear(40960, 256)
+ft.setIndices(opp_indices, opp_num_active, batch_size)
+opp_acc = ft.forward(dummy, graph)            // same weights, different indices
+stm_relu = crelu.forward(stm_acc, graph)      // ClippedReLU(max=1.0)
+opp_relu = crelu.forward(opp_acc, graph)
+combined = graph.concat(stm_relu, opp_relu)   // [batch, 512], STM first
 
 // Dense layers (Sequential)
-output = dense.forward(combined, tape)        // Linear(512,32) → CReLU → Linear(32,32) → CReLU → Linear(32,1)
+output = dense.forward(combined, graph)        // Linear(512,32) → CReLU → Linear(32,32) → CReLU → Linear(32,1)
 ```
+
+**Note on buffer lifetimes:** Both sets of index buffers (STM and OTM) are captured by value in the tape. The data loader must keep all per-batch GPU index buffers alive until `graph.backward()` completes and `graph.reset()` is called.
 
 Side-to-move ordering is handled by the data loader: it always provides STM features first, OTM features second. No conditional logic in the model.
 
@@ -204,12 +208,12 @@ loss = (1/N) × Σ (sigmoid(output × K/400) - label)²
 |-----------|-------|
 | Batch size | 16384 |
 | Optimizer | Adam (lr=0.001, β1=0.9, β2=0.999, ε=1e-8) |
-| LR schedule | Linear warmup 1 epoch, cosine decay to 0.0001 |
-| Gradient clipping | Global norm, max_norm=1.0 |
+| LR schedule | Linear warmup 1 epoch, cosine decay to 0.0001 (manual: mutate `adam.config.lr` per step) |
+| Gradient clipping | Global norm, max_norm=1.0 (via `graph.clipGradNorm`, GPU-accelerated) |
 | Epochs | ~100 |
 | Dataset | 50M positions |
 | Validation | Last 2% of .bin file |
-| Checkpoints | Every 5 epochs (kore.ml checkpoint format) |
+| Checkpoints | Every 5 epochs (KTML format via `kore.ml.serialize`) |
 | Val loss logging | Every epoch |
 
 **Weight initialization:**
@@ -230,6 +234,10 @@ After training, convert float32 network to .nnue:
 6. Output bias: `round(b × 127 × 64)` → i32
 7. Write to .nnue format via `Network.writeToWriter()`
 8. Validate: load quantized .nnue, run inference on validation set, compare against float32 — error should be < 2 centipawns average
+
+**Checkpoint resume:**
+
+On save, set `metadata.adam_step = adam.step_count`. On load, restore `adam.step_count = metadata.adam_step` to preserve bias correction state.
 
 **Training binary CLI (`train_nnue.zig`):**
 
@@ -334,4 +342,4 @@ Phase 0 ✅ →  Phase 1 ✅ →  Phase 2  →  Phase 3  →  Phase 4  →  Phas
                                          Phase 6 (iterate)
 ```
 
-Phase 2 (inference) can start immediately. Phase 3 (training) depends on kore.ml being ready through its Phase 5. Phase 5 (incremental) delivers the biggest speed gain for search.
+Phase 2 (inference) can start immediately. Phase 3 (training) can start immediately — kore.ml has all required ops (SparseLinear, concat with autograd, MseLoss with sigmoid, Adam, serialization). Phase 5 (incremental) delivers the biggest speed gain for search.
