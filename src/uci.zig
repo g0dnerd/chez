@@ -25,6 +25,7 @@ fn applyMove(state: *State, notation: []const u8) bool {
     const to = squaremod.algebraicToSquare(trimmed[2..4]) orelse return false;
 
     const legal = movegen.legalMoves(state, state.to_move);
+
     for (0..legal.len) |i| {
         const m = legal.moves[i];
         if (m.start != from or m.end != to) continue;

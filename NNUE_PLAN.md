@@ -6,7 +6,7 @@
 HalfKP(256→32→32→1)
 ├── Input: 40960 sparse features per perspective (64 king sq × 10 piece types × 64 piece sq)
 ├── Accumulator: 40960→256 per perspective (i16 quantized at inference)
-├── Concat: white_acc ++ black_acc = 512
+├── Concat: white_acc ++ black_acc = 512 (side-to-move perspective first)
 ├── FC1: 512→32 + ClippedReLU
 ├── FC2: 32→32 + ClippedReLU
 ├── Output: 32→1 (centipawns)
@@ -15,12 +15,14 @@ HalfKP(256→32→32→1)
 
 ## Quantization Scheme
 
-| Layer         | Weights | Biases | Activations                |
-| ------------- | ------- | ------ | -------------------------- |
-| Accumulator   | i16     | i16    | i16 → clamp to [0, 127]    |
-| FC1 (512→32)  | i8      | i32    | u8 (ClippedReLU output)    |
-| FC2 (32→32)   | i8      | i32    | u8 (ClippedReLU output)    |
-| Output (32→1) | i8      | i32    | i32 (scaled to centipawns) |
+Scale factors: FT = 127 (fills i16 range relative to ClippedReLU [0,127]), hidden = 64.
+
+| Layer | Weights | Biases | Activations | Float→Quant |
+|-------|---------|--------|-------------|-------------|
+| Accumulator | i16 | i16 | i16 → clamp [0, 127] → u8 | ×127 |
+| FC1 (512→32) | i8 | i32 | i8×u8→i32, ÷64, clamp [0, 127] → u8 | weights ×64, biases ×(127×64) |
+| FC2 (32→32) | i8 | i32 | i8×u8→i32, ÷64, clamp [0, 127] → u8 | weights ×64, biases ×(127×64) |
+| Output (32→1) | i8 | i32 | i8×u8→i32, ÷(127×64) → centipawns | weights ×64, biases ×(127×64) |
 
 ## .nnue File Format
 
@@ -119,17 +121,15 @@ nnue.expected_file_size // 20,989,748
 
 **In `src/engine/nnue.zig`:**
 
-**Forward pass (quantized i16/i8):**
+**Forward pass (quantized i16/i8), using `kore.ml.cpu` for SIMD primitives:**
 
 1. Compute active features for both perspectives via `activeFeatures()`
-2. Accumulator = `ft_biases` + sum of `ft_weights[idx]` for each active feature (i16 arithmetic)
+2. Accumulator = `ft_biases` + sum of `ft_weights[idx]` for each active feature (i16, via `kore.ml.cpu.ops`)
 3. ClippedReLU: `clamp(x, 0, 127)` → cast to u8
-4. Concatenate white/black accumulators (side-to-move first) → `[512]u8`
-5. FC1: i8 weights × u8 activations → i32, add i32 bias, ClippedReLU → u8
+4. Concatenate accumulators: side-to-move perspective first → `[512]u8`
+5. FC1: i8 weights × u8 activations → i32 (via `kore.ml.cpu.quantized`), add i32 bias, ÷64, ClippedReLU → u8
 6. FC2: same
-7. Output: i8 weights × u8 activations → i32, add bias, scale to centipawns
-
-**SIMD:** Use `@Vector(16, i16)` for accumulator ops, `@Vector(32, i8)` for hidden layers. Maps to NEON (GB10 ARM) and AVX2/SSE (x86).
+7. Output: i8 weights × u8 activations → i32, add bias, ÷(127×64) → centipawns
 
 **New function:**
 
@@ -141,60 +141,104 @@ Keep HCE (`evaluation.evaluate()`) as fallback when no network is loaded.
 
 ---
 
-### Phase 3: NNUE Trainer (Zig-Native)
+### Phase 3: GPU Training (using kore.ml)
+
+**Replaces the previously planned CPU trainer. Uses kore.ml for all generic ML operations (Tensor, GPU ops, autograd, optimizer). This phase covers the NNUE-specific wiring.**
 
 **New files:**
 
-- `src/trainer/network.zig` — float32 training network
-- `src/trainer/backprop.zig` — gradient computation
-- `src/trainer/optimizer.zig` — Adam optimizer
-- `src/trainer/dataloader.zig` — binary data loading and batching
 - `src/train_nnue.zig` — training binary entry point
+- `src/trainer/dataloader.zig` — binary data loading, position decoding, feature extraction
+- `src/trainer/model.zig` — NNUE model topology using kore.ml layers
+- `src/trainer/export.zig` — float32 → quantized .nnue export
 
-**Training network (float32):**
+**Model topology (in `model.zig`):**
 
-- Same architecture but all float32
-- Forward pass returns intermediate activations (needed for backprop)
+The NNUE forward pass is not a simple sequential chain — it has a shared-weight feature transformer applied to two perspectives, then a perspective-aware concat. The model composes kore.ml primitives manually:
 
-**Backpropagation:**
+```
+// Shared feature transformer (SparseLinear, same weights for both perspectives)
+stm_acc = ft.forward(stm_features, tape)     // SparseLinear(40960, 256)
+opp_acc = ft.forward(opp_features, tape)     // same layer, weight sharing via tape
+stm_relu = crelu.forward(stm_acc, tape)      // ClippedReLU(max=1.0)
+opp_relu = crelu.forward(opp_acc, tape)
+combined = concat(stm_relu, opp_relu, tape)  // [batch, 512], STM first
 
-- Output: `dL/dout = 2 * (predicted - target) / batch_size` (MSE gradient)
-- Chain through each layer: weight transpose multiply, element-wise ReLU derivative
-- **Sparse input layer:** Only accumulate gradients for ~30 active features per sample (use `nnue.activeFeatures()`)
+// Dense layers (Sequential)
+output = dense.forward(combined, tape)        // Linear(512,32) → CReLU → Linear(32,32) → CReLU → Linear(32,1)
+```
 
-**Optimizer:** Adam (lr=0.001, β1=0.9, β2=0.999, ε=1e-8)
+Side-to-move ordering is handled by the data loader: it always provides STM features first, OTM features second. No conditional logic in the model.
 
-- First/second moment buffers for all parameters
-- Learning rate warmup + cosine decay schedule
+**Data loader (`dataloader.zig`):**
 
-**Data loader:**
+Single-threaded synchronous pipeline:
 
-- Memory-map `.bin` file (fixed 35-byte records enable random access)
-- Total records = file_size / 35
-- Shuffle record indices, load batches of 16384
-- Per record: `serde.decodePosition(buf[0..32])` → `nnue.activeFeatures(&state, perspective)` for both perspectives; read i16 score at byte 32, u8 WDL at byte 34
-- Multi-threaded batch preparation (prefetch next batch while training current)
-- Needs build.zig imports for both `chez` (engine + nnue) and `selfplay/serde.zig`
+1. Memory-map the `.bin` file (fixed 35-byte records, total_records = file_size / 35)
+2. Partition: first 98% = training, last 2% = validation
+3. Shuffle training record indices at epoch start
+4. Per batch of 16384 records:
+   - `serde.decodePosition(buf[0..32])` → `State`
+   - `nnue.activeFeatures(&state, stm)` → STM feature indices
+   - `nnue.activeFeatures(&state, opp)` → OTM feature indices
+   - Read i16 score at byte 32, u8 WDL at byte 34
+   - Compute blended target: `label = λ × sigmoid(score × K/400) + (1-λ) × wdl_value`
+   - WDL mapping: 0 (white wins) → 1.0, 1 (black wins) → 0.0, 2 (draw) → 0.5; flip if STM is black
+   - Score is already STM perspective (no flip needed)
+5. Pack feature index lists and targets into kore.ml tensors, upload to GPU
 
-**Loss function:** `MSE = (1/N) × Σ (sigmoid(nnue_output × K / 400) - label)²`
+**Loss function:**
 
-- Label = blend of search score sigmoid and game outcome: `λ × sigmoid(search_score) + (1-λ) × wdl`
-- WDL mapping: 0 (white wins) → 1.0, 1 (black wins) → 0.0, 2 (draw) → 0.5; flip if side-to-move is black
-- Score is already from side-to-move perspective (no flip needed)
-- Start with λ=1.0 (pure search score), experiment with blending later
+Blended-target MSE with sigmoid pre-transform, using `kore.ml.MseLoss`:
 
-**Quantization export:**
+```
+loss = (1/N) × Σ (sigmoid(output × K/400) - label)²
+```
 
-- After training, quantize float32 → i16/i8 with scale factors
-- Write `.nnue` file via `Network.writeToWriter()`
-- Validate: compare quantized inference loss (via `nnue.evaluate()`) against float inference loss
+- K ≈ 111 (Stockfish-style sigmoid scaling)
+- λ = 1.0 initially (pure search score targets), tune blending later
 
-**Training recipe:**
+**Training hyperparameters:**
 
-- ~100 epochs over 10-50M positions
-- Batch size 16384
-- Learning rate 0.001 → cosine decay to 0.0001
-- Checkpoint every epoch
+| Parameter | Value |
+|-----------|-------|
+| Batch size | 16384 |
+| Optimizer | Adam (lr=0.001, β1=0.9, β2=0.999, ε=1e-8) |
+| LR schedule | Linear warmup 1 epoch, cosine decay to 0.0001 |
+| Gradient clipping | Global norm, max_norm=1.0 |
+| Epochs | ~100 |
+| Dataset | 50M positions |
+| Validation | Last 2% of .bin file |
+| Checkpoints | Every 5 epochs (kore.ml checkpoint format) |
+| Val loss logging | Every epoch |
+
+**Weight initialization:**
+
+- Feature transformer: Kaiming uniform scaled by `1/√30` (avg active features)
+- Dense layers: standard Kaiming uniform
+- All biases: zero
+
+**Quantization export (`export.zig`):**
+
+After training, convert float32 network to .nnue:
+
+1. FT weights: `round(w × 127)` → i16
+2. FT biases: `round(b × 127)` → i16
+3. Hidden weights: `round(w × 64)` → i8
+4. Hidden biases: `round(b × 127 × 64)` → i32
+5. Output weights: `round(w × 64)` → i8
+6. Output bias: `round(b × 127 × 64)` → i32
+7. Write to .nnue format via `Network.writeToWriter()`
+8. Validate: load quantized .nnue, run inference on validation set, compare against float32 — error should be < 2 centipawns average
+
+**Training binary CLI (`train_nnue.zig`):**
+
+```
+train_nnue --data data.bin --epochs 100 --batch_size 16384 --lr 0.001 --lambda 1.0
+           [--checkpoint resume.ktml] [--export output.nnue]
+```
+
+**build.zig changes:** Add `train_nnue` executable, link `chez` module + `kore.ml` module + system GL/EGL libs.
 
 ---
 
@@ -254,33 +298,32 @@ Keep HCE (`evaluation.evaluate()`) as fallback when no network is loaded.
 
 ### Phase 6: Training Loop & Iteration
 
-1. **Generate** 10M positions via self-play at depth 8
-2. **Train** NNUE for ~100 epochs
+1. **Generate** 50M positions via self-play at depth 8
+2. **Train** NNUE for ~100 epochs using GPU trainer (Phase 3)
 3. **Elo test** against HCE baseline using `elo_test.py`
 4. **Iterate:** generate more data with NNUE-powered engine, retrain on combined data
-5. Scale up: deeper self-play (depth 10-12), more positions (50M+), tune hyperparameters
+5. Scale up: deeper self-play (depth 10-12), more positions (100M+), tune hyperparameters
 
 ---
 
 ## File Summary
 
-| File                         | Status     | Phase | Purpose                                          |
-| ---------------------------- | ---------- | ----- | ------------------------------------------------ |
-| `src/selfplay.zig`           | **Done**   | 0     | Self-play data generation binary                 |
-| `src/selfplay/serde.zig`     | **Done**   | 0     | Position serialization (Huffman encode/decode)   |
-| `src/engine/nnue.zig`        | **Done**   | 1     | Data structures, feature extraction, file I/O    |
-| `src/engine/engine.zig`      | **Done**   | 1     | Re-exports nnue module                           |
-| `src/engine/nnue.zig`        | **Modify** | 2     | Add `evaluate()` forward pass                    |
-| `src/train_nnue.zig`         | New        | 3     | Training binary entry point                      |
-| `src/trainer/network.zig`    | New        | 3     | Float32 training network                         |
-| `src/trainer/backprop.zig`   | New        | 3     | Gradient computation                             |
-| `src/trainer/optimizer.zig`  | New        | 3     | Adam optimizer                                   |
-| `src/trainer/dataloader.zig` | New        | 3     | Binary data loading (uses serde + nnue features) |
-| `build.zig`                  | Modify     | 3+    | New executables and module imports               |
-| `src/engine/search.zig`      | Modify     | 4-5   | NNUE eval calls, accumulator stack               |
-| `src/uci.zig`                | Modify     | 4     | EvalFile UCI option, network loading             |
-| `src/tui.zig`                | Modify     | 4     | `--nnue` CLI arg                                 |
-| `src/bench.zig`              | Modify     | 4     | NNUE benchmark support                           |
+| File | Status | Phase | Purpose |
+|------|--------|-------|---------|
+| `src/selfplay.zig` | **Done** | 0 | Self-play data generation binary |
+| `src/selfplay/serde.zig` | **Done** | 0 | Position serialization (Huffman encode/decode) |
+| `src/engine/nnue.zig` | **Done** | 1 | Data structures, feature extraction, file I/O |
+| `src/engine/engine.zig` | **Done** | 1 | Re-exports nnue module |
+| `src/engine/nnue.zig` | **Modify** | 2 | Add `evaluate()` forward pass (uses kore.ml.cpu) |
+| `src/train_nnue.zig` | New | 3 | Training binary entry point |
+| `src/trainer/model.zig` | New | 3 | NNUE topology using kore.ml layers |
+| `src/trainer/dataloader.zig` | New | 3 | Binary data loading + feature extraction |
+| `src/trainer/export.zig` | New | 3 | Float32 → quantized .nnue export |
+| `build.zig` | Modify | 3+ | New executables and module imports |
+| `src/engine/search.zig` | Modify | 4-5 | NNUE eval calls, accumulator stack |
+| `src/uci.zig` | Modify | 4 | EvalFile UCI option, network loading |
+| `src/tui.zig` | Modify | 4 | `--nnue` CLI arg |
+| `src/bench.zig` | Modify | 4 | NNUE benchmark support |
 
 ## Implementation Order
 
@@ -291,4 +334,4 @@ Phase 0 ✅ →  Phase 1 ✅ →  Phase 2  →  Phase 3  →  Phase 4  →  Phas
                                          Phase 6 (iterate)
 ```
 
-Phase 3 (trainer) is the most code-heavy. Phase 5 (incremental) delivers the biggest speed gain.
+Phase 2 (inference) can start immediately. Phase 3 (training) depends on kore.ml being ready through its Phase 5. Phase 5 (incremental) delivers the biggest speed gain for search.
