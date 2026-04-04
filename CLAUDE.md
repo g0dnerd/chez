@@ -17,7 +17,11 @@ zig build test         # Run all tests
 
 ## Code base
 
-Zig master (0.16): If unsure about API changes from previous zig versions, always ask the user or defer implementation to the user.
+- This project uses bleeding-edge Zig. **Do not guess APIs** -- if unsure, ask me directly
+- Do NOT run excessive greps/finds trying to figure out a Zig stdlib API
+- Common mistakes to avoid:
+  - `std.Io` (capitalized) not `std.io`
+  - RNG lives in `std.Io.random`, NOT `std.crypto`
 
 ## Project Structure
 
@@ -139,6 +143,14 @@ Uses `Score` struct with separate middlegame (mg) and endgame (eg) values, inter
 - Use `defer` for loop counter increments when iterating piece types
 - Constants use snake_case (e.g., `tt_size`, `max_ply`), variables use snake_case too
 - Use regular comments (`// Comment`) instead of doc comments (`/// Comment`)
+  - Comments -- only on non-obvious functions. Code should be self-documenting
+- Inferred error sets (`!T`) are fine -- no need to enumerate unless there's a reason
+- Tests: include inline tests for non-trivial logic, skip for simple wrappers/glue
+
+### Workflow
+
+- Propose approach/API before writing code for anything non-trivial
+- Commit messages: short imperative style (e.g., `add BitReader`, `fix matmul padding`)
 
 ### Common Pitfalls
 

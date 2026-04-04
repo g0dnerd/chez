@@ -138,6 +138,19 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    const train_nnue = b.addExecutable(.{
+        .name = "train_nnue",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/train_nnue.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "chez", .module = chez_mod },
+                .{ .name = "kore", .module = kore },
+            },
+        }),
+    });
+
     const test_step = b.step("test", "Run unit tests");
     const test_filters: []const []const u8 = b.option(
         []const []const u8,
@@ -168,6 +181,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(uci);
     b.installArtifact(quiet_filter);
     b.installArtifact(selfplay);
+    b.installArtifact(train_nnue);
 
     // WASM build for web interface
     const wasm_target = b.resolveTargetQuery(.{
