@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/chez.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "kore", .module = kore }},
     });
 
     const precompute = b.addExecutable(.{

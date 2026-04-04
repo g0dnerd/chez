@@ -5,6 +5,10 @@ const square = @import("square.zig");
 const Bitboard = @import("Bitboard.zig");
 const State = @import("State.zig");
 
+const kore = @import("kore");
+const ops = kore.ml.cpu.ops;
+const quantized = kore.ml.cpu.quantized;
+
 const Color = engine.Color;
 const Colors = engine.Colors;
 const Square = square.Square;
@@ -249,6 +253,69 @@ pub fn activeFeatures(state: *const State, perspective: Color) FeatureList {
     return result;
 }
 
+// ==============================================================================
+// NNUE Inference (Non-Incremental)
+// ==============================================================================
+//
+// Quantized forward pass: accumulator → ClippedReLU → FC1 → FC2 → output.
+// All arithmetic uses integer types to match the .nnue quantization scheme:
+//   - Feature transformer: i16 weights/biases, i16 accumulator
+//   - Hidden layers: i8 weights, i32 biases, i8 activations (after CReLU)
+//   - Output: i8 weights, i32 bias, result in centipawns
+
+// Compute the NNUE evaluation for a position (non-incremental).
+// Returns a score in centipawns from the side-to-move's perspective.
+pub fn evaluate(state: *const State, net: *const Network) i32 {
+    const stm = state.to_move;
+    const opp: Color = @intCast(~@as(u1, @intCast(stm)));
+
+    const stm_features = activeFeatures(state, stm);
+    const opp_features = activeFeatures(state, opp);
+
+    // Accumulator: start from FT biases, add weight rows for each active feature.
+    var stm_acc: [ft_out]i16 = net.ft_biases;
+    for (stm_features.features[0..stm_features.len]) |idx| {
+        ops.addVec_i16(ft_out, &stm_acc, &net.ft_weights[idx]);
+    }
+
+    var opp_acc: [ft_out]i16 = net.ft_biases;
+    for (opp_features.features[0..opp_features.len]) |idx| {
+        ops.addVec_i16(ft_out, &opp_acc, &net.ft_weights[idx]);
+    }
+
+    // ClippedReLU: clamp to [0, 127], truncate to i8.
+    const stm_relu = ops.clippedRelu_i16(ft_out, &stm_acc);
+    const opp_relu = ops.clippedRelu_i16(ft_out, &opp_acc);
+
+    // Concatenate perspectives: side-to-move first → [512]i8
+    var concat: [fc1_in]i8 = undefined;
+    @memcpy(concat[0..ft_out], &stm_relu);
+    @memcpy(concat[ft_out..fc1_in], &opp_relu);
+
+    // FC1: [1, 512] @ [512, 32] → [32]i32, add bias, ÷64, ClippedReLU → i8
+    const fc1_raw = quantized.matmul(i8, 1, fc1_in, fc1_out, &concat, @ptrCast(&net.fc1_weights));
+    var fc1_scaled: [fc1_out]i16 = undefined;
+    for (0..fc1_out) |i| {
+        fc1_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc1_raw[i] + net.fc1_biases[i], 64), -32768, 32767));
+    }
+    const fc1_act = ops.clippedRelu_i16(fc1_out, &fc1_scaled);
+
+    // FC2: [1, 32] @ [32, 32] → [32]i32, add bias, ÷64, ClippedReLU → i8
+    const fc2_raw = quantized.matmul(i8, 1, fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights));
+    var fc2_scaled: [fc2_out]i16 = undefined;
+    for (0..fc2_out) |i| {
+        fc2_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc2_raw[i] + net.fc2_biases[i], 64), -32768, 32767));
+    }
+    const fc2_act = ops.clippedRelu_i16(fc2_out, &fc2_scaled);
+
+    // Output: dot product of i8 weights × i8 activations + i32 bias, ÷(127×64) → centipawns
+    var output: i32 = net.output_bias;
+    for (0..fc2_out) |i| {
+        output += @as(i32, fc2_act[i]) * @as(i32, net.output_weights[i]);
+    }
+    return @divTrunc(output, 127 * 64);
+}
+
 test "feature index bounds" {
     // Maximum possible index: king_sq=63, rel_color=1, piece_type=4, piece_sq=63
     const max_index = 63 * pieces_per_king + (1 * num_piece_types + 4) * num_piece_squares + 63;
@@ -400,4 +467,68 @@ test "accumulator empty" {
     try std.testing.expect(!acc.computed);
     for (acc.values[0]) |v| try std.testing.expectEqual(@as(i16, 0), v);
     for (acc.values[1]) |v| try std.testing.expectEqual(@as(i16, 0), v);
+}
+
+// ==============================================================================
+// Evaluate tests
+// ==============================================================================
+
+// Helper: create a zero-initialized Network on the heap for testing.
+// All weights/biases are 0, so evaluate() should return 0 for any position.
+fn createZeroNetwork(allocator: std.mem.Allocator) !*Network {
+    var buf: [expected_file_size]u8 = .{0} ** expected_file_size;
+    @memcpy(buf[0..4], &magic_bytes);
+    std.mem.writeInt(u32, buf[4..8], format_version, .little);
+    std.mem.writeInt(u32, buf[8..12], arch_hash, .little);
+    return Network.loadFromBytes(allocator, &buf);
+}
+
+test "evaluate zero network returns zero" {
+    const allocator = std.testing.allocator;
+    const net = try createZeroNetwork(allocator);
+    defer net.deinit(allocator);
+
+    const state = State.defaultPosition();
+    const score = evaluate(&state, net);
+    try std.testing.expectEqual(@as(i32, 0), score);
+}
+
+test "evaluate output bias only" {
+    // With all weights zero, only the output bias contributes.
+    // Result = output_bias ÷ (127 × 64)
+    const allocator = std.testing.allocator;
+    const net = try createZeroNetwork(allocator);
+    defer net.deinit(allocator);
+
+    net.output_bias = 127 * 64; // Should produce exactly 1 centipawn
+    try std.testing.expectEqual(@as(i32, 1), evaluate(&State.defaultPosition(), net));
+
+    net.output_bias = -(127 * 64); // Should produce exactly -1 centipawn
+    try std.testing.expectEqual(@as(i32, -1), evaluate(&State.defaultPosition(), net));
+
+    net.output_bias = 127 * 64 * 100; // 100 centipawns
+    try std.testing.expectEqual(@as(i32, 100), evaluate(&State.defaultPosition(), net));
+}
+
+test "evaluate symmetric position gives same magnitude for both sides" {
+    // In the starting position, white and black have identical piece arrangements
+    // (after perspective flipping). The network should give the same evaluation
+    // regardless of who is to move, since the position is symmetric.
+    const allocator = std.testing.allocator;
+    const net = try createZeroNetwork(allocator);
+    defer net.deinit(allocator);
+
+    // Set a uniform FT bias so the accumulator has non-zero values after CReLU
+    for (&net.ft_biases) |*b| b.* = 50;
+
+    const state_white = State.defaultPosition();
+    const score_white = evaluate(&state_white, net);
+
+    // Flip side to move
+    var state_black = State.defaultPosition();
+    state_black.to_move = @intCast(Colors.black);
+    const score_black = evaluate(&state_black, net);
+
+    // Symmetric position → same score for both perspectives
+    try std.testing.expectEqual(score_white, score_black);
 }
