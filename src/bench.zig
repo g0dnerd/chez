@@ -1,5 +1,6 @@
 const std = @import("std");
 const chez = @import("chez.zig");
+const nnue = chez.engine.nnue;
 const search = chez.engine.search;
 const State = chez.engine.State;
 
@@ -32,6 +33,7 @@ const threads_default: usize = 1;
 pub fn main(init: std.process.Init.Minimal) !void {
     var depth: u8 = depth_default;
     var threads: usize = threads_default;
+    var nnue_path: ?[]const u8 = null;
 
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .empty });
     const io = threaded.io();
@@ -52,10 +54,24 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (args.next()) |t| {
                 threads = std.fmt.parseInt(usize, t, 10) catch threads_default;
             }
+        } else if (std.mem.eql(u8, arg, "--nnue")) {
+            nnue_path = args.next();
         }
     }
 
-    try stdout.print("Bench: {d} positions, depth {d}, {d} thread(s)\n", .{ positions.len, depth, threads });
+    var network: ?*nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    if (nnue_path) |path| {
+        network = nnue.Network.load(io, std.heap.page_allocator, path) catch |err| blk: {
+            try stdout.print("Failed to load NNUE file: {}\n", .{err});
+            try stdout.flush();
+            break :blk null;
+        };
+    }
+
+    const eval_label: []const u8 = if (network != null) "NNUE" else "HCE";
+    try stdout.print("Bench: {d} positions, depth {d}, {d} thread(s), eval={s}\n", .{ positions.len, depth, threads, eval_label });
 
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
@@ -70,7 +86,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             continue;
         };
 
-        const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{});
+        const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{}, network);
         if (result) |r| {
             var start_buf: [2]u8 = undefined;
             var end_buf: [2]u8 = undefined;

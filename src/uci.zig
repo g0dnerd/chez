@@ -1,6 +1,7 @@
 const std = @import("std");
 const chez = @import("chez.zig");
 const engine = chez.engine;
+const nnue = engine.nnue;
 const search = engine.search;
 const State = engine.State;
 const Move = engine.Move;
@@ -102,6 +103,7 @@ const SearchRunArgs = struct {
     history: search.PositionHistory,
     tbl: *search.TranspositionTable,
     options: search.SearchOptions,
+    network: ?*const nnue.Network,
     writer: *std.Io.Writer,
     mutex: *std.Io.Mutex,
     io: std.Io,
@@ -115,6 +117,7 @@ fn runSearch(args: *SearchRunArgs) void {
         &args.history,
         args.tbl,
         args.options,
+        args.network,
     ) catch null;
 
     args.mutex.lock(args.io) catch {};
@@ -157,6 +160,9 @@ pub fn main() !void {
     var opening_book: ?engine.book.Book = null;
     defer if (opening_book) |*b| b.deinit();
 
+    var network: ?*nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
     var info_ctx = InfoCtx{
         .writer = stdout,
         .mutex = &stdout_mutex,
@@ -177,6 +183,7 @@ pub fn main() !void {
             stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
             stdout.writeAll("option name OwnBook type check default true\n") catch {};
             stdout.writeAll("option name BookFile type string default /home/paul/projects/chez/testing/books/komodo.bin\n") catch {};
+            stdout.writeAll("option name EvalFile type string default <empty>\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -211,6 +218,11 @@ pub fn main() !void {
                 if (opt_val.len > 0) {
                     if (opening_book) |*b| b.deinit();
                     opening_book = engine.book.Book.load(io, std.heap.page_allocator, opt_val) catch null;
+                }
+            } else if (std.mem.eql(u8, opt_name, "EvalFile")) {
+                if (opt_val.len > 0) {
+                    if (network) |n| n.deinit(std.heap.page_allocator);
+                    network = nnue.Network.load(io, std.heap.page_allocator, opt_val) catch null;
                 }
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
@@ -315,6 +327,7 @@ pub fn main() !void {
                         .func = infoCallback,
                     },
                 },
+                .network = network,
                 .io = io,
                 .writer = stdout,
                 .mutex = &stdout_mutex,

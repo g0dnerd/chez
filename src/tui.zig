@@ -63,6 +63,7 @@ const Args = struct {
     nn_engine: ?[]const u8, // Path to NN checkpoint, e.g. "models/iter_0100.pt"
     nn_simulations: ?u32, // MCTS simulations for NN engine
     book: ?[]const u8, // Path to Polyglot opening book (.bin)
+    nnue: ?[]const u8, // Path to .nnue file for NNUE evaluation
 };
 
 // Neural network engine subprocess
@@ -194,6 +195,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
         opening_book = engine.book.Book.load(io, std.heap.page_allocator, book_path) catch null;
     }
 
+    var network: ?*engine.nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    if (parsed_args.nnue) |nnue_path| {
+        network = engine.nnue.Network.load(io, std.heap.page_allocator, nnue_path) catch |err| blk: {
+            try stdout.print("Failed to load NNUE file: {}\n", .{err});
+            try stdout.flush();
+            break :blk null;
+        };
+        if (network != null) {
+            try stdout.writeAll("NNUE evaluation loaded.\n");
+            try stdout.flush();
+        }
+    }
+
     var undo_info: [2]engine.State.UndoInfo = undefined;
     var undo_moves: [2]engine.Move = undefined;
     var undo_pieces: [2]engine.piece.Piece = undefined;
@@ -323,7 +339,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 var move_buf: [16]u8 = undefined;
                 best_move = try eng.getMove(io, &state, &move_buf);
             } else {
-                if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl)) |search_res| {
+                if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl, network)) |search_res| {
                     // Use traditional search
                     best_move = search_res.move;
                     best_score = search_res.score;

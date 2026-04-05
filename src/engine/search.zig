@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const Bitboard = @import("Bitboard.zig");
 const State = @import("State.zig");
 const movegen = @import("movegen.zig");
+const nnue = @import("nnue.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
 
@@ -394,6 +395,12 @@ const SharedSearchState = struct {
     io: std.Io,
     start_time: std.Io.Timestamp,
     options: SearchOptions = .{},
+    network: ?*const nnue.Network = null,
+
+    fn evalPosition(self: *const SharedSearchState, state: *const State) i32 {
+        if (self.network) |net| return nnue.evaluate(state, net);
+        return evaluation.evaluate(state);
+    }
 };
 
 // Check time limit and external stop signal periodically.
@@ -485,7 +492,7 @@ fn quiescence(
 
     // Stand pat: evaluate the current position
     // We can always choose not to capture when not in check
-    const stand_pat = evaluation.evaluate(state);
+    const stand_pat = shared.evalPosition(state);
 
     // Beta cutoff: position is so good opponent wouldn't allow it
     if (stand_pat >= beta) {
@@ -622,7 +629,7 @@ fn negamax(
 
     // Compute static eval once for pruning decisions (depths 1-6, not in check)
     const static_eval: ?i32 = if (depth <= 6 and !in_check)
-        evaluation.evaluate(state)
+        search_ctx.shared.evalPosition(state)
     else
         null;
 
@@ -1200,6 +1207,7 @@ pub fn searchParallel(
     game_history: ?*const PositionHistory,
     tbl: *TranspositionTable,
     options: SearchOptions,
+    network: ?*const nnue.Network,
 ) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
 
@@ -1214,6 +1222,7 @@ pub fn searchParallel(
         .io = io,
         .start_time = clock.now(io),
         .options = options,
+        .network = network,
     };
 
     // Create thread contexts
@@ -1289,7 +1298,7 @@ pub fn searchParallel(
 
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
-    return searchParallel(state, max_depth, default_threads, null, &tbl, .{});
+    return searchParallel(state, max_depth, default_threads, null, &tbl, .{}, null);
 }
 
 // Search with game history for repetition detection
@@ -1299,8 +1308,9 @@ pub fn searchWithHistory(
     num_threads: usize,
     history: *const PositionHistory,
     tbl: *TranspositionTable,
+    network: ?*const nnue.Network,
 ) !?SearchResult {
-    return searchParallel(state, max_depth, num_threads, history, tbl, .{});
+    return searchParallel(state, max_depth, num_threads, history, tbl, .{}, network);
 }
 
 // Single-threaded search for testing and debugging

@@ -239,6 +239,9 @@ def build_fastchess_cmd(args, engine_current, engine_baseline, pgn_out):
         if book0.exists():
             cmd += [f"option.BookFile={book0}"]
 
+    for opt in args.uci0 or []:
+        cmd += [f"option.{opt}"]
+
     cmd += [
         "-engine",
         f"name={args.baseline_name}",
@@ -251,6 +254,9 @@ def build_fastchess_cmd(args, engine_current, engine_baseline, pgn_out):
         book1 = Path(args.book1)
         if book1.exists():
             cmd += [f"option.BookFile={book1}"]
+
+    for opt in args.uci1 or []:
+        cmd += [f"option.{opt}"]
 
     # Time control or fixed depth
     if args.depth:
@@ -465,6 +471,8 @@ def parse_args():
     # p.add_argument("--book1", default=str(DEFAULT_BOOK), help="Opening book path")
     p.add_argument("--book0", default=None, help="Opening book path")
     p.add_argument("--book1", default=None, help="Opening book path")
+    p.add_argument("--uci0", action="append", metavar="KEY=VAL", help="Extra UCI option for current engine (repeatable)")
+    p.add_argument("--uci1", action="append", metavar="KEY=VAL", help="Extra UCI option for baseline engine (repeatable)")
     p.add_argument("--elo0", type=float, default=None, help="SPRT lower bound")
     p.add_argument("--elo1", type=float, default=None, help="SPRT upper bound")
     p.add_argument("--pgn-out", default=None, help="PGN output path")

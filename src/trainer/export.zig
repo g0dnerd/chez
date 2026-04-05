@@ -43,7 +43,8 @@ pub fn exportNnue(
     // Order: ft.weight, ft.bias, fc1.weight, fc1.bias, fc2.weight, fc2.bias, out.weight, out.bias
     std.debug.assert(params.len == 8);
 
-    var net: Network = undefined;
+    const net = try allocator.create(Network);
+    defer allocator.destroy(net);
 
     // FT weights: [40960, 256] f32 → [40960][256] i16, scale = 127
     {

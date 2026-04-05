@@ -82,6 +82,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = .ReleaseFast,
         }),
     });
+    bench.root_module.addImport("kore", kore);
     const bench_step = b.step("bench", "Run search benchmark");
     const run_bench = b.addRunArtifact(bench);
     if (b.args) |args| {
@@ -124,6 +125,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = .ReleaseFast,
         }),
     });
+    uci.root_module.addImport("kore", kore);
 
     const selfplay = b.addExecutable(.{
         .name = "selfplay",

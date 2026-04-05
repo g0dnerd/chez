@@ -118,6 +118,7 @@ const SelfplayGame = struct {
             1,
             &self.history,
             self.ttable,
+            null,
         )) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
