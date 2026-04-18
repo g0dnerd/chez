@@ -13,7 +13,7 @@ const Batch = @import("model.zig").Batch;
 
 const record_size = 35; // 32 position + 2 score + 1 WDL
 const max_active = nnue.max_active_features; // 30
-const sigmoid_k: f32 = 111.0 / 400.0;
+const sigmoid_k: f32 = 1.0 / 400.0;
 
 fn uploadU32(ctx: *const Context, data: []const u32) Context.Error!Buffer {
     const cl = Context.cl;

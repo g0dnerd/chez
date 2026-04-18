@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "/home/paul/misc/chez/testing/results/20260323_230923.pgn",
+        "file": "/home/paul/projects/chez/testing/results/20260418_105942.pgn",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 1,
-    "seed": 6857868352988453196,
+    "seed": 14362217109797471879,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -89,15 +89,19 @@
     },
     "engines": [
         {
-            "name": "dev",
+            "name": "nnue",
             "dir": "",
-            "cmd": "/home/paul/misc/chez/testing/.builds/dev/uci",
+            "cmd": "/home/paul/projects/chez/testing/.builds/nnue/uci",
             "args": "",
             "restart": true,
             "options": [
                 [
                     "Threads",
                     "4"
+                ],
+                [
+                    "EvalFile",
+                    "data/net_k2_30M.nnue"
                 ]
             ],
             "limit": {
@@ -114,9 +118,9 @@
             "variant": 0
         },
         {
-            "name": "baseline",
+            "name": "hce",
             "dir": "",
-            "cmd": "/home/paul/misc/chez/testing/.builds/baseline-7b31d41/uci",
+            "cmd": "/home/paul/projects/chez/testing/.builds/hce-54ef52a/uci",
             "args": "",
             "restart": true,
             "options": [
@@ -140,10 +144,10 @@
         }
     ],
     "stats": {
-        "dev vs baseline": {
-            "wins": 35,
-            "losses": 39,
-            "draws": 14,
+        "nnue vs hce": {
+            "wins": 0,
+            "losses": 13,
+            "draws": 0,
             "penta_WW": 0,
             "penta_WD": 0,
             "penta_WL": 0,

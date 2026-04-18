@@ -397,8 +397,18 @@ const SharedSearchState = struct {
     options: SearchOptions = .{},
     network: ?*const nnue.Network = null,
 
-    fn evalPosition(self: *const SharedSearchState, state: *const State) i32 {
-        if (self.network) |net| return nnue.evaluate(state, net);
+    fn evalPosition(
+        self: *const SharedSearchState,
+        state: *const State,
+        acc_stack: *nnue.AccumulatorStack,
+        ply: usize,
+    ) i32 {
+        // NNUE returns centipawns (pawn ≈ 100). HCE uses an internal scale
+        // (pawn endgame ≈ 208). Pruning margins in this file (futility_margins,
+        // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
+        // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
+        // a Phase 6 concern.
+        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * 2;
         return evaluation.evaluate(state);
     }
 };
@@ -433,6 +443,7 @@ const ThreadContext = struct {
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
+    acc_stack: nnue.AccumulatorStack,
     best_move: ?Move = null,
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
@@ -450,6 +461,7 @@ fn quiescence(
     alpha_initial: i32,
     beta: i32,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
 ) i32 {
     const nodes = shared.node_count.fetchAdd(1, .monotonic);
 
@@ -475,8 +487,11 @@ fn quiescence(
             const m = moves.pickNext(i);
             const p = state.mailbox[m.start].?;
             const undo = state.makeMove(m, to_move, p);
+            if (shared.network) |net| {
+                nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+            }
 
-            const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
+            const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
 
             state.unmakeMove(m, to_move, p, undo);
 
@@ -492,7 +507,7 @@ fn quiescence(
 
     // Stand pat: evaluate the current position
     // We can always choose not to capture when not in check
-    const stand_pat = shared.evalPosition(state);
+    const stand_pat = shared.evalPosition(state, acc_stack, ply);
 
     // Beta cutoff: position is so good opponent wouldn't allow it
     if (stand_pat >= beta) {
@@ -537,8 +552,11 @@ fn quiescence(
         }
 
         const undo = state.makeMove(m, to_move, p);
+        if (shared.network) |net| {
+            nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+        }
 
-        const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
+        const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
 
         state.unmakeMove(m, to_move, p, undo);
 
@@ -568,6 +586,7 @@ const SearchContext = struct {
     countermoves: *CountermoveTable,
     prev_move: ?Move,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
 };
 
 fn negamax(
@@ -621,7 +640,7 @@ fn negamax(
     // Quiescence handles checkmate detection when in check.
     // This avoids generating a full MoveList at the most numerous nodes.
     if (depth == 0) {
-        return quiescence(state, ply, alpha, beta, search_ctx.shared);
+        return quiescence(state, ply, alpha, beta, search_ctx.shared, search_ctx.acc_stack);
     }
 
     const in_check = state.in_check == to_move;
@@ -629,7 +648,7 @@ fn negamax(
 
     // Compute static eval once for pruning decisions (depths 1-6, not in check)
     const static_eval: ?i32 = if (depth <= 6 and !in_check)
-        search_ctx.shared.evalPosition(state)
+        search_ctx.shared.evalPosition(state, search_ctx.acc_stack, ply)
     else
         null;
 
@@ -678,6 +697,10 @@ fn negamax(
         }
         state.*.in_check = null; // After null move, we're not giving check
 
+        if (search_ctx.shared.network) |_| {
+            nnue.recordNullMove(search_ctx.acc_stack, ply + 1);
+        }
+
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
         const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, .{
@@ -688,6 +711,7 @@ fn negamax(
             .countermoves = search_ctx.countermoves,
             .prev_move = null,
             .shared = search_ctx.shared,
+            .acc_stack = search_ctx.acc_stack,
         });
 
         // Unmake null move
@@ -738,6 +762,9 @@ fn negamax(
             !is_capture and !is_promotion and !is_killer;
 
         const undo = state.makeMove(m, to_move, p);
+        if (search_ctx.shared.network) |net| {
+            nnue.recordMove(search_ctx.acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+        }
         search_ctx.history.push(state.zobrist_hash);
 
         // Check extension: extend search by 1 ply when giving check
@@ -774,6 +801,7 @@ fn negamax(
                 .countermoves = search_ctx.countermoves,
                 .prev_move = m,
                 .shared = search_ctx.shared,
+                .acc_stack = search_ctx.acc_stack,
             });
         } else {
             // Late Move Reductions (LMR):
@@ -803,6 +831,7 @@ fn negamax(
                 .countermoves = search_ctx.countermoves,
                 .prev_move = m,
                 .shared = search_ctx.shared,
+                .acc_stack = search_ctx.acc_stack,
             });
 
             // Re-search at full depth if reduced search improved alpha
@@ -815,6 +844,7 @@ fn negamax(
                     .countermoves = search_ctx.countermoves,
                     .prev_move = m,
                     .shared = search_ctx.shared,
+                    .acc_stack = search_ctx.acc_stack,
                 });
             }
 
@@ -828,6 +858,7 @@ fn negamax(
                     .countermoves = search_ctx.countermoves,
                     .prev_move = m,
                     .shared = search_ctx.shared,
+                    .acc_stack = search_ctx.acc_stack,
                 });
             }
         }
@@ -904,6 +935,7 @@ fn searchAtDepthWithBounds(
     alpha_bound: i32,
     beta_bound: i32,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -942,6 +974,9 @@ fn searchAtDepthWithBounds(
         const m = moves.pickNext(i);
         const p = state.mailbox[m.start].?;
         const undo = state.makeMove(m, to_move, p);
+        if (shared.network) |net| {
+            nnue.recordMove(acc_stack, 1, state, net, m, to_move, p, &undo);
+        }
         history.push(state.zobrist_hash);
 
         // Take mate in 1
@@ -965,6 +1000,7 @@ fn searchAtDepthWithBounds(
             .countermoves = countermoves,
             .prev_move = m,
             .shared = shared,
+            .acc_stack = acc_stack,
         };
         if (i == 0) {
             // First move: full window search
@@ -1015,6 +1051,7 @@ fn searchAtDepth(
     history_table: *evaluation.HistoryTable,
     countermoves: *CountermoveTable,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
 ) ?SearchResult {
     return searchAtDepthWithBounds(
         state,
@@ -1028,6 +1065,7 @@ fn searchAtDepth(
         alpha_init,
         beta_init,
         shared,
+        acc_stack,
     );
 }
 
@@ -1075,6 +1113,11 @@ fn workerThread(ctx: *ThreadContext) void {
     var pv_move: ?Move = null;
     var prev_score: i32 = 0;
 
+    // Refresh the root accumulator once; subsequent plies update incrementally.
+    if (ctx.shared.network) |net| {
+        nnue.refreshAccumulator(&ctx.state, net, &ctx.acc_stack.accs[0]);
+    }
+
     // Each thread does iterative deepening up to max_depth
     for (1..ctx.shared.max_depth + 1) |d| {
         if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1107,6 +1150,7 @@ fn workerThread(ctx: *ThreadContext) void {
                     alpha,
                     beta,
                     ctx.shared,
+                    &ctx.acc_stack,
                 );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1143,6 +1187,7 @@ fn workerThread(ctx: *ThreadContext) void {
                             &ctx.history_table,
                             &ctx.countermoves,
                             ctx.shared,
+                            &ctx.acc_stack,
                         );
                     }
                 }
@@ -1159,6 +1204,7 @@ fn workerThread(ctx: *ThreadContext) void {
                 &ctx.history_table,
                 &ctx.countermoves,
                 ctx.shared,
+                &ctx.acc_stack,
             );
         }
 
@@ -1247,7 +1293,11 @@ pub fn searchParallel(
             .thread_id = i,
             .tbl = tbl,
             .shared = &shared,
+            .acc_stack = undefined,
         };
+        // Mark every accumulator dirty; the worker refreshes accs[0] before
+        // its first eval and lazily fills the rest as deltas accumulate.
+        for (&contexts[i].acc_stack.accs) |*acc| acc.computed = .{ false, false };
     }
 
     // Spawn worker threads
@@ -1340,6 +1390,9 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
         .start_time = now,
     };
 
+    var acc_stack: nnue.AccumulatorStack = undefined;
+    for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+
     for (1..max_depth + 1) |depth| {
         const result = searchAtDepth(
             &mutable_state,
@@ -1351,6 +1404,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             &history_table,
             &countermoves,
             &shared,
+            &acc_stack,
         );
         if (result) |r| {
             best_move = r.move;
@@ -1387,7 +1441,9 @@ pub fn quiescenceEval(state: *const State) i32 {
         .io = io,
         .start_time = now,
     };
-    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared);
+    var acc_stack: nnue.AccumulatorStack = undefined;
+    for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared, &acc_stack);
 }
 
 pub fn isGameOver(state: *const State) ?GameResult {

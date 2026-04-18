@@ -270,6 +270,7 @@ def run_match(
     concurrency,
     openings=None,
     pgn_out=None,
+    eval_file="/home/paul/projects/chez/data/net.nnue",
 ):
     """Run a match against one opponent. Returns W/D/L dict."""
     opp_name = opponent["name"]
@@ -282,6 +283,7 @@ def run_match(
         "name=Chez",
         f"cmd={chez_binary}",
         f"option.Threads={threads}",
+        f"option.EvalFile={eval_file}",
         "proto=uci",
         "-engine",
         f"name={opp_name}",

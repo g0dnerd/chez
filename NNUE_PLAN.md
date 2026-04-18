@@ -49,36 +49,16 @@ Active features per position: ≤30 (number of non-king pieces)
 - **Phase 1** ✅ — Data structures, feature extraction, file I/O (`src/engine/nnue.zig`)
 - **Phase 2** ✅ — Non-incremental quantized inference (`nnue.evaluate(state, net) -> i32`)
 - **Phase 3** ✅ — GPU training (`src/train_nnue.zig`, `src/trainer/{model,dataloader,export}.zig`)
+- **Phase 4** ✅ — Search integration & UCI/CLI wiring
+  - `search.zig`: `SharedSearchState.network: ?*const nnue.Network`; `evaluate()` dispatches to `nnue.evaluate(state, net) * 2` when loaded (×2 to roughly match HCE scale), falls back to HCE otherwise. `searchParallel`/`searchWithHistory` accept a `network` parameter.
+  - `uci.zig`: `EvalFile` UCI option loads via `nnue.Network.load(io, allocator, path)`; passes network into search.
+  - `tui.zig`: `--nnue <path>` CLI arg loads network at startup, threads it through to search.
+  - `bench.zig`: `--nnue <path>` CLI arg; benchmark reports eval label (HCE vs NNUE) and exercises `nnue.evaluate` in the micro-eval loop.
+  - Note: `ThreadContext` does not yet carry an `nnue.Accumulator` — evaluation is fully non-incremental; that work is deferred to Phase 5.
 
 ---
 
 ## Remaining Phases
-
-### Phase 4: Search Integration & UCI
-
-**Modifications to `search.zig`:**
-
-- `SharedSearchState` gains `network: ?*const nnue.Network`
-- `ThreadContext` gains an `nnue.Accumulator`
-- Replace `evaluation.evaluate(state)` with `nnue.evaluate(state, network)` when net loaded
-- Fall back to HCE when `network == null`
-
-**Modifications to `uci.zig`:**
-
-- New UCI option: `EvalFile` (path to `.nnue` file)
-- Load network via `nnue.Network.load(io, allocator, path)` at startup or when option changes
-
-**Modifications to `tui.zig`:**
-
-- CLI arg `--nnue <path>`
-- Fall back to HCE if no net specified
-
-**Modifications to `bench.zig`:**
-
-- Support `--nnue <path>` for benchmarking with NNUE eval
-- Compare NPS: HCE vs NNUE
-
----
 
 ### Phase 5: Incremental Accumulator Updates
 
@@ -130,8 +110,6 @@ Active features per position: ≤30 (number of non-king pieces)
 ## Implementation Order
 
 ```
-Phase 0-3 ✅ →  Phase 4  →  Phase 5
-(done)          (integrate)  (incremental)
-                    ↓
-               Phase 6 (iterate)
+Phase 0-4 ✅ →  Phase 5  →  Phase 6
+(done)          (incremental) (iterate)
 ```

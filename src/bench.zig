@@ -73,10 +73,29 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const eval_label: []const u8 = if (network != null) "NNUE" else "HCE";
     try stdout.print("Bench: {d} positions, depth {d}, {d} thread(s), eval={s}\n", .{ positions.len, depth, threads, eval_label });
 
+    const clock = std.Io.Clock.awake;
+
+    // Micro-bench the evaluation function directly.
+    {
+        const micro_state = State.fromFen(positions[0]) catch unreachable;
+        const iters: usize = 50_000;
+        var sink: i64 = 0;
+        const eval_start = std.Io.Timestamp.now(io, clock);
+        if (network) |net| {
+            for (0..iters) |_| sink +|= nnue.evaluate(&micro_state, net);
+        } else {
+            for (0..iters) |_| sink +|= chez.engine.evaluation.evaluate(&micro_state);
+        }
+        const eval_ns = std.Io.Timestamp.now(io, clock).nanoseconds - eval_start.nanoseconds;
+        const per_eval_ns = @divTrunc(eval_ns, @as(i128, @intCast(iters)));
+        const evals_per_sec = if (eval_ns > 0) @divTrunc(@as(i128, @intCast(iters)) * 1_000_000_000, eval_ns) else 0;
+        try stdout.print("Eval microbench: {d} iters, {d}ns/eval, {d} evals/sec (sink={d})\n", .{ iters, per_eval_ns, evals_per_sec, sink });
+        try stdout.flush();
+    }
+
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
-    const clock = std.Io.Clock.awake;
     var start = std.Io.Timestamp.now(io, clock);
 
     try stdout.flush();

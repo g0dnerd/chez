@@ -15,13 +15,25 @@ zig build test         # Run all tests
 ./zig-out/bin/precompute  # Regenerate magic bitboard tables (rarely needed)
 ```
 
-## Code base
+## Zig API Guardrails (bleeding-edge 0.16+)
 
-- This project uses bleeding-edge Zig. **Do not guess APIs** -- if unsure, ask me directly
-- Do NOT run excessive greps/finds trying to figure out a Zig stdlib API
-- Common mistakes to avoid:
-  - `std.Io` (capitalized) not `std.io`
-  - RNG lives in `std.Io.random`, NOT `std.crypto`
+This project uses tip-of-master Zig. The stdlib has been heavily refactored. **Do not guess APIs** -- if unsure, ask me directly. Do NOT run excessive greps/finds trying to figure out a Zig stdlib API.
+
+| Correct | Wrong |
+|---------|-------|
+| `std.Io` | `std.io` |
+| `std.Io.random(io, buf)` | `std.crypto`, `std.rand` |
+| `std.Io.Writer` | `std.io.Writer` |
+| `std.Io.File.stderr().writer(io, &buf)` | `std.io.getStdErr()` |
+| `std.Io.File.stdin().reader(io, &buf)` | `std.io.getStdIn()` |
+| `std.Io.Dir.cwd().openFile(io, path, .{})` | `std.fs.cwd().openFile(path, .{})` |
+| `std.Io.Dir.cwd().createFile(io, path, .{})` | `std.fs.cwd().createFile(...)` |
+| `std.Io.Clock.awake` | `std.time` |
+| `std.Io.Threaded` / `.init_single_threaded` | `std.Thread.Pool` |
+| `std.Io.Mutex` | `std.Thread.Mutex` |
+| `file.reader(io, &buf)` | `file.reader()` |
+
+If an API doesn't appear anywhere in the codebase, **ask** rather than guessing.
 
 ## Project Structure
 
@@ -63,6 +75,42 @@ tests/
 ### Module Hierarchy
 
 `chez.zig` → `engine/engine.zig` → submodules. External consumers import through `chez.engine.*`. Engine submodules import siblings directly via relative `@import`. The `tests/` module gets `chez` as a build.zig module import.
+
+## NNUE Neural Network Evaluation
+
+### Architecture
+HalfKP(256->32->32->1), ~10.5M parameters, ~20MB quantized .nnue file. Full spec in `NNUE_PLAN.md`.
+
+### Status
+- Phases 0-3 complete (self-play data, data structures, quantized inference, GPU training)
+- Phase 4 in progress (search integration, UCI EvalFile option)
+- Phase 5 next: incremental accumulator updates
+- Phase 6: training iteration loop
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `src/engine/nnue.zig` | Inference, feature extraction, .nnue file loading |
+| `src/trainer/model.zig` | GPU training model (uses kore ml) |
+| `src/trainer/export.zig` | Float->quantized .nnue export |
+| `src/trainer/dataloader.zig` | Training data batching |
+| `src/train_nnue.zig` | Training entry point |
+| `src/selfplay.zig` | Self-play data generator |
+| `src/selfplay/serde.zig` | Position encoding for training data |
+
+### Kore Dependency
+The `kore` submodule (`./kore/`) provides:
+- `kore.ml.cpu.ops` -- SIMD i16 vector ops, clipped ReLU
+- `kore.ml.cpu.quantized` -- quantized matmul for inference
+- `kore.ml.gpu.*` -- OpenCL GPU training operations
+- `kore.args` -- CLI argument parsing
+- `kore.io` -- I/O utilities
+
+### Quick Reference
+- Quantization: FT scale=127, hidden scale=64. Output divides by 127*64=8128 for centipawns.
+- Feature index: `king_sq * 640 + (relative_color * 5 + piece_type) * 64 + piece_sq`
+- Black perspective: all squares XOR 56 (rank mirror)
 
 ## Architecture
 
@@ -151,6 +199,29 @@ Uses `Score` struct with separate middlegame (mg) and endgame (eg) values, inter
 
 - Propose approach/API before writing code for anything non-trivial
 - Commit messages: short imperative style (e.g., `add BitReader`, `fix matmul padding`)
+
+### Scope Rules
+
+- **Only modify what was asked for.** Do not touch adjacent code.
+- Do NOT add doc comments to functions you did not change
+- Do NOT reformat or restyle code you did not change
+- Do NOT rename variables in unrelated functions
+- Do NOT refactor working code "while you're in there"
+- Do NOT add or reorganize imports beyond what your change requires
+- Do NOT add error handling to code paths that already work
+- If you see something that should be improved, mention it -- do not fix it silently
+- Implement the minimal viable version first. Propose extensions separately.
+
+### Testing
+
+```bash
+zig build test                                                  # All unit tests
+uv run python testing/elo_test.py --mode quick                  # 50-game regression check
+uv run python testing/elo_test.py --mode full                   # SPRT (up to 5000 games)
+uv run python testing/gauntlet.py                               # Absolute Elo rating
+uv run python testing/suite_runner.py testing/suites/wac.epd    # Tactical suite
+./zig-out/bin/bench                                             # NPS benchmark
+```
 
 ### Common Pitfalls
 

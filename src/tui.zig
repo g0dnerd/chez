@@ -3,6 +3,7 @@ const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez.zig");
 const engine = chez.engine;
+const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
 fn parseMove(input: []const u8) ?engine.Move {
     const trimmed = std.mem.trimEnd(u8, input, &std.ascii.whitespace);
@@ -46,14 +47,14 @@ fn printLegalMoves(m: engine.movegen.MoveList, w: *std.Io.Writer) !void {
 }
 
 fn containsMove(haystack: *const [256]engine.Move, needle: *const engine.Move) bool {
+    // If not a promotion, mask out the promotion_piece bits (13-15)
+    const mask: u16 = if (needle.is_promotion) 0xFFFF else 0x1FFF;
+    const needle_val = @as(u16, @bitCast(needle.*)) & mask;
     for (haystack) |straw| {
-        if (straw.start == needle.start and straw.end == needle.end and straw.promotion_piece == needle.promotion_piece) {
-            return true;
-        }
+        if (@as(u16, @bitCast(straw)) & mask == needle_val) return true;
     }
     return false;
 }
-const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
 const Args = struct {
     engine_color: ?[]const u8,
@@ -299,7 +300,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
 
                 if (parseMove(move)) |*user_move| {
-                    // try stdout.print("{any}\n", .{moves.moves});
                     if (containsMove(&moves.moves, user_move)) {
                         last_move = user_move.*;
                         const piece = state.pieceAt(user_move.start).?;

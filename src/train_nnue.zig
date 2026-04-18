@@ -18,6 +18,7 @@ const Args = struct {
     lambda: ?f32,
     checkpoint: ?[]const u8,
     @"export": ?[]const u8,
+    checkpoint_interval: ?u32,
 };
 
 const default_epochs: u32 = 100;
@@ -25,10 +26,10 @@ const default_batch_size: usize = 16384;
 const default_lr: f32 = 0.001;
 const default_lambda: f32 = 1.0;
 const default_lr_min: f32 = 0.0001;
+const default_checkpoint_interval: u32 = 5;
 const warmup_epochs: u32 = 1;
-const checkpoint_interval: u32 = 5;
 const grad_clip_norm: f32 = 1.0;
-const sigmoid_scale: f32 = 111.0 / 400.0;
+const sigmoid_scale: f32 = 1.0 / 400.0;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.page_allocator;
@@ -45,6 +46,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const lr = args.lr orelse default_lr;
     const lambda = args.lambda orelse default_lambda;
     const export_path = args.@"export" orelse "output.nnue";
+    const checkpoint_interval = args.checkpoint_interval orelse default_checkpoint_interval;
 
     var single_threaded: std.Io.Threaded = .init_single_threaded;
     const io = single_threaded.io();
