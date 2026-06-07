@@ -12,8 +12,10 @@ const default_games: usize = 1000;
 const default_threads: usize = 4;
 const random_plies: u16 = 8;
 const skip_plies: u16 = 16;
-const score_filter: i32 = 10000;
+const score_filter: i32 = 3000;
 const sample_interval: u16 = 4;
+const adjudication_threshold: i32 = 1500;
+const adjudication_count: u16 = 5;
 
 const GameOutcome = enum(u8) {
     white_wins = 0,
@@ -37,6 +39,8 @@ const SelfplayGame = struct {
     ply: u16,
     records: [max_game_records]TrainingRecord,
     num_records: usize,
+    adjudication_consecutive: u16,
+    adjudication_winning_side: engine.Color,
 
     fn init(rng: std.Random, depth: u8, ttable: *engine.search.TranspositionTable) Self {
         return .{
@@ -48,6 +52,8 @@ const SelfplayGame = struct {
             .ply = 0,
             .records = undefined,
             .num_records = 0,
+            .adjudication_consecutive = 0,
+            .adjudication_winning_side = engine.Colors.white,
         };
     }
 
@@ -56,6 +62,7 @@ const SelfplayGame = struct {
         self.history = .{};
         self.ply = 0;
         self.num_records = 0;
+        self.adjudication_consecutive = 0;
         self.ttable.newSearch();
     }
 
@@ -128,6 +135,22 @@ const SelfplayGame = struct {
             try self.bufferPosition(score);
         }
 
+        const abs_score = @as(i32, @intCast(@abs(score)));
+        if (abs_score > adjudication_threshold) {
+            const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
+            if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
+                self.adjudication_consecutive += 1;
+            } else {
+                self.adjudication_consecutive = 1;
+                self.adjudication_winning_side = winning_side;
+            }
+            if (self.adjudication_consecutive >= adjudication_count) {
+                return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
+            }
+        } else {
+            self.adjudication_consecutive = 0;
+        }
+
         _ = self.state.makeMove(best_move, self.state.to_move, self.state.mailbox[best_move.start].?);
         self.history.push(self.state.zobrist_hash);
         self.ply += 1;
@@ -163,9 +186,11 @@ const SelfplayGame = struct {
     fn writeRecords(self: *const Self, writer: *std.Io.Writer, outcome: GameOutcome) !void {
         const wdl: u8 = @intFromEnum(outcome);
         for (self.records[0..self.num_records]) |record| {
-            try writer.writeAll(&record.position);
-            try writer.writeInt(i16, record.score, .little);
-            try writer.writeByte(wdl);
+            var buf: [record_size]u8 = undefined;
+            @memcpy(buf[0..position_size], &record.position);
+            std.mem.writeInt(i16, buf[position_size..][0..2], record.score, .little);
+            buf[position_size + 2] = wdl;
+            try writer.writeAll(&buf);
         }
     }
 };
@@ -195,9 +220,9 @@ fn workerLoop(ctx: *WorkerCtx) void {
 
         if (result.positions > 0) {
             ctx.write_mutex.lock(ctx.io) catch continue;
-            game.writeRecords(ctx.writer, result.outcome) catch {};
-            ctx.writer.flush() catch {};
-            ctx.write_mutex.unlock(ctx.io);
+            defer ctx.write_mutex.unlock(ctx.io);
+            game.writeRecords(ctx.writer, result.outcome) catch return;
+            ctx.writer.flush() catch return;
         }
 
         _ = ctx.total_positions.fetchAdd(result.positions, .monotonic);
