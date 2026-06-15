@@ -27,6 +27,10 @@ pub const SearchParams = struct {
     lmr_div: i32 = 100,
     // LMR history adjustment: reduction -= clamp(combined_history/lmr_hist_div, -2, 2).
     lmr_hist_div: i32 = 8000,
+    // History-based pruning: at depth <= histprune_depth, skip late quiet moves
+    // whose combined history < -histprune_margin * depth.
+    histprune_depth: i32 = 3,
+    histprune_margin: i32 = 2000,
 };
 
 // Precompute the LMR reduction table [depth][move_index] from the log formula.
@@ -854,6 +858,12 @@ fn negamax(
         const should_lmp = depth <= 3 and !in_check and i >= lmp_thresholds[depth] and
             !is_capture and !is_promotion and !is_killer;
 
+        // History-based pruning: at shallow depths, skip late quiet moves whose
+        // combined history is strongly negative (proven bad).
+        const should_histprune = @as(i32, depth) <= search_ctx.shared.search_params.histprune_depth and
+            !in_check and i > 0 and !is_capture and !is_promotion and !is_killer and
+            combined_hist < -search_ctx.shared.search_params.histprune_margin * @as(i32, depth);
+
         const undo = state.makeMove(m, to_move, p);
         if (search_ctx.shared.network) |net| {
             nnue.recordMove(search_ctx.acc_stack, ply + 1, state, net, m, to_move, p, &undo);
@@ -871,6 +881,11 @@ fn negamax(
                 continue;
             }
             if (should_lmp) {
+                search_ctx.history.pop();
+                state.unmakeMove(m, to_move, p, undo);
+                continue;
+            }
+            if (should_histprune) {
                 search_ctx.history.pop();
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
