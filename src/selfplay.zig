@@ -127,14 +127,18 @@ const SelfplayGame = struct {
             1,
             &self.history,
             self.ttable,
-            self.network,
+            null,
         )) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
 
         if (self.shouldRecord(score)) {
-            try self.bufferPosition(score);
+            const record_score = if (self.network) |net|
+                nnue.evaluate(&self.state, net)
+            else
+                score;
+            try self.bufferPosition(record_score);
         }
 
         const abs_score = @as(i32, @intCast(@abs(score)));
