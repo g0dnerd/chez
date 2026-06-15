@@ -21,7 +21,33 @@ pub const SearchParams = struct {
     futility_margin_1: i32 = 300,
     futility_margin_2: i32 = 600,
     delta_margin: i32 = 200,
+    // LMR reduction = lmr_base/100 + ln(d)*ln(i) / (lmr_div/100). Stored as
+    // hundredths so they can be exposed as integer UCI spin options.
+    lmr_base: i32 = 75,
+    lmr_div: i32 = 150,
 };
+
+// Precompute the LMR reduction table [depth][move_index] from the log formula.
+// Runtime (not comptime) so lmr_base/lmr_div stay tunable and we avoid any
+// @log-at-comptime dependency.
+fn computeLmrTable(lmr_base: i32, lmr_div: i32) [64][64]u8 {
+    var table: [64][64]u8 = undefined;
+    const base: f64 = @as(f64, @floatFromInt(lmr_base)) / 100.0;
+    const div: f64 = @as(f64, @floatFromInt(@max(1, lmr_div))) / 100.0;
+    for (0..64) |d| {
+        for (0..64) |i| {
+            if (d == 0 or i == 0) {
+                table[d][i] = 0;
+                continue;
+            }
+            const ld = @log(@as(f64, @floatFromInt(d)));
+            const li = @log(@as(f64, @floatFromInt(i)));
+            const r = @floor(base + ld * li / div);
+            table[d][i] = if (r < 0) 0 else if (r > 32) 32 else @intFromFloat(r);
+        }
+    }
+    return table;
+}
 
 const checkmate_score: i32 = 100000;
 const max_ply: usize = 64;
@@ -410,6 +436,9 @@ const SharedSearchState = struct {
     options: SearchOptions = .{},
     network: ?*const nnue.Network = null,
     search_params: SearchParams = .{},
+    // LMR reductions [depth][move_index], filled per search from search_params.
+    // Zero until set (qsearch-only shared states never use it).
+    lmr_table: [64][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** 64,
 
     fn futilityMargin(self: *const SharedSearchState, depth: u8) i32 {
         return switch (depth) {
@@ -864,13 +893,9 @@ fn negamax(
             // Only reduce quiet moves at sufficient depth that don't give check.
             var reduction: u8 = 0;
             if (i >= 3 and depth >= 3 and !is_capture and !gives_check and !in_check) {
-                // Base reduction + increase for later moves and higher depths
-                // FIXME: un-simplify this?
-                // Formula: 1 + ln(depth) * ln(moveIndex) / 2 (simplified integer version)
-                reduction = 1;
-                if (i >= 6) reduction += 1;
-                if (i >= 12) reduction += 1;
-                if (depth >= 6) reduction += 1;
+                // Log-based reduction: lmr_base + ln(depth)*ln(i)/lmr_div,
+                // precomputed in shared.lmr_table[depth][move_index].
+                reduction = search_ctx.shared.lmr_table[@min(depth, 63)][@min(i, 63)];
                 // Don't reduce into qsearch
                 if (reduction >= new_depth) {
                     reduction = if (new_depth > 1) new_depth - 1 else 0;
@@ -1336,6 +1361,7 @@ pub fn searchParallel(
         .network = network,
         .search_params = options.search_params,
     };
+    shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
 
     // Create thread contexts
     var contexts: [max_threads]ThreadContext = undefined;
@@ -1460,6 +1486,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
         .max_depth = max_depth,
         .start_time = now,
     };
+    shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
 
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };

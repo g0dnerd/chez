@@ -191,6 +191,8 @@ pub fn main() !void {
             stdout.writeAll("option name FutilityMargin1 type spin default 300 min 50 max 800\n") catch {};
             stdout.writeAll("option name FutilityMargin2 type spin default 600 min 100 max 1500\n") catch {};
             stdout.writeAll("option name DeltaMargin type spin default 200 min 50 max 600\n") catch {};
+            stdout.writeAll("option name LmrBase type spin default 75 min 0 max 300\n") catch {};
+            stdout.writeAll("option name LmrDiv type spin default 150 min 50 max 500\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -241,6 +243,10 @@ pub fn main() !void {
                 search_params.futility_margin_2 = std.fmt.parseInt(i32, opt_val, 10) catch search_params.futility_margin_2;
             } else if (std.mem.eql(u8, opt_name, "DeltaMargin")) {
                 search_params.delta_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.delta_margin;
+            } else if (std.mem.eql(u8, opt_name, "LmrBase")) {
+                search_params.lmr_base = std.fmt.parseInt(i32, opt_val, 10) catch search_params.lmr_base;
+            } else if (std.mem.eql(u8, opt_name, "LmrDiv")) {
+                search_params.lmr_div = std.fmt.parseInt(i32, opt_val, 10) catch search_params.lmr_div;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
