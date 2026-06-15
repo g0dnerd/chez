@@ -24,7 +24,9 @@ pub const SearchParams = struct {
     // LMR reduction = lmr_base/100 + ln(d)*ln(i) / (lmr_div/100). Stored as
     // hundredths so they can be exposed as integer UCI spin options.
     lmr_base: i32 = 75,
-    lmr_div: i32 = 150,
+    lmr_div: i32 = 100,
+    // LMR history adjustment: reduction -= clamp(combined_history/lmr_hist_div, -2, 2).
+    lmr_hist_div: i32 = 8000,
 };
 
 // Precompute the LMR reduction table [depth][move_index] from the log formula.
@@ -731,6 +733,10 @@ fn negamax(
         search_ctx.stack[ply].static_eval = static_eval orelse no_eval;
     }
 
+    // Improving: is our static eval better than two plies ago? Used to reduce
+    // less (LMR) when the position is trending our way.
+    const improving = isImproving(search_ctx.stack, ply);
+
     // Reverse futility pruning (static null move pruning):
     // If eval is far above beta, the position is so good we can prune.
     // Gated to depth <= 6 to preserve prior behavior (eval used to be computed
@@ -828,6 +834,10 @@ fn negamax(
         const p = state.mailbox[m.start].?;
         // Piece-to index of this move, for continuation history / the stack.
         const cur_pt: u16 = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+        // Combined history of this move (butterfly + 1-ply continuation), used
+        // by LMR history adjustment. ~0 for captures (not stored there).
+        const combined_hist: i32 = search_ctx.history_table.get(to_move, m.start, m.end) +
+            (if (prev1_valid) search_ctx.cont_hist.get(prev1_pt, cur_pt) else 0);
 
         // Check if this is a capture before making the move (for LMR decision)
         const is_capture = state.mailbox[m.end] != null;
@@ -893,9 +903,16 @@ fn negamax(
             // Only reduce quiet moves at sufficient depth that don't give check.
             var reduction: u8 = 0;
             if (i >= 3 and depth >= 3 and !is_capture and !gives_check and !in_check) {
-                // Log-based reduction: lmr_base + ln(depth)*ln(i)/lmr_div,
-                // precomputed in shared.lmr_table[depth][move_index].
-                reduction = search_ctx.shared.lmr_table[@min(depth, 63)][@min(i, 63)];
+                // Log-based base reduction, precomputed in shared.lmr_table.
+                var r: i32 = search_ctx.shared.lmr_table[@min(depth, 63)][@min(i, 63)];
+                // Runtime adjustments: reduce less on PV nodes, when improving,
+                // and for moves with good history; more for bad history.
+                if (is_pv_node) r -= 1;
+                if (improving) r -= 1;
+                const hist_div = @max(1, search_ctx.shared.search_params.lmr_hist_div);
+                r -= std.math.clamp(@divTrunc(combined_hist, hist_div), -2, 2);
+                if (r < 0) r = 0;
+                reduction = @intCast(@min(r, 63));
                 // Don't reduce into qsearch
                 if (reduction >= new_depth) {
                     reduction = if (new_depth > 1) new_depth - 1 else 0;
