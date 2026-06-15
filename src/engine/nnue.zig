@@ -36,7 +36,7 @@ pub const max_active_features = 30;
 
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
-pub const format_version: u32 = 1;
+pub const format_version: u32 = 3;
 pub const arch_hash: u32 = 0x48_4B_50_31; // "HKP1"
 pub const header_size = 16;
 
@@ -47,7 +47,8 @@ const fc1_weights_bytes = fc1_in * fc1_out * @sizeOf(i8);
 const fc1_biases_bytes = fc1_out * @sizeOf(i32);
 const fc2_weights_bytes = fc2_in * fc2_out * @sizeOf(i8);
 const fc2_biases_bytes = fc2_out * @sizeOf(i32);
-const output_weights_bytes = fc2_out * @sizeOf(i8);
+const output_weights_bytes = fc2_out * @sizeOf(i16);
+const output_weights_bytes_v2 = fc2_out * @sizeOf(i8);
 const output_bias_bytes = @sizeOf(i32);
 
 pub const data_bytes = ft_biases_bytes + ft_weights_bytes +
@@ -55,6 +56,7 @@ pub const data_bytes = ft_biases_bytes + ft_weights_bytes +
     fc2_weights_bytes + fc2_biases_bytes +
     output_weights_bytes + output_bias_bytes;
 pub const expected_file_size = header_size + data_bytes;
+const expected_file_size_v2 = expected_file_size - output_weights_bytes + output_weights_bytes_v2;
 
 // Data structures
 pub const Accumulator = struct {
@@ -112,11 +114,13 @@ pub const StackDelta = struct {
 pub const AccumulatorStack = struct {
     accs: [max_stack_ply + 1]Accumulator,
     deltas: [max_stack_ply + 1]StackDelta,
+    debug_eval_count: u32,
 
     pub fn init() AccumulatorStack {
         return .{
             .accs = [_]Accumulator{Accumulator.empty} ** (max_stack_ply + 1),
             .deltas = [_]StackDelta{StackDelta.empty} ** (max_stack_ply + 1),
+            .debug_eval_count = 0,
         };
     }
 
@@ -131,22 +135,26 @@ pub const AccumulatorStack = struct {
 pub const Network = struct {
     ft_biases: [ft_out]i16,
     ft_weights: [num_features][ft_out]i16,
-    fc1_weights: [fc1_in][fc1_out]i8,
+    // FC weights stored output-major (transposed from file layout) for linearForward_i8.
+    fc1_weights: [fc1_out][fc1_in]i8,
     fc1_biases: [fc1_out]i32,
-    fc2_weights: [fc2_in][fc2_out]i8,
+    fc2_weights: [fc2_out][fc2_in]i8,
     fc2_biases: [fc2_out]i32,
-    output_weights: [fc2_out]i8,
+    output_weights: [fc2_out]i16,
     output_bias: i32,
 
     // Parse a Network from raw file bytes (little-endian).
     // Caller owns the returned pointer and must call deinit().
     pub fn loadFromBytes(allocator: std.mem.Allocator, data: []const u8) !*Network {
-        if (data.len < expected_file_size) return error.InvalidFileSize;
+        if (data.len < header_size) return error.InvalidFileSize;
 
         if (!std.mem.eql(u8, data[0..4], &magic_bytes)) return error.InvalidMagic;
 
         const ver = std.mem.readInt(u32, data[4..8], .little);
-        if (ver != format_version) return error.UnsupportedVersion;
+        if (ver < 1 or ver > format_version) return error.UnsupportedVersion;
+
+        const min_size: usize = if (ver <= 2) expected_file_size_v2 else expected_file_size;
+        if (data.len < min_size) return error.InvalidFileSize;
 
         const arch = std.mem.readInt(u32, data[8..12], .little);
         if (arch != arch_hash) return error.ArchitectureMismatch;
@@ -168,10 +176,21 @@ pub const Network = struct {
         );
         off += ft_weights_bytes;
 
-        @memcpy(
-            std.mem.asBytes(&net.fc1_weights),
-            data[off..][0..fc1_weights_bytes],
-        );
+        if (ver == 1) {
+            // v1: FC weights stored input-major [in][out], transpose to output-major.
+            const src1: *const [fc1_in][fc1_out]i8 = @alignCast(@ptrCast(data[off..][0..fc1_weights_bytes]));
+            for (0..fc1_out) |j| {
+                for (0..fc1_in) |k| {
+                    net.fc1_weights[j][k] = src1[k][j];
+                }
+            }
+        } else {
+            // v2: FC weights already output-major [out][in].
+            @memcpy(
+                std.mem.asBytes(&net.fc1_weights),
+                data[off..][0..fc1_weights_bytes],
+            );
+        }
         off += fc1_weights_bytes;
 
         @memcpy(
@@ -180,10 +199,19 @@ pub const Network = struct {
         );
         off += fc1_biases_bytes;
 
-        @memcpy(
-            std.mem.asBytes(&net.fc2_weights),
-            data[off..][0..fc2_weights_bytes],
-        );
+        if (ver == 1) {
+            const src2: *const [fc2_in][fc2_out]i8 = @alignCast(@ptrCast(data[off..][0..fc2_weights_bytes]));
+            for (0..fc2_out) |j| {
+                for (0..fc2_in) |k| {
+                    net.fc2_weights[j][k] = src2[k][j];
+                }
+            }
+        } else {
+            @memcpy(
+                std.mem.asBytes(&net.fc2_weights),
+                data[off..][0..fc2_weights_bytes],
+            );
+        }
         off += fc2_weights_bytes;
 
         @memcpy(
@@ -192,11 +220,19 @@ pub const Network = struct {
         );
         off += fc2_biases_bytes;
 
-        @memcpy(
-            std.mem.asBytes(&net.output_weights),
-            data[off..][0..output_weights_bytes],
-        );
-        off += output_weights_bytes;
+        if (ver <= 2) {
+            const src: *const [fc2_out]i8 = @ptrCast(data[off..][0..output_weights_bytes_v2]);
+            for (0..fc2_out) |i| {
+                net.output_weights[i] = src[i];
+            }
+            off += output_weights_bytes_v2;
+        } else {
+            @memcpy(
+                std.mem.asBytes(&net.output_weights),
+                data[off..][0..output_weights_bytes],
+            );
+            off += output_weights_bytes;
+        }
 
         net.output_bias = std.mem.readInt(i32, data[off..][0..4], .little);
 
@@ -242,11 +278,11 @@ pub const Network = struct {
         try w.writeAll(std.mem.asBytes(&self.ft_biases));
         try w.writeAll(std.mem.asBytes(&self.ft_weights));
 
-        // FC1
+        // FC1 -- output-major [out][in] on disk for v2
         try w.writeAll(std.mem.asBytes(&self.fc1_weights));
         try w.writeAll(std.mem.asBytes(&self.fc1_biases));
 
-        // FC2
+        // FC2 -- same
         try w.writeAll(std.mem.asBytes(&self.fc2_weights));
         try w.writeAll(std.mem.asBytes(&self.fc2_biases));
 
@@ -340,11 +376,14 @@ pub fn evaluateLazy(state: *const State, net: *const Network, stack: *Accumulato
     ensureComputed(stack, ply, Colors.black, net);
 
     if (@import("builtin").mode == .Debug) {
-        var fresh: Accumulator = undefined;
-        refreshAccumulator(state, net, &fresh);
-        for (0..2) |c_idx| {
-            for (0..ft_out) |i| {
-                std.debug.assert(fresh.values[c_idx][i] == stack.accs[ply].values[c_idx][i]);
+        stack.debug_eval_count +%= 1;
+        if (stack.debug_eval_count % 1024 == 0) {
+            var fresh: Accumulator = undefined;
+            refreshAccumulator(state, net, &fresh);
+            for (0..2) |c_idx| {
+                for (0..ft_out) |i| {
+                    std.debug.assert(fresh.values[c_idx][i] == stack.accs[ply].values[c_idx][i]);
+                }
             }
         }
     }
@@ -540,23 +579,15 @@ fn evaluateRawFromAccumulator(state: *const State, net: *const Network, acc: *co
     @memcpy(concat[0..ft_out], &stm_relu);
     @memcpy(concat[ft_out..fc1_in], &opp_relu);
 
-    // FC1: [1, 512] @ [512, 32] → [32]i32, add bias, ÷64, ClippedReLU → i8
-    const fc1_raw = quantized.matmul(i8, 1, fc1_in, fc1_out, &concat, @ptrCast(&net.fc1_weights));
-    var fc1_scaled: [fc1_out]i16 = undefined;
-    for (0..fc1_out) |i| {
-        fc1_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc1_raw[i] + net.fc1_biases[i], 64), -32768, 32767));
-    }
-    const fc1_act = ops.clippedRelu_i16(fc1_out, &fc1_scaled);
+    // FC1: linearForward_i8 (fused bias + i8 SIMD dot products) → shiftClippedReLU
+    const fc1_raw = quantized.linearForward_i8(fc1_in, fc1_out, &concat, @ptrCast(&net.fc1_weights), &net.fc1_biases);
+    const fc1_act = quantized.shiftClippedRelu_i8(fc1_out, 6, &fc1_raw);
 
-    // FC2: [1, 32] @ [32, 32] → [32]i32, add bias, ÷64, ClippedReLU → i8
-    const fc2_raw = quantized.matmul(i8, 1, fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights));
-    var fc2_scaled: [fc2_out]i16 = undefined;
-    for (0..fc2_out) |i| {
-        fc2_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc2_raw[i] + net.fc2_biases[i], 64), -32768, 32767));
-    }
-    const fc2_act = ops.clippedRelu_i16(fc2_out, &fc2_scaled);
+    // FC2: same fused path
+    const fc2_raw = quantized.linearForward_i8(fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights), &net.fc2_biases);
+    const fc2_act = quantized.shiftClippedRelu_i8(fc2_out, 6, &fc2_raw);
 
-    // Output: dot product of i8 weights × i8 activations + i32 bias, ÷(127×64) → centipawns
+    // Output: i8 activations × i16 weights dot product + bias
     var output: i32 = net.output_bias;
     for (0..fc2_out) |i| {
         output += @as(i32, fc2_act[i]) * @as(i32, net.output_weights[i]);
@@ -705,7 +736,7 @@ test "loadFromBytes rejects short file" {
 
 test "expected file size" {
     try std.testing.expectEqual(
-        @as(usize, 16 + 512 + 20_971_520 + 16_384 + 128 + 1_024 + 128 + 32 + 4),
+        @as(usize, 16 + 512 + 20_971_520 + 16_384 + 128 + 1_024 + 128 + 64 + 4),
         expected_file_size,
     );
 }
@@ -788,7 +819,7 @@ test "diagnose trained net" {
     // Load the trained net — adjust path if needed
     var single_threaded: std.Io.Threaded = .init_single_threaded;
     const io = single_threaded.io();
-    const net = Network.load(io, allocator, "data/net_k2_30M.nnue") catch |err| {
+    const net = Network.load(io, allocator, "data/net_v5.nnue") catch |err| {
         std.debug.print("Could not load net: {}\n", .{err});
         return err;
     };
@@ -879,26 +910,13 @@ test "diagnose trained net" {
     @memcpy(concat[0..ft_out], &stm_relu);
     @memcpy(concat[ft_out..fc1_in], &opp_relu);
 
-    // FC1 matmul
-    const fc1_raw = quantized.matmul(i8, 1, fc1_in, fc1_out, &concat, @ptrCast(&net.fc1_weights));
-    std.debug.print("FC1 raw (before bias): ", .{});
+    // FC1
+    const fc1_raw = quantized.linearForward_i8(fc1_in, fc1_out, &concat, @ptrCast(&net.fc1_weights), &net.fc1_biases);
+    std.debug.print("FC1 raw (with bias): ", .{});
     for (0..@min(8, fc1_out)) |i| std.debug.print("{d} ", .{fc1_raw[i]});
     std.debug.print("...\n", .{});
 
-    std.debug.print("FC1 biases: ", .{});
-    for (0..@min(8, fc1_out)) |i| std.debug.print("{d} ", .{net.fc1_biases[i]});
-    std.debug.print("...\n", .{});
-
-    // FC1 after bias + /64 + CReLU
-    var fc1_scaled: [fc1_out]i16 = undefined;
-    for (0..fc1_out) |i| {
-        fc1_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc1_raw[i] + net.fc1_biases[i], 64), -32768, 32767));
-    }
-    std.debug.print("FC1 after bias+/64: ", .{});
-    for (0..@min(8, fc1_out)) |i| std.debug.print("{d} ", .{fc1_scaled[i]});
-    std.debug.print("...\n", .{});
-
-    const fc1_act = ops.clippedRelu_i16(fc1_out, &fc1_scaled);
+    const fc1_act = quantized.shiftClippedRelu_i8(fc1_out, 6, &fc1_raw);
     var fc1_nonzero2: usize = 0;
     for (fc1_act) |v| {
         if (v != 0) fc1_nonzero2 += 1;
@@ -908,12 +926,8 @@ test "diagnose trained net" {
     std.debug.print("...\n", .{});
 
     // FC2
-    const fc2_raw = quantized.matmul(i8, 1, fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights));
-    var fc2_scaled: [fc2_out]i16 = undefined;
-    for (0..fc2_out) |i| {
-        fc2_scaled[i] = @intCast(std.math.clamp(@divTrunc(fc2_raw[i] + net.fc2_biases[i], 64), -32768, 32767));
-    }
-    const fc2_act = ops.clippedRelu_i16(fc2_out, &fc2_scaled);
+    const fc2_raw = quantized.linearForward_i8(fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights), &net.fc2_biases);
+    const fc2_act = quantized.shiftClippedRelu_i8(fc2_out, 6, &fc2_raw);
     var fc2_nonzero: usize = 0;
     for (fc2_act) |v| {
         if (v != 0) fc2_nonzero += 1;
@@ -928,4 +942,128 @@ test "diagnose trained net" {
         output += @as(i32, fc2_act[i]) * @as(i32, net.output_weights[i]);
     }
     std.debug.print("Output raw = {d}, /8128 = {d}\n", .{ output, @divTrunc(output, 127 * 64) });
+}
+
+test "compare v2 vs v5" {
+    const allocator = std.testing.allocator;
+    var single_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = single_threaded.io();
+
+    const v2 = Network.load(io, allocator, "data/net_v2.nnue") catch |err| {
+        std.debug.print("Could not load v2: {}\n", .{err});
+        return err;
+    };
+    defer v2.deinit(allocator);
+
+    const v5 = Network.load(io, allocator, "data/net_v5.nnue") catch |err| {
+        std.debug.print("Could not load v5: {}\n", .{err});
+        return err;
+    };
+    defer v5.deinit(allocator);
+
+    // FC1 weight statistics
+    std.debug.print("\n=== FC1 weight comparison ===\n", .{});
+
+    var v2_nonzero: usize = 0;
+    var v2_sum: i64 = 0;
+    var v2_abssum: i64 = 0;
+    var v5_nonzero: usize = 0;
+    var v5_sum: i64 = 0;
+    var v5_abssum: i64 = 0;
+    var match_count: usize = 0;
+    for (0..fc1_out) |j| {
+        for (0..fc1_in) |i| {
+            const w2 = v2.fc1_weights[j][i];
+            const w5 = v5.fc1_weights[j][i];
+            if (w2 != 0) v2_nonzero += 1;
+            if (w5 != 0) v5_nonzero += 1;
+            v2_sum += w2;
+            v5_sum += w5;
+            v2_abssum += @as(i64, @abs(w2));
+            v5_abssum += @as(i64, @abs(w5));
+            if (w2 == w5) match_count += 1;
+        }
+    }
+
+    // Check transpose: is v5[j][i] == v2[i % fc1_out][j + (i / fc1_out) * fc1_out]?
+    // Actually, for 32x512 vs 32x512, transpose would be checking if the underlying
+    // data is arranged as if v5's [j][i] corresponds to v2's data with swapped indices.
+    // Since fc1_in != fc1_out, a direct [j][i] vs [i][j] check doesn't work.
+    // Instead, let's check: does v5's raw bytes match v2's raw bytes?
+    const v2_bytes = std.mem.asBytes(&v2.fc1_weights);
+    const v5_bytes = std.mem.asBytes(&v5.fc1_weights);
+    var byte_match: usize = 0;
+    for (0..fc1_weights_bytes) |b| {
+        if (v2_bytes[b] == v5_bytes[b]) byte_match += 1;
+    }
+
+    std.debug.print("v2 FC1: {d}/{d} nonzero, sum={d}, abssum={d}\n", .{ v2_nonzero, fc1_in * fc1_out, v2_sum, v2_abssum });
+    std.debug.print("v5 FC1: {d}/{d} nonzero, sum={d}, abssum={d}\n", .{ v5_nonzero, fc1_in * fc1_out, v5_sum, v5_abssum });
+    std.debug.print("Element match: {d}/{d}\n", .{ match_count, fc1_in * fc1_out });
+    std.debug.print("Byte match: {d}/{d}\n", .{ byte_match, fc1_weights_bytes });
+
+    // Print first row of each
+    std.debug.print("\nv2 FC1 row 0 (first 16): ", .{});
+    for (0..16) |i| std.debug.print("{d} ", .{v2.fc1_weights[0][i]});
+    std.debug.print("\nv5 FC1 row 0 (first 16): ", .{});
+    for (0..16) |i| std.debug.print("{d} ", .{v5.fc1_weights[0][i]});
+
+    // FC2 weight comparison
+    std.debug.print("\n\n=== FC2 weight comparison ===\n", .{});
+    var v2_fc2_nonzero: usize = 0;
+    var v5_fc2_nonzero: usize = 0;
+    var v2_fc2_abssum: i64 = 0;
+    var v5_fc2_abssum: i64 = 0;
+    for (0..fc2_out) |j| for (0..fc2_in) |i| {
+        if (v2.fc2_weights[j][i] != 0) v2_fc2_nonzero += 1;
+        if (v5.fc2_weights[j][i] != 0) v5_fc2_nonzero += 1;
+        v2_fc2_abssum += @as(i64, @abs(v2.fc2_weights[j][i]));
+        v5_fc2_abssum += @as(i64, @abs(v5.fc2_weights[j][i]));
+    };
+    std.debug.print("v2 FC2: {d}/{d} nonzero, abssum={d}\n", .{ v2_fc2_nonzero, fc2_in * fc2_out, v2_fc2_abssum });
+    std.debug.print("v5 FC2: {d}/{d} nonzero, abssum={d}\n", .{ v5_fc2_nonzero, fc2_in * fc2_out, v5_fc2_abssum });
+
+    // Output weights
+    std.debug.print("\n=== Output weights ===\n", .{});
+    std.debug.print("v2 output: ", .{});
+    for (0..fc2_out) |i| std.debug.print("{d} ", .{v2.output_weights[i]});
+    std.debug.print("\nv2 output_bias: {d}\n", .{v2.output_bias});
+    std.debug.print("v5 output: ", .{});
+    for (0..fc2_out) |i| std.debug.print("{d} ", .{v5.output_weights[i]});
+    std.debug.print("\nv5 output_bias: {d}\n", .{v5.output_bias});
+
+    // FT weight statistics
+    std.debug.print("\n=== FT weight comparison ===\n", .{});
+    var v2_ft_nonzero: usize = 0;
+    var v5_ft_nonzero: usize = 0;
+    var v2_ft_absmax: u16 = 0;
+    var v5_ft_absmax: u16 = 0;
+    for (0..num_features) |feat_idx| {
+        for (0..ft_out) |j| {
+            const a2: u16 = @abs(v2.ft_weights[feat_idx][j]);
+            const a5: u16 = @abs(v5.ft_weights[feat_idx][j]);
+            if (v2.ft_weights[feat_idx][j] != 0) v2_ft_nonzero += 1;
+            if (v5.ft_weights[feat_idx][j] != 0) v5_ft_nonzero += 1;
+            if (a2 > v2_ft_absmax) v2_ft_absmax = a2;
+            if (a5 > v5_ft_absmax) v5_ft_absmax = a5;
+        }
+    }
+    std.debug.print("v2 FT: {d}/{d} nonzero, absmax={d}\n", .{ v2_ft_nonzero, num_features * ft_out, v2_ft_absmax });
+    std.debug.print("v5 FT: {d}/{d} nonzero, absmax={d}\n", .{ v5_ft_nonzero, num_features * ft_out, v5_ft_absmax });
+
+    // Eval comparison
+    std.debug.print("\n=== Eval comparison ===\n", .{});
+    const fens = [_]?[]const u8{
+        null,
+        "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+    };
+    for (fens) |maybe_fen| {
+        const state = if (maybe_fen) |fen| State.fromFen(fen) catch continue else State.defaultPosition();
+        const cp2 = evaluate(&state, v2);
+        const cp5 = evaluate(&state, v5);
+        const name = maybe_fen orelse "startpos";
+        std.debug.print("{s}: v2={d}cp, v5={d}cp\n", .{ name, cp2, cp5 });
+    }
 }

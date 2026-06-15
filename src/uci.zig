@@ -163,6 +163,8 @@ pub fn main() !void {
     var network: ?*nnue.Network = null;
     defer if (network) |n| n.deinit(std.heap.page_allocator);
 
+    var search_params = search.SearchParams{};
+
     var info_ctx = InfoCtx{
         .writer = stdout,
         .mutex = &stdout_mutex,
@@ -184,6 +186,11 @@ pub fn main() !void {
             stdout.writeAll("option name OwnBook type check default true\n") catch {};
             stdout.writeAll("option name BookFile type string default /home/paul/projects/chez/testing/books/komodo.bin\n") catch {};
             stdout.writeAll("option name EvalFile type string default <empty>\n") catch {};
+            stdout.writeAll("option name NnueScale type spin default 2 min 1 max 10\n") catch {};
+            stdout.writeAll("option name RfpBase type spin default 80 min 20 max 200\n") catch {};
+            stdout.writeAll("option name FutilityMargin1 type spin default 300 min 50 max 800\n") catch {};
+            stdout.writeAll("option name FutilityMargin2 type spin default 600 min 100 max 1500\n") catch {};
+            stdout.writeAll("option name DeltaMargin type spin default 200 min 50 max 600\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -224,6 +231,16 @@ pub fn main() !void {
                     if (network) |n| n.deinit(std.heap.page_allocator);
                     network = nnue.Network.load(io, std.heap.page_allocator, opt_val) catch null;
                 }
+            } else if (std.mem.eql(u8, opt_name, "NnueScale")) {
+                search_params.nnue_scale = std.fmt.parseInt(i32, opt_val, 10) catch search_params.nnue_scale;
+            } else if (std.mem.eql(u8, opt_name, "RfpBase")) {
+                search_params.rfp_base = std.fmt.parseInt(i32, opt_val, 10) catch search_params.rfp_base;
+            } else if (std.mem.eql(u8, opt_name, "FutilityMargin1")) {
+                search_params.futility_margin_1 = std.fmt.parseInt(i32, opt_val, 10) catch search_params.futility_margin_1;
+            } else if (std.mem.eql(u8, opt_name, "FutilityMargin2")) {
+                search_params.futility_margin_2 = std.fmt.parseInt(i32, opt_val, 10) catch search_params.futility_margin_2;
+            } else if (std.mem.eql(u8, opt_name, "DeltaMargin")) {
+                search_params.delta_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.delta_margin;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
@@ -326,6 +343,7 @@ pub fn main() !void {
                         .context = &info_ctx,
                         .func = infoCallback,
                     },
+                    .search_params = search_params,
                 },
                 .network = network,
                 .io = io,

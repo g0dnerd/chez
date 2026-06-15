@@ -29,9 +29,9 @@ fn quantizeI32(val: f32, scale: f32) i32 {
 //   FT weights/biases: ×127 → i16
 //   Hidden weights: ×64 → i8
 //   Hidden biases: ×(127×64) → i32
-//   Output weights: ×64 → i8
+//   Output weights: ×64 → i16
 //   Output bias: ×(127×64) → i32
-pub fn exportNnue(
+pub noinline fn exportNnue(
     allocator: std.mem.Allocator,
     ctx: *const Context,
     model: *NnueModel,
@@ -69,14 +69,14 @@ pub fn exportNnue(
         }
     }
 
-    // FC1 weights: [512, 32] f32 → [512][32] i8, scale = 64
+    // FC1 weights: [512, 32] f32 → [32][512] i8 (output-major), scale = 64
     {
         const n = nnue.fc1_in * nnue.fc1_out;
         var buf: [n]f32 = undefined;
         try params[2].storage.gpu.buffer.download(ctx, &buf);
         for (0..nnue.fc1_in) |i| {
             for (0..nnue.fc1_out) |j| {
-                net.fc1_weights[i][j] = quantizeI8(buf[i * nnue.fc1_out + j], 64.0);
+                net.fc1_weights[j][i] = quantizeI8(buf[i * nnue.fc1_out + j], 64.0);
             }
         }
     }
@@ -91,14 +91,14 @@ pub fn exportNnue(
         }
     }
 
-    // FC2 weights: [32, 32] f32 → [32][32] i8, scale = 64
+    // FC2 weights: [32, 32] f32 → [32][32] i8 (output-major), scale = 64
     {
         const n = nnue.fc2_in * nnue.fc2_out;
         var buf: [n]f32 = undefined;
         try params[4].storage.gpu.buffer.download(ctx, &buf);
         for (0..nnue.fc2_in) |i| {
             for (0..nnue.fc2_out) |j| {
-                net.fc2_weights[i][j] = quantizeI8(buf[i * nnue.fc2_out + j], 64.0);
+                net.fc2_weights[j][i] = quantizeI8(buf[i * nnue.fc2_out + j], 64.0);
             }
         }
     }
@@ -113,13 +113,13 @@ pub fn exportNnue(
         }
     }
 
-    // Output weights: [32] f32 → [32] i8, scale = 64
+    // Output weights: [32] f32 → [32] i16, scale = 64
     {
         const n = nnue.fc2_out;
         var buf: [n]f32 = undefined;
         try params[6].storage.gpu.buffer.download(ctx, &buf);
         for (0..n) |i| {
-            net.output_weights[i] = quantizeI8(buf[i], 64.0);
+            net.output_weights[i] = quantizeI16(buf[i], 64.0);
         }
     }
 

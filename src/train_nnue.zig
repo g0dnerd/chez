@@ -4,6 +4,11 @@ const kore = @import("kore");
 const ml = kore.ml;
 const gpu = ml.gpu;
 
+const chez = @import("chez");
+const engine_mod = chez.engine;
+const nnue = engine_mod.nnue;
+const State = engine_mod.State;
+
 const model_mod = @import("trainer/model.zig");
 const NnueModel = model_mod.NnueModel;
 const dataloader_mod = @import("trainer/dataloader.zig");
@@ -21,14 +26,15 @@ const Args = struct {
     checkpoint_interval: ?u32,
 };
 
-const default_epochs: u32 = 100;
+const default_epochs: u32 = 50;
 const default_batch_size: usize = 16384;
-const default_lr: f32 = 0.001;
-const default_lambda: f32 = 1.0;
+const default_lr: f32 = 0.005;
+const default_lambda: f32 = 0.75;
 const default_lr_min: f32 = 0.0001;
 const default_checkpoint_interval: u32 = 5;
 const warmup_epochs: u32 = 1;
 const grad_clip_norm: f32 = 1.0;
+const weight_decay: f32 = 0.0;
 const sigmoid_scale: f32 = 1.0 / 400.0;
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -85,7 +91,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.flush();
 
     // Optimizer
-    var adam = try ml.Adam.init(allocator, &ctx, &ops, params, .{ .lr = lr });
+    var adam = try ml.Adam.init(allocator, &ctx, &ops, params, .{ .lr = lr, .weight_decay = weight_decay });
     defer adam.deinit();
 
     // Data loader
@@ -228,7 +234,88 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // Export quantized .nnue
     try nnue_export.exportNnue(allocator, &ctx, &model, export_path);
+
+    // Validate quantized export
+    validateExport(allocator, export_path, io, stderr) catch |err| {
+        try stderr.print("  Validation error: {}\n", .{err});
+        try stderr.flush();
+    };
+
     try stderr.print("Exported {s}\n", .{export_path});
+    try stderr.flush();
+}
+
+noinline fn validateExport(
+    allocator: std.mem.Allocator,
+    export_path: []const u8,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+) !void {
+    const net = try nnue.Network.load(io, allocator, export_path);
+    defer net.deinit(allocator);
+
+    // Weight statistics
+    var ft_nonzero: usize = 0;
+    var ft_max_abs: u16 = 0;
+    for (net.ft_weights) |row| {
+        for (row) |w| {
+            if (w != 0) ft_nonzero += 1;
+            const abs: u16 = @abs(w);
+            if (abs > ft_max_abs) ft_max_abs = abs;
+        }
+    }
+    try stderr.print("  FT weights: {d}/{d} nonzero, max_abs={d}\n", .{
+        ft_nonzero, nnue.num_features * nnue.ft_out, ft_max_abs,
+    });
+
+    const test_fens = [_]?[]const u8{
+        null,
+        "r1bqkbnr/pppppppp/2n5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+        "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+        "r1bqkb1r/pppppppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+    };
+
+    // Accumulator range on startpos
+    const start = State.defaultPosition();
+    var acc: nnue.Accumulator = undefined;
+    nnue.refreshAccumulator(&start, net, &acc);
+    var acc_min: i16 = std.math.maxInt(i16);
+    var acc_max: i16 = std.math.minInt(i16);
+    var acc_in_range: usize = 0;
+    for (acc.values[0]) |v| {
+        if (v < acc_min) acc_min = v;
+        if (v > acc_max) acc_max = v;
+        if (v >= 0 and v <= 127) acc_in_range += 1;
+    }
+    try stderr.print("  Accumulator range: [{d}, {d}], {d}/{d} in CReLU [0,127]\n", .{
+        acc_min, acc_max, acc_in_range, nnue.ft_out,
+    });
+
+    // Quantized evals
+    var evals_differ = false;
+    var first_eval: ?i32 = null;
+    for (test_fens) |maybe_fen| {
+        const state = if (maybe_fen) |fen|
+            State.fromFen(fen) catch continue
+        else
+            State.defaultPosition();
+
+        const cp = nnue.evaluate(&state, net);
+        if (first_eval) |f| {
+            if (cp != f) evals_differ = true;
+        } else {
+            first_eval = cp;
+        }
+
+        const fen_name = maybe_fen orelse "startpos";
+        try stderr.print("  {s}: {d} cp\n", .{ fen_name, cp });
+    }
+    try stderr.flush();
+
+    if (!evals_differ) {
+        try stderr.print("  WARNING: all positions scored identically (net may be dead)\n", .{});
+    }
     try stderr.flush();
 }
 

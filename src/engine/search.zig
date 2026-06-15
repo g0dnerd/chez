@@ -15,6 +15,14 @@ const Move = engine.Move;
 const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
+pub const SearchParams = struct {
+    nnue_scale: i32 = 2,
+    rfp_base: i32 = 80,
+    futility_margin_1: i32 = 300,
+    futility_margin_2: i32 = 600,
+    delta_margin: i32 = 200,
+};
+
 const checkmate_score: i32 = 100000;
 const max_ply: usize = 64;
 const mate_score_threshold: i32 = checkmate_score - max_ply;
@@ -385,6 +393,7 @@ pub const SearchOptions = struct {
     stop: ?*Atomic(bool) = null,
     max_time_ms: ?u64 = null,
     on_info: ?InfoCallback = null,
+    search_params: SearchParams = .{},
 };
 
 // Minimal shared state for Lazy SMP - threads run independently
@@ -396,6 +405,16 @@ const SharedSearchState = struct {
     start_time: std.Io.Timestamp,
     options: SearchOptions = .{},
     network: ?*const nnue.Network = null,
+    search_params: SearchParams = .{},
+
+    fn futilityMargin(self: *const SharedSearchState, depth: u8) i32 {
+        return switch (depth) {
+            0 => 0,
+            1 => self.search_params.futility_margin_1,
+            2 => self.search_params.futility_margin_2,
+            else => 0,
+        };
+    }
 
     fn evalPosition(
         self: *const SharedSearchState,
@@ -408,7 +427,7 @@ const SharedSearchState = struct {
         // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
         // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
         // a Phase 6 concern.
-        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * 2;
+        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
         return evaluation.evaluate(state);
     }
 };
@@ -448,10 +467,6 @@ const ThreadContext = struct {
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
 };
-
-// Delta pruning margin - captures unlikely to improve alpha if below this threshold
-// FIXME: Check/tune this.
-const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
@@ -546,7 +561,7 @@ fn quiescence(
             if (m.is_promotion) {
                 gain += evaluation.piece_values_mg[m.promotion_piece] - evaluation.piece_values_mg[piece.pawn];
             }
-            if (stand_pat + gain + delta_margin < alpha) {
+            if (stand_pat + gain + shared.search_params.delta_margin < alpha) {
                 continue;
             }
         }
@@ -570,10 +585,6 @@ fn quiescence(
 
     return alpha;
 }
-
-// Futility pruning margins by depth
-// FIXME: Check/tune these.
-const futility_margins = [_]i32{ 0, 300, 600 };
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
 const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
@@ -656,7 +667,7 @@ fn negamax(
     // If eval is far above beta, the position is so good we can prune
     if (!is_pv_node) {
         if (static_eval) |eval| {
-            if (eval - 80 * @as(i32, depth) >= beta) {
+            if (eval - search_ctx.shared.search_params.rfp_base * @as(i32, depth) >= beta) {
                 return eval;
             }
         }
@@ -674,7 +685,7 @@ fn negamax(
     // Futility pruning setup: at shallow depths, if static eval is far below alpha,
     // we can skip quiet moves that are unlikely to improve.
     const can_futility_prune = if (static_eval) |eval|
-        depth <= 2 and eval + futility_margins[depth] <= alpha
+        depth <= 2 and eval + search_ctx.shared.futilityMargin(depth) <= alpha
     else
         false;
 
@@ -1269,6 +1280,7 @@ pub fn searchParallel(
         .start_time = clock.now(io),
         .options = options,
         .network = network,
+        .search_params = options.search_params,
     };
 
     // Create thread contexts
@@ -1298,6 +1310,7 @@ pub fn searchParallel(
         // Mark every accumulator dirty; the worker refreshes accs[0] before
         // its first eval and lazily fills the rest as deltas accumulate.
         for (&contexts[i].acc_stack.accs) |*acc| acc.computed = .{ false, false };
+        contexts[i].acc_stack.debug_eval_count = 0;
     }
 
     // Spawn worker threads
@@ -1392,6 +1405,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
 
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+    acc_stack.debug_eval_count = 0;
 
     for (1..max_depth + 1) |depth| {
         const result = searchAtDepth(
@@ -1443,6 +1457,7 @@ pub fn quiescenceEval(state: *const State) i32 {
     };
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+    acc_stack.debug_eval_count = 0;
     return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared, &acc_stack);
 }
 
