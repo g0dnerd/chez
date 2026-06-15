@@ -59,6 +59,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
 
+    // Fix the Zobrist seed so the node signature is reproducible across runs:
+    // identical keys => identical TT bucket mapping => identical search tree.
+    State.setZobristSeed(0xBEEF_CAFE_1234_5678);
+
     var network: ?*nnue.Network = null;
     defer if (network) |n| n.deinit(std.heap.page_allocator);
 
@@ -96,6 +100,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
+    var total_nodes: u64 = 0;
+    var total_cutoffs: u64 = 0;
+    var total_first_cutoffs: u64 = 0;
+
     var start = std.Io.Timestamp.now(io, clock);
 
     try stdout.flush();
@@ -107,12 +115,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{}, network);
         if (result) |r| {
+            total_nodes += r.nodes;
+            total_cutoffs += r.cutoffs;
+            total_first_cutoffs += r.first_move_cutoffs;
             var start_buf: [2]u8 = undefined;
             var end_buf: [2]u8 = undefined;
             try chez.engine.square.toAlgebraic(r.move.start, &start_buf);
             try chez.engine.square.toAlgebraic(r.move.end, &end_buf);
             const cp_score = chez.engine.evaluation.toCentipawns(r.score);
-            try stdout.print("  #{d}: {s}{s} score={d:.2} depth={d}\n", .{ i, start_buf, end_buf, cp_score, r.depth });
+            try stdout.print("  #{d}: {s}{s} score={d:.2} depth={d} nodes={d}\n", .{ i, start_buf, end_buf, cp_score, r.depth, r.nodes });
             try stdout.flush();
         } else {
             try stdout.print("  #{d}: no result\n", .{i});
@@ -125,11 +136,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const elapsed_ms = elapsed.toMilliseconds();
     const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ms)) / @as(f64, @floatFromInt(std.time.ms_per_s));
 
+    const nps: u64 = if (elapsed_ms > 0) total_nodes * std.time.ms_per_s / @as(u64, @intCast(elapsed_ms)) else 0;
+    const first_pct: f64 = if (total_cutoffs > 0)
+        @as(f64, @floatFromInt(total_first_cutoffs)) * 100.0 / @as(f64, @floatFromInt(total_cutoffs))
+    else
+        0.0;
+
     try stdout.print("\n===========================\n", .{});
     try stdout.print("Total time: {d}ms ({d:.2}s)\n", .{ elapsed_ms, elapsed_s });
     try stdout.print("Positions:  {d}\n", .{positions.len});
     try stdout.print("Depth:      {d}\n", .{depth});
     try stdout.print("Threads:    {d}\n", .{threads});
+    try stdout.print("Nodes:      {d}  <- signature (reproducible at 1 thread, HCE)\n", .{total_nodes});
+    try stdout.print("NPS:        {d}\n", .{nps});
+    try stdout.print("Ordering:   {d}/{d} first-move cutoffs ({d:.1}%)\n", .{ total_first_cutoffs, total_cutoffs, first_pct });
     try stdout.print("===========================\n", .{});
     try stdout.flush();
 }

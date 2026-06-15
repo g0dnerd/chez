@@ -929,6 +929,15 @@ pub const ZobristKeys = struct {
 var init_mutex: std.Io.Mutex = .init;
 var init_done = false;
 var keys_storage: ZobristKeys = undefined;
+var seed_override: ?u64 = null;
+
+// Force a fixed Zobrist seed for reproducible hashing (e.g. the bench node
+// signature, which needs an identical TT bucket mapping across runs). Must be
+// called before any position is hashed (before the first getZobristKeys()).
+// Default behavior (entropy-seeded) is unchanged for callers that never set it.
+pub fn setZobristSeed(seed: u64) void {
+    seed_override = seed;
+}
 
 fn initZobristKeys(io: std.Io) void {
     if (@atomicLoad(bool, &init_done, .monotonic)) return;
@@ -936,7 +945,9 @@ fn initZobristKeys(io: std.Io) void {
 
     const builtin = @import("builtin");
     var seed: u64 = undefined;
-    if (builtin.target.os.tag == .freestanding) {
+    if (seed_override) |s| {
+        seed = s;
+    } else if (builtin.target.os.tag == .freestanding) {
         // Fixed seed for WASM - deterministic behavior
         seed = 0x4d595f5345454421;
     } else if (builtin.target.os.tag == .linux) {

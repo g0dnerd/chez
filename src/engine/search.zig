@@ -400,6 +400,10 @@ pub const SearchOptions = struct {
 const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
     node_count: Atomic(u64) = Atomic(u64).init(0),
+    // Move-ordering quality counters: total beta cutoffs and cutoffs on the
+    // first move searched. first/total ≈ 85-92% indicates healthy ordering.
+    cutoffs: Atomic(u64) = Atomic(u64).init(0),
+    first_move_cutoffs: Atomic(u64) = Atomic(u64).init(0),
     max_depth: u8 = 0,
     io: std.Io,
     start_time: std.Io.Timestamp,
@@ -892,6 +896,11 @@ fn negamax(
         alpha = @max(alpha, score);
 
         if (alpha >= beta) {
+            // Move-ordering quality: count this cutoff, and whether it came on
+            // the first move searched (ideal ordering).
+            _ = search_ctx.shared.cutoffs.fetchAdd(1, .monotonic);
+            if (i == 0) _ = search_ctx.shared.first_move_cutoffs.fetchAdd(1, .monotonic);
+
             // Beta cutoff - store killer, countermove, and update history for quiet moves
             if (!was_capture) {
                 const bonus: i32 = @as(i32, depth) * @as(i32, depth);
@@ -930,6 +939,11 @@ pub const SearchResult = struct {
     move: Move,
     score: i32,
     depth: u8,
+    // Search instrumentation (populated only at the top-level return).
+    // Intermediate per-depth results leave these at the defaults.
+    nodes: u64 = 0,
+    cutoffs: u64 = 0,
+    first_move_cutoffs: u64 = 0,
 };
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
@@ -1353,6 +1367,9 @@ pub fn searchParallel(
             .move = m,
             .score = best_score,
             .depth = best_depth,
+            .nodes = shared.node_count.load(.monotonic),
+            .cutoffs = shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
         };
     } else {
         return null;
@@ -1437,6 +1454,9 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             .move = m,
             .score = best_score,
             .depth = best_depth,
+            .nodes = shared.node_count.load(.monotonic),
+            .cutoffs = shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
         };
     } else {
         return null;
