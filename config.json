@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "/home/paul/projects/chez/testing/results/20260418_105942.pgn",
+        "file": "",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 1,
-    "seed": 14362217109797471879,
+    "seed": 16832299873695667241,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -69,7 +69,7 @@
     "wait": 0,
     "autosaveinterval": 20,
     "games": 2,
-    "rounds": 50,
+    "rounds": 20,
     "concurrency": 4,
     "force_concurrency": false,
     "recover": true,
@@ -89,19 +89,23 @@
     },
     "engines": [
         {
-            "name": "nnue",
+            "name": "v5",
             "dir": "",
-            "cmd": "/home/paul/projects/chez/testing/.builds/nnue/uci",
+            "cmd": "./zig-out/bin/uci",
             "args": "",
             "restart": true,
             "options": [
+                [
+                    "EvalFile",
+                    "data/net_v5.nnue"
+                ],
                 [
                     "Threads",
                     "4"
                 ],
                 [
-                    "EvalFile",
-                    "data/net_k2_30M.nnue"
+                    "OwnBook",
+                    "false"
                 ]
             ],
             "limit": {
@@ -120,13 +124,17 @@
         {
             "name": "hce",
             "dir": "",
-            "cmd": "/home/paul/projects/chez/testing/.builds/hce-54ef52a/uci",
+            "cmd": "./zig-out/bin/uci",
             "args": "",
             "restart": true,
             "options": [
                 [
                     "Threads",
                     "4"
+                ],
+                [
+                    "OwnBook",
+                    "false"
                 ]
             ],
             "limit": {
@@ -144,9 +152,9 @@
         }
     ],
     "stats": {
-        "nnue vs hce": {
+        "v5 vs hce": {
             "wins": 0,
-            "losses": 13,
+            "losses": 40,
             "draws": 0,
             "penta_WW": 0,
             "penta_WD": 0,
