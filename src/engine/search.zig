@@ -456,6 +456,32 @@ fn checkTime(shared: *SharedSearchState) void {
     }
 }
 
+// Sentinel for "no static eval at this ply" (in check, or out of stack range).
+const no_eval: i32 = std.math.minInt(i32);
+
+// Per-ply search stack: one entry per ply, shared across a thread's search.
+// Holds the data later phases need - static eval (for `improving` and
+// improving-aware pruning) and the (color,piece,to) of the move made at this
+// ply (for continuation history).
+const StackEntry = struct {
+    static_eval: i32 = no_eval,
+    piece_to: u16 = 0, // (color*6 + piece)*64 + to of the move made here
+    moved_valid: bool = false, // false for null move / root
+};
+
+// "improving": is the side-to-move's static eval better than two plies ago?
+// Later phases prune less when improving. Per the plan: false in check (current
+// node has no eval) or at ply < 2; optimistic-true when only the grandparent
+// eval is missing.
+fn isImproving(stack: []const StackEntry, ply: usize) bool {
+    if (ply < 2) return false;
+    const cur = stack[ply].static_eval;
+    if (cur == no_eval) return false;
+    const prev = stack[ply - 2].static_eval;
+    if (prev == no_eval) return true;
+    return cur > prev;
+}
+
 // Per-thread context for search
 const ThreadContext = struct {
     state: State,
@@ -463,6 +489,7 @@ const ThreadContext = struct {
     history: PositionHistory,
     history_table: evaluation.HistoryTable,
     countermoves: CountermoveTable,
+    search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1),
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
@@ -602,6 +629,7 @@ const SearchContext = struct {
     prev_move: ?Move,
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
 };
 
 fn negamax(
@@ -661,15 +689,22 @@ fn negamax(
     const in_check = state.in_check == to_move;
     const is_pv_node = beta_param - alpha_initial > 1;
 
-    // Compute static eval once for pruning decisions (depths 1-6, not in check)
-    const static_eval: ?i32 = if (depth <= 6 and !in_check)
+    // Compute static eval at every non-check node so `improving` and
+    // continuation-aware pruning have it at all depths; record it in the
+    // per-ply stack for later phases.
+    const static_eval: ?i32 = if (!in_check)
         search_ctx.shared.evalPosition(state, search_ctx.acc_stack, ply)
     else
         null;
+    if (ply < max_ply) {
+        search_ctx.stack[ply].static_eval = static_eval orelse no_eval;
+    }
 
     // Reverse futility pruning (static null move pruning):
-    // If eval is far above beta, the position is so good we can prune
-    if (!is_pv_node) {
+    // If eval is far above beta, the position is so good we can prune.
+    // Gated to depth <= 6 to preserve prior behavior (eval used to be computed
+    // only at depths 1-6, so RFP only ever fired there).
+    if (!is_pv_node and depth <= 6) {
         if (static_eval) |eval| {
             if (eval - search_ctx.shared.search_params.rfp_base * @as(i32, depth) >= beta) {
                 return eval;
@@ -718,16 +753,10 @@ fn negamax(
 
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
-        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, .{
-            .tt = search_ctx.tt,
-            .killers = search_ctx.killers,
-            .history = search_ctx.history,
-            .history_table = search_ctx.history_table,
-            .countermoves = search_ctx.countermoves,
-            .prev_move = null,
-            .shared = search_ctx.shared,
-            .acc_stack = search_ctx.acc_stack,
-        });
+        if (ply < max_ply) search_ctx.stack[ply].moved_valid = false;
+        var null_ctx = search_ctx;
+        null_ctx.prev_move = null;
+        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, null_ctx);
 
         // Unmake null move
         state.*.to_move = old_to_move;
@@ -805,19 +834,20 @@ fn negamax(
             0;
         const new_depth = depth - 1 + extension;
 
+        // Record the move made at this ply (for continuation history, consumed
+        // by later phases) and thread the child context via copy-and-modify so
+        // future field additions stay one-liners.
+        if (ply < max_ply) {
+            search_ctx.stack[ply].piece_to = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+            search_ctx.stack[ply].moved_valid = true;
+        }
+        var child_ctx = search_ctx;
+        child_ctx.prev_move = m;
+
         var score: i32 = undefined;
         if (i == 0) {
             // First move: search with full window
-            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
-                .tt = search_ctx.tt,
-                .killers = search_ctx.killers,
-                .history = search_ctx.history,
-                .history_table = search_ctx.history_table,
-                .countermoves = search_ctx.countermoves,
-                .prev_move = m,
-                .shared = search_ctx.shared,
-                .acc_stack = search_ctx.acc_stack,
-            });
+            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, child_ctx);
         } else {
             // Late Move Reductions (LMR):
             // Moves ordered later are likely worse, so search with reduced depth first.
@@ -838,43 +868,16 @@ fn negamax(
             }
 
             // PVS with LMR: search with reduced depth and null window
-            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, .{
-                .tt = search_ctx.tt,
-                .killers = search_ctx.killers,
-                .history = search_ctx.history,
-                .history_table = search_ctx.history_table,
-                .countermoves = search_ctx.countermoves,
-                .prev_move = m,
-                .shared = search_ctx.shared,
-                .acc_stack = search_ctx.acc_stack,
-            });
+            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, child_ctx);
 
             // Re-search at full depth if reduced search improved alpha
             if (score > alpha and reduction > 0) {
-                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, .{
-                    .tt = search_ctx.tt,
-                    .killers = search_ctx.killers,
-                    .history = search_ctx.history,
-                    .history_table = search_ctx.history_table,
-                    .countermoves = search_ctx.countermoves,
-                    .prev_move = m,
-                    .shared = search_ctx.shared,
-                    .acc_stack = search_ctx.acc_stack,
-                });
+                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, child_ctx);
             }
 
             // Re-search with full window if null window failed high
             if (score > alpha and score < beta) {
-                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
-                    .tt = search_ctx.tt,
-                    .killers = search_ctx.killers,
-                    .history = search_ctx.history,
-                    .history_table = search_ctx.history_table,
-                    .countermoves = search_ctx.countermoves,
-                    .prev_move = m,
-                    .shared = search_ctx.shared,
-                    .acc_stack = search_ctx.acc_stack,
-                });
+                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, child_ctx);
             }
         }
 
@@ -961,6 +964,7 @@ fn searchAtDepthWithBounds(
     beta_bound: i32,
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -1026,6 +1030,7 @@ fn searchAtDepthWithBounds(
             .prev_move = m,
             .shared = shared,
             .acc_stack = acc_stack,
+            .stack = stack,
         };
         if (i == 0) {
             // First move: full window search
@@ -1077,6 +1082,7 @@ fn searchAtDepth(
     countermoves: *CountermoveTable,
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
 ) ?SearchResult {
     return searchAtDepthWithBounds(
         state,
@@ -1091,6 +1097,7 @@ fn searchAtDepth(
         beta_init,
         shared,
         acc_stack,
+        stack,
     );
 }
 
@@ -1176,6 +1183,7 @@ fn workerThread(ctx: *ThreadContext) void {
                     beta,
                     ctx.shared,
                     &ctx.acc_stack,
+                    &ctx.search_stack,
                 );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1213,6 +1221,7 @@ fn workerThread(ctx: *ThreadContext) void {
                             &ctx.countermoves,
                             ctx.shared,
                             &ctx.acc_stack,
+                            &ctx.search_stack,
                         );
                     }
                 }
@@ -1230,6 +1239,7 @@ fn workerThread(ctx: *ThreadContext) void {
                 &ctx.countermoves,
                 ctx.shared,
                 &ctx.acc_stack,
+                &ctx.search_stack,
             );
         }
 
@@ -1424,6 +1434,8 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
     acc_stack.debug_eval_count = 0;
 
+    var search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
+
     for (1..max_depth + 1) |depth| {
         const result = searchAtDepth(
             &mutable_state,
@@ -1436,6 +1448,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             &countermoves,
             &shared,
             &acc_stack,
+            &search_stack,
         );
         if (result) |r| {
             best_move = r.move;
@@ -1681,4 +1694,31 @@ test "repetition only checks same side to move" {
     // 0xBBBB at position 1 should not match anything checked from position 4
     // (we check positions 2, 0 - not 1, 3)
     try expect(!history.isTwofold(0xBBBB, 5));
+}
+
+test "isImproving semantics" {
+    var stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
+
+    // ply < 2 is never improving.
+    try expect(!isImproving(&stack, 0));
+    try expect(!isImproving(&stack, 1));
+
+    // Current node has no eval (in check) => not improving.
+    stack[2].static_eval = 50;
+    stack[4].static_eval = no_eval;
+    try expect(!isImproving(&stack, 4));
+
+    // Grandparent eval missing => optimistic true.
+    stack[2].static_eval = no_eval;
+    stack[4].static_eval = 50;
+    try expect(isImproving(&stack, 4));
+
+    // Both present: improving iff current > grandparent (equal is not improving).
+    stack[2].static_eval = 30;
+    stack[4].static_eval = 50;
+    try expect(isImproving(&stack, 4));
+    stack[4].static_eval = 10;
+    try expect(!isImproving(&stack, 4));
+    stack[4].static_eval = 30;
+    try expect(!isImproving(&stack, 4));
 }
