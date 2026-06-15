@@ -27,12 +27,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Phase-C search constants (focused HCE tune). Defaults match the engine's
+# current SearchParams; min/max match the UCI option ranges. The old eval/margin
+# params (NnueScale, RfpBase, FutilityMargin1/2, DeltaMargin) are in git history
+# -- restore them here for a broader tune.
 PARAMS = [
-    {"name": "NnueScale", "default": 2, "min": 1, "max": 10, "c_scale": 1},
-    {"name": "RfpBase", "default": 80, "min": 20, "max": 200, "c_scale": 8},
-    {"name": "FutilityMargin1", "default": 300, "min": 50, "max": 800, "c_scale": 30},
-    {"name": "FutilityMargin2", "default": 600, "min": 100, "max": 1500, "c_scale": 60},
-    {"name": "DeltaMargin", "default": 200, "min": 50, "max": 600, "c_scale": 20},
+    {"name": "LmrBase", "default": 75, "min": 0, "max": 300, "c_scale": 10},
+    {"name": "LmrDiv", "default": 100, "min": 50, "max": 500, "c_scale": 12},
+    {"name": "LmrHistDiv", "default": 8000, "min": 500, "max": 32000, "c_scale": 1000},
+    {"name": "HistPruneDepth", "default": 3, "min": 0, "max": 8, "c_scale": 1},
+    {"name": "HistPruneMargin", "default": 2000, "min": 200, "max": 12000, "c_scale": 400},
+    {"name": "IirMinDepth", "default": 4, "min": 2, "max": 12, "c_scale": 1},
 ]
 
 
@@ -271,7 +276,10 @@ def main():
             if abs(pert) < 1e-9:
                 continue
             g_i = (score_plus - score_minus) / (2 * pert)
-            a_scale = p["c_scale"]
+            # Scaled SPSA: step must be proportional to the param's scale. The
+            # c_scale in g_i (via pert) cancels one factor, so use c_scale**2 to
+            # keep the effective step ~ c_scale (else large params never move).
+            a_scale = p["c_scale"] ** 2
             theta[i] -= a_k * a_scale * g_i
             theta[i] = clamp(theta[i], float(p["min"]), float(p["max"]))
 
