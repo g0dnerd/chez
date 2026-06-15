@@ -31,6 +31,9 @@ pub const SearchParams = struct {
     // whose combined history < -histprune_margin * depth.
     histprune_depth: i32 = 3,
     histprune_margin: i32 = 2000,
+    // Internal Iterative Reductions: with no TT move at depth >= iir_min_depth,
+    // search one ply shallower.
+    iir_min_depth: i32 = 4,
 };
 
 // Precompute the LMR reduction table [depth][move_index] from the log formula.
@@ -671,7 +674,7 @@ const SearchContext = struct {
 
 fn negamax(
     state: *State,
-    depth: u8,
+    depth_param: u8,
     ply: usize,
     alpha_initial: i32,
     beta_param: i32,
@@ -681,6 +684,8 @@ fn negamax(
     if (nodes & 2047 == 0) checkTime(search_ctx.shared);
     if (search_ctx.shared.stop_flag.load(.monotonic)) return 0;
 
+    // Mutable so Internal Iterative Reductions can lower it after the TT probe.
+    var depth = depth_param;
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -751,6 +756,12 @@ fn negamax(
                 return eval;
             }
         }
+    }
+
+    // Internal Iterative Reductions: with no TT move the ordering is unreliable,
+    // so search one ply shallower (the reduced search also seeds the TT).
+    if (tt_move == null and @as(i32, depth) >= search_ctx.shared.search_params.iir_min_depth) {
+        depth -= 1;
     }
 
     var moves = movegen.legalMoves(state, to_move);

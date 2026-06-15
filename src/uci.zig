@@ -196,6 +196,7 @@ pub fn main() !void {
             stdout.writeAll("option name LmrHistDiv type spin default 8000 min 500 max 32000\n") catch {};
             stdout.writeAll("option name HistPruneDepth type spin default 3 min 0 max 8\n") catch {};
             stdout.writeAll("option name HistPruneMargin type spin default 2000 min 200 max 12000\n") catch {};
+            stdout.writeAll("option name IirMinDepth type spin default 4 min 2 max 12\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -256,6 +257,8 @@ pub fn main() !void {
                 search_params.histprune_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_depth;
             } else if (std.mem.eql(u8, opt_name, "HistPruneMargin")) {
                 search_params.histprune_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_margin;
+            } else if (std.mem.eql(u8, opt_name, "IirMinDepth")) {
+                search_params.iir_min_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.iir_min_depth;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
