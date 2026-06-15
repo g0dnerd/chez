@@ -16,7 +16,7 @@ const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
 pub const SearchParams = struct {
-    nnue_scale: i32 = 2,
+    nnue_scale: i32 = 1,
     rfp_base: i32 = 80,
     futility_margin_1: i32 = 300,
     futility_margin_2: i32 = 600,

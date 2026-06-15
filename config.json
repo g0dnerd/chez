@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 1,
-    "seed": 16832299873695667241,
+    "seed": 1183542987803568304,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -89,7 +89,7 @@
     },
     "engines": [
         {
-            "name": "v5",
+            "name": "nnue",
             "dir": "",
             "cmd": "./zig-out/bin/uci",
             "args": "",
@@ -97,7 +97,7 @@
             "options": [
                 [
                     "EvalFile",
-                    "data/net_v5.nnue"
+                    "data/net_v6_wd0_lambda1.nnue"
                 ],
                 [
                     "Threads",
@@ -106,6 +106,26 @@
                 [
                     "OwnBook",
                     "false"
+                ],
+                [
+                    "NnueScale",
+                    "1"
+                ],
+                [
+                    "RfpBase",
+                    "10"
+                ],
+                [
+                    "FutilityMargin1",
+                    "40"
+                ],
+                [
+                    "FutilityMargin2",
+                    "80"
+                ],
+                [
+                    "DeltaMargin",
+                    "25"
                 ]
             ],
             "limit": {
@@ -152,10 +172,10 @@
         }
     ],
     "stats": {
-        "v5 vs hce": {
-            "wins": 0,
-            "losses": 40,
-            "draws": 0,
+        "nnue vs hce": {
+            "wins": 9,
+            "losses": 21,
+            "draws": 10,
             "penta_WW": 0,
             "penta_WD": 0,
             "penta_WL": 0,

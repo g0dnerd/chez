@@ -34,7 +34,7 @@ const default_lr_min: f32 = 0.0001;
 const default_checkpoint_interval: u32 = 5;
 const warmup_epochs: u32 = 1;
 const grad_clip_norm: f32 = 1.0;
-const weight_decay: f32 = 0.0;
+const dense_weight_decay: f32 = 0.01;
 const sigmoid_scale: f32 = 1.0 / 400.0;
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -90,9 +90,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("Model initialized ({d} parameter tensors)\n", .{params.len});
     try stderr.flush();
 
-    // Optimizer
-    var adam = try ml.Adam.init(allocator, &ctx, &ops, params, .{ .lr = lr, .weight_decay = weight_decay });
-    defer adam.deinit();
+    // Split optimizers: FT (no weight decay) and dense (with weight decay)
+    const ft_params = params[0..2]; // ft.weight, ft.bias
+    const dense_params = params[2..]; // fc1-fc2-output weights and biases
+    var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = 0 });
+    defer adam_ft.deinit();
+    var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = dense_weight_decay });
+    defer adam_dense.deinit();
 
     // Data loader
     var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda);
@@ -119,11 +123,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (args.checkpoint) |ckpt_path| {
         const named_params = try model.namedParameters();
         defer allocator.free(named_params);
-        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &adam);
+        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &adam_ft);
         start_epoch = meta.epoch + 1;
         best_val_loss = meta.best_val_loss;
-        adam.step_count = meta.adam_step;
-        adam.config.lr = meta.learning_rate;
+        adam_ft.step_count = meta.adam_step;
+        adam_dense.step_count = meta.adam_step;
+        adam_ft.config.lr = meta.learning_rate;
+        adam_dense.config.lr = meta.learning_rate;
         try stderr.print("Resumed from checkpoint: epoch {d}, val_loss {d:.6}\n", .{ meta.epoch, meta.best_val_loss });
         try stderr.flush();
     }
@@ -146,7 +152,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const global_step = epoch * @as(u32, @intCast(train_batches)) + @as(u32, @intCast(batch_idx));
 
             // LR schedule: linear warmup then cosine decay
-            adam.config.lr = computeLR(global_step, total_steps, warmup_steps, lr, default_lr_min);
+            const current_lr = computeLR(global_step, total_steps, warmup_steps, lr, default_lr_min);
+            adam_ft.config.lr = current_lr;
+            adam_dense.config.lr = current_lr;
 
             try graph.zeroGrads(params);
 
@@ -158,7 +166,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             try graph.backward(output);
             _ = try graph.clipGradNorm(params, grad_clip_norm);
-            try adam.step(params);
+            try adam_ft.step(ft_params);
+            try adam_dense.step(dense_params);
 
             graph.reset();
 
@@ -172,7 +181,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     batch_idx,
                     train_batches,
                     loss,
-                    adam.config.lr,
+                    adam_ft.config.lr,
                 });
                 try stderr.flush();
             }
@@ -206,7 +215,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             epochs,
             avg_train_loss,
             avg_val_loss,
-            adam.config.lr,
+            adam_ft.config.lr,
         });
         try stderr.flush();
 
@@ -220,12 +229,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try ckpt_w.print("checkpoint_epoch{d}.ktml", .{epoch + 1});
             const ckpt_name = ckpt_w.buffered();
 
-            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &adam, .{
+            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &adam_ft, .{
                 .epoch = epoch,
-                .step = adam.step_count,
-                .learning_rate = adam.config.lr,
+                .step = adam_ft.step_count,
+                .learning_rate = adam_ft.config.lr,
                 .best_val_loss = @floatCast(best_val_loss),
-                .adam_step = adam.step_count,
+                .adam_step = adam_ft.step_count,
             });
             try stderr.print("  saved {s}\n", .{ckpt_name});
             try stderr.flush();
