@@ -490,6 +490,7 @@ const ThreadContext = struct {
     history_table: evaluation.HistoryTable,
     countermoves: CountermoveTable,
     search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1),
+    cont_hist: *evaluation.ContHistTable,
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
@@ -630,6 +631,7 @@ const SearchContext = struct {
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 };
 
 fn negamax(
@@ -772,6 +774,10 @@ fn negamax(
     // Order moves with killer, countermove, and history heuristics
     const ply_killers = if (ply < max_ply) search_ctx.killers.moves[ply] else [2]?Move{ null, null };
     const countermove = if (search_ctx.prev_move) |pm| search_ctx.countermoves.get(pm) else null;
+    // Continuation history: condition on the previous move when it was a real
+    // move (not null move / root) and within stack range.
+    const prev1_valid = ply >= 1 and (ply - 1) < max_ply and search_ctx.stack[ply - 1].moved_valid;
+    const prev1_pt: u16 = if (prev1_valid) search_ctx.stack[ply - 1].piece_to else 0;
     const sort_ctx = MoveList.SortCtx{
         .state = state,
         .color = to_move,
@@ -779,16 +785,20 @@ fn negamax(
         .history = search_ctx.history_table,
         .countermove = countermove,
         .tt_move = tt_move,
+        .cont1 = if (prev1_valid) search_ctx.cont_hist else null,
+        .prev1_pt = prev1_pt,
     };
     moves.scoreAll(&sort_ctx);
 
     var max_score: i32 = std.math.minInt(i32);
-    var quiets_tried: [256]struct { start: u6, end: u6 } = undefined;
+    var quiets_tried: [256]struct { start: u6, end: u6, piece_to: u16 } = undefined;
     var num_quiets: usize = 0;
 
     for (0..moves.len) |i| {
         const m = moves.pickNext(i);
         const p = state.mailbox[m.start].?;
+        // Piece-to index of this move, for continuation history / the stack.
+        const cur_pt: u16 = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
 
         // Check if this is a capture before making the move (for LMR decision)
         const is_capture = state.mailbox[m.end] != null;
@@ -838,7 +848,7 @@ fn negamax(
         // by later phases) and thread the child context via copy-and-modify so
         // future field additions stay one-liners.
         if (ply < max_ply) {
-            search_ctx.stack[ply].piece_to = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+            search_ctx.stack[ply].piece_to = cur_pt;
             search_ctx.stack[ply].moved_valid = true;
         }
         var child_ctx = search_ctx;
@@ -888,7 +898,7 @@ fn negamax(
         state.unmakeMove(m, to_move, p, undo);
 
         if (!was_capture and !is_promotion) {
-            quiets_tried[num_quiets] = .{ .start = m.start, .end = m.end };
+            quiets_tried[num_quiets] = .{ .start = m.start, .end = m.end, .piece_to = cur_pt };
             num_quiets += 1;
         }
 
@@ -909,12 +919,14 @@ fn negamax(
                 const bonus: i32 = @as(i32, depth) * @as(i32, depth);
                 search_ctx.killers.store(ply, m);
                 search_ctx.history_table.update(to_move, m.start, m.end, bonus);
+                if (prev1_valid) search_ctx.cont_hist.update(prev1_pt, cur_pt, bonus);
                 // Malus: penalize all quiet moves tried before the cutoff move
                 // If cutoff move is quiet it's the last entry in quiets_tried: skip it.
                 // If cutoff move is a promotion it's not in quiets_tried: penalize all.
                 const malus_count = if (!is_promotion) num_quiets - 1 else num_quiets;
                 for (0..malus_count) |qi| {
                     search_ctx.history_table.update(to_move, quiets_tried[qi].start, quiets_tried[qi].end, -bonus);
+                    if (prev1_valid) search_ctx.cont_hist.update(prev1_pt, quiets_tried[qi].piece_to, -bonus);
                 }
                 // Store countermove: this move refutes opponent's previous move
                 if (search_ctx.prev_move) |pm| {
@@ -965,6 +977,7 @@ fn searchAtDepthWithBounds(
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -1020,6 +1033,10 @@ fn searchAtDepthWithBounds(
             }
         }
 
+        // Record the root move so 1-ply continuation history is active at ply 1.
+        stack[0].piece_to = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+        stack[0].moved_valid = true;
+
         var score: i32 = undefined;
         const ctx = SearchContext{
             .tt = tbl,
@@ -1031,6 +1048,7 @@ fn searchAtDepthWithBounds(
             .shared = shared,
             .acc_stack = acc_stack,
             .stack = stack,
+            .cont_hist = cont_hist,
         };
         if (i == 0) {
             // First move: full window search
@@ -1083,6 +1101,7 @@ fn searchAtDepth(
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 ) ?SearchResult {
     return searchAtDepthWithBounds(
         state,
@@ -1098,6 +1117,7 @@ fn searchAtDepth(
         shared,
         acc_stack,
         stack,
+        cont_hist,
     );
 }
 
@@ -1184,6 +1204,7 @@ fn workerThread(ctx: *ThreadContext) void {
                     ctx.shared,
                     &ctx.acc_stack,
                     &ctx.search_stack,
+                    ctx.cont_hist,
                 );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1222,6 +1243,7 @@ fn workerThread(ctx: *ThreadContext) void {
                             ctx.shared,
                             &ctx.acc_stack,
                             &ctx.search_stack,
+                            ctx.cont_hist,
                         );
                     }
                 }
@@ -1240,6 +1262,7 @@ fn workerThread(ctx: *ThreadContext) void {
                 ctx.shared,
                 &ctx.acc_stack,
                 &ctx.search_stack,
+                ctx.cont_hist,
             );
         }
 
@@ -1294,6 +1317,13 @@ pub fn searchParallel(
 
     tbl.newSearch();
 
+    // Per-thread 1-ply continuation history. Heap-allocated because each table
+    // is ~2.25 MB, far too large to embed in the stack-resident contexts array.
+    // Zeroed per search like the other per-thread move-ordering tables.
+    const cont_tables = try std.heap.page_allocator.alloc(evaluation.ContHistTable, actual_threads);
+    defer std.heap.page_allocator.free(cont_tables);
+    for (cont_tables) |*t| t.clear();
+
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
     const io = threaded.io();
     const clock = std.Io.Clock.awake;
@@ -1326,6 +1356,7 @@ pub fn searchParallel(
             .history = history,
             .history_table = evaluation.HistoryTable{},
             .countermoves = CountermoveTable{},
+            .cont_hist = &cont_tables[i],
             .thread_id = i,
             .tbl = tbl,
             .shared = &shared,
@@ -1436,6 +1467,10 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
 
     var search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
 
+    const cont_hist = try std.heap.page_allocator.create(evaluation.ContHistTable);
+    defer std.heap.page_allocator.destroy(cont_hist);
+    cont_hist.clear();
+
     for (1..max_depth + 1) |depth| {
         const result = searchAtDepth(
             &mutable_state,
@@ -1449,6 +1484,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             &shared,
             &acc_stack,
             &search_stack,
+            cont_hist,
         );
         if (result) |r| {
             best_move = r.move;

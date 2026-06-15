@@ -186,6 +186,9 @@ pub const MoveList = struct {
         history: ?*const engine.evaluation.HistoryTable,
         countermove: ?Move = null,
         tt_move: ?Move = null,
+        // 1-ply continuation history (null = no valid previous move / qsearch).
+        cont1: ?*const engine.evaluation.ContHistTable = null,
+        prev1_pt: u16 = 0,
     };
 
     // Pre-compute scores for all moves (one scoreMove call per move).

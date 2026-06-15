@@ -1132,6 +1132,31 @@ pub const HistoryTable = struct {
     }
 };
 
+// Continuation history: [prev_piece_to][cur_piece_to] -> score. Conditions a
+// quiet move's score on the move that led to this position. The piece-to index
+// is (color*6 + piece)*64 + to, range 0..767 (12 piece kinds x 64 squares).
+// ~2.25 MB, so it is always heap-allocated and zeroed via clear() (the default
+// table is undefined to avoid a multi-MB comptime initializer).
+pub const ContHistTable = struct {
+    table: [768][768]i32 = undefined,
+
+    const max_history: i32 = 16384;
+
+    pub fn get(self: *const ContHistTable, prev_pt: u16, cur_pt: u16) i32 {
+        return self.table[prev_pt][cur_pt];
+    }
+
+    pub fn update(self: *ContHistTable, prev_pt: u16, cur_pt: u16, bonus: i32) void {
+        const entry = &self.table[prev_pt][cur_pt];
+        // Gravity update identical to HistoryTable.
+        entry.* += bonus - @divTrunc(entry.* * @as(i32, @intCast(@abs(bonus))), max_history);
+    }
+
+    pub fn clear(self: *ContHistTable) void {
+        @memset(std.mem.asBytes(self), 0);
+    }
+};
+
 pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
     // TT move gets maximum priority
     if (ctx.tt_move) |tt| {
@@ -1187,6 +1212,11 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
             score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 32);
+            // Continuation history: score conditioned on the previous move.
+            if (ctx.cont1) |ch| {
+                const cur_pt: u16 = (@as(u16, ctx.color) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+                score += @divTrunc(ch.get(ctx.prev1_pt, cur_pt), 32);
+            }
         }
     }
 
