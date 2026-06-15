@@ -33,6 +33,7 @@ const default_lambda: f32 = 0.75;
 const default_lr_min: f32 = 0.0001;
 const default_checkpoint_interval: u32 = 5;
 const warmup_epochs: u32 = 1;
+const early_stop_patience: u32 = 10;
 const grad_clip_norm: f32 = 1.0;
 const dense_weight_decay: f32 = 0.01;
 const sigmoid_scale: f32 = 1.0 / 400.0;
@@ -139,6 +140,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const val_batches = loader.numValBatches();
     const total_steps = epochs * @as(u32, @intCast(train_batches));
     const warmup_steps = warmup_epochs * @as(u32, @intCast(train_batches));
+    var epochs_without_improvement: u32 = 0;
 
     for (start_epoch..epochs) |epoch_usize| {
         const epoch: u32 = @intCast(epoch_usize);
@@ -208,7 +210,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         else
             0;
 
-        if (avg_val_loss < best_val_loss) best_val_loss = @floatCast(avg_val_loss);
+        var improved = false;
+        if (avg_val_loss < best_val_loss) {
+            best_val_loss = @floatCast(avg_val_loss);
+            epochs_without_improvement = 0;
+            improved = true;
+        } else {
+            epochs_without_improvement += 1;
+        }
 
         try stderr.print("\repoch {d}/{d} train_loss={d:.6} val_loss={d:.6} lr={d:.6}            \n", .{
             epoch + 1,
@@ -239,18 +248,31 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stderr.print("  saved {s}\n", .{ckpt_name});
             try stderr.flush();
         }
+
+        // Export best model whenever val_loss improves
+        if (improved) {
+            try nnue_export.exportNnue(allocator, &ctx, &model, export_path);
+            try stderr.print("  new best val_loss, exported {s}\n", .{export_path});
+            try stderr.flush();
+        }
+
+        // Early stopping
+        if (epochs_without_improvement >= early_stop_patience) {
+            try stderr.print("Early stopping: no improvement for {d} epochs (best val_loss={d:.6})\n", .{
+                early_stop_patience, best_val_loss,
+            });
+            try stderr.flush();
+            break;
+        }
     }
 
-    // Export quantized .nnue
-    try nnue_export.exportNnue(allocator, &ctx, &model, export_path);
-
-    // Validate quantized export
+    // Validate the best exported net
     validateExport(allocator, export_path, io, stderr) catch |err| {
         try stderr.print("  Validation error: {}\n", .{err});
         try stderr.flush();
     };
 
-    try stderr.print("Exported {s}\n", .{export_path});
+    try stderr.print("Best model: {s} (val_loss={d:.6})\n", .{ export_path, best_val_loss });
     try stderr.flush();
 }
 
