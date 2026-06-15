@@ -35,6 +35,7 @@ const SelfplayGame = struct {
     rng: std.Random,
     history: engine.search.PositionHistory,
     ttable: *engine.search.TranspositionTable,
+    network: ?*const nnue.Network,
     depth: u8,
     ply: u16,
     records: [max_game_records]TrainingRecord,
@@ -42,12 +43,13 @@ const SelfplayGame = struct {
     adjudication_consecutive: u16,
     adjudication_winning_side: engine.Color,
 
-    fn init(rng: std.Random, depth: u8, ttable: *engine.search.TranspositionTable) Self {
+    fn init(rng: std.Random, depth: u8, ttable: *engine.search.TranspositionTable, network: ?*const nnue.Network) Self {
         return .{
             .state = .defaultPosition(),
             .rng = rng,
             .history = .{},
             .ttable = ttable,
+            .network = network,
             .depth = depth,
             .ply = 0,
             .records = undefined,
@@ -125,7 +127,7 @@ const SelfplayGame = struct {
             1,
             &self.history,
             self.ttable,
-            null,
+            self.network,
         )) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
@@ -206,6 +208,7 @@ const WorkerCtx = struct {
     io: std.Io,
     total_positions: *std.atomic.Value(usize),
     total_games: *std.atomic.Value(usize),
+    network: ?*const nnue.Network,
 };
 
 fn workerLoop(ctx: *WorkerCtx) void {
@@ -213,7 +216,7 @@ fn workerLoop(ctx: *WorkerCtx) void {
     defer ttable.deinit();
 
     var rng = std.Random.Pcg.init(ctx.seed);
-    var game = SelfplayGame.init(rng.random(), ctx.depth, &ttable);
+    var game = SelfplayGame.init(rng.random(), ctx.depth, &ttable, ctx.network);
 
     for (0..ctx.games_per_worker) |_| {
         const result = game.playGame() catch continue;
@@ -238,10 +241,13 @@ fn workerLoop(ctx: *WorkerCtx) void {
     }
 }
 
+const nnue = engine.nnue;
+
 const Args = struct {
     depth: ?u8,
     num_games: ?usize,
     num_threads: ?usize,
+    eval: ?[]const u8,
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -271,7 +277,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var write_mutex: std.Io.Mutex = .init;
     var stderr_mutex: std.Io.Mutex = .init;
 
-    try stderr.print("Selfplay: {d} games, depth {d}, {d} thread(s)\n", .{ num_games, depth, num_threads });
+    // Load NNUE network if specified
+    var network: ?*nnue.Network = null;
+    if (parsed_args.eval) |eval_path| {
+        network = nnue.Network.load(io, std.heap.page_allocator, eval_path) catch |err| blk: {
+            try stderr.print("Warning: could not load {s}: {}\n", .{ eval_path, err });
+            try stderr.flush();
+            break :blk null;
+        };
+    }
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    try stderr.print("Selfplay: {d} games, depth {d}, {d} thread(s)", .{ num_games, depth, num_threads });
+    if (network != null) try stderr.print(", NNUE eval", .{});
+    try stderr.print("\n", .{});
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
     try stderr.flush();
 
@@ -302,6 +321,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .io = io,
             .total_positions = &shared_positions,
             .total_games = &shared_games,
+            .network = network,
         };
     }
 
