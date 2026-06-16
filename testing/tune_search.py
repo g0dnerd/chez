@@ -286,7 +286,11 @@ def main():
             # c_scale in g_i (via pert) cancels one factor, so use c_scale**2 to
             # keep the effective step ~ c_scale (else large params never move).
             a_scale = p["c_scale"] ** 2
-            theta[i] -= a_k * a_scale * g_i
+            # ASCENT: g_i is the gradient of win-rate; we maximize strength, so
+            # step toward the better perturbation (+=). The original '-=' was
+            # gradient descent -- it MINIMIZED strength (drove LmrDiv 100->90,
+            # a -32 Elo regression). Masked until parse_score was fixed.
+            theta[i] += a_k * a_scale * g_i
             theta[i] = clamp(theta[i], float(p["min"]), float(p["max"]))
 
         print_row(k, theta, score_plus, score_minus)
