@@ -743,8 +743,10 @@ fn negamax(
     }
 
     // Improving: is our static eval better than two plies ago? Used to reduce
-    // less (LMR) when the position is trending our way.
-    const improving = isImproving(search_ctx.stack, ply);
+    // less (LMR) when the position is trending our way. Gated on ply < max_ply
+    // to match the static_eval write above: beyond it stack[ply] is stale, and
+    // at ply == max_ply + 1 it is out of bounds (stack has max_ply + 1 entries).
+    const improving = ply < max_ply and isImproving(search_ctx.stack, ply);
 
     // Reverse futility pruning (static null move pruning):
     // If eval is far above beta, the position is so good we can prune.
