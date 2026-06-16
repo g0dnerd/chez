@@ -24,7 +24,7 @@ pub const SearchParams = struct {
     // LMR reduction = lmr_base/100 + ln(d)*ln(i) / (lmr_div/100). Stored as
     // hundredths so they can be exposed as integer UCI spin options.
     lmr_base: i32 = 75,
-    lmr_div: i32 = 100,
+    lmr_div: i32 = 120,
     // LMR history adjustment: reduction -= clamp(combined_history/lmr_hist_div, -2, 2).
     lmr_hist_div: i32 = 8000,
     // History-based pruning: at depth <= histprune_depth, skip late quiet moves

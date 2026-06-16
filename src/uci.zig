@@ -192,7 +192,7 @@ pub fn main() !void {
             stdout.writeAll("option name FutilityMargin2 type spin default 600 min 100 max 1500\n") catch {};
             stdout.writeAll("option name DeltaMargin type spin default 200 min 50 max 600\n") catch {};
             stdout.writeAll("option name LmrBase type spin default 75 min 0 max 300\n") catch {};
-            stdout.writeAll("option name LmrDiv type spin default 100 min 50 max 500\n") catch {};
+            stdout.writeAll("option name LmrDiv type spin default 120 min 50 max 500\n") catch {};
             stdout.writeAll("option name LmrHistDiv type spin default 8000 min 500 max 32000\n") catch {};
             stdout.writeAll("option name HistPruneDepth type spin default 3 min 0 max 8\n") catch {};
             stdout.writeAll("option name HistPruneMargin type spin default 2000 min 200 max 12000\n") catch {};

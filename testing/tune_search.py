@@ -33,7 +33,7 @@ from pathlib import Path
 # -- restore them here for a broader tune.
 PARAMS = [
     {"name": "LmrBase", "default": 75, "min": 0, "max": 300, "c_scale": 10},
-    {"name": "LmrDiv", "default": 100, "min": 50, "max": 500, "c_scale": 12},
+    {"name": "LmrDiv", "default": 120, "min": 50, "max": 500, "c_scale": 12},
     {"name": "LmrHistDiv", "default": 8000, "min": 500, "max": 32000, "c_scale": 1000},
     {"name": "HistPruneDepth", "default": 3, "min": 0, "max": 8, "c_scale": 1},
     {"name": "HistPruneMargin", "default": 2000, "min": 200, "max": 12000, "c_scale": 400},
