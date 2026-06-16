@@ -460,9 +460,9 @@ def parse_args():
     )
     p.add_argument("--rounds", type=int, default=None, help="Number of game pairs")
     p.add_argument("--tc", default=None, help="Time control (e.g. 1+0.01)")
-    p.add_argument("--threads", type=int, default=4, help="Engine threads (default: 4)")
+    p.add_argument("--threads", type=int, default=1, help="Engine threads (default: 1)")
     p.add_argument(
-        "--concurrency", type=int, default=4, help="Parallel games (default: 4)"
+        "--concurrency", type=int, default=8, help="Parallel games (default: 8)"
     )
     p.add_argument(
         "--depth", type=int, default=None, help="Fixed search depth (instead of TC)"
