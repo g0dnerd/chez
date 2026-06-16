@@ -59,6 +59,7 @@ fn containsMove(haystack: *const [256]engine.Move, needle: *const engine.Move) b
 const Args = struct {
     engine_color: ?[]const u8,
     depth: ?u8,
+    time: ?u32, // Fixed seconds per engine move (overrides depth when set)
     num_threads: ?usize,
     fen: ?[]const u8,
     nn_engine: ?[]const u8, // Path to NN checkpoint, e.g. "models/iter_0100.pt"
@@ -120,11 +121,13 @@ const NNEngine = struct {
     }
 };
 
-fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
+fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, time: ?u32, num_threads: usize, nn_mode: bool) !void {
     try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
     try stdout.writeAll(" === Chez Paul ===\n");
     if (nn_mode) {
         try stdout.print(" Move {d} - Neural Network Engine\n\n", .{state.fullmove_clock});
+    } else if (time) |t| {
+        try stdout.print(" Move {d} - {d}s/move - {d} Threads\n\n", .{ state.fullmove_clock, t, num_threads });
     } else if (depth) |d| {
         try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, d, num_threads });
     }
@@ -178,6 +181,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var depth: u8 = parsed_args.depth orelse 14;
     const num_threads: usize = parsed_args.num_threads orelse 4;
 
+    // When --time is set, the engine searches for a fixed budget per move
+    // (seconds) instead of to a fixed depth.
+    const move_time_ms: ?u64 = if (parsed_args.time) |t| @as(u64, t) * 1000 else null;
+
     // Initialize NN engine if requested
     const nn_mode = parsed_args.nn_engine != null;
     var nn_engine: ?NNEngine = null;
@@ -216,7 +223,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var undo_pieces: [2]engine.piece.Piece = undefined;
 
     outer: while (true) {
-        try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
 
         if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
@@ -308,7 +315,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         undo_pieces[0] = piece;
                         undo_moves[0] = user_move.*;
                         history.push(state.zobrist_hash);
-                        try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+                        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
                         break;
                     } else {
                         try stdout.print(" Illegal move {s}! Try again.\n", .{move});
@@ -339,10 +346,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 var move_buf: [16]u8 = undefined;
                 best_move = try eng.getMove(io, &state, &move_buf);
             } else {
-                if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl, network)) |search_res| {
+                const search_res = if (move_time_ms) |mt|
+                    try engine.search.searchParallel(&state, 64, num_threads, &history, &tbl, .{ .max_time_ms = mt }, network)
+                else
+                    try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl, network);
+                if (search_res) |res| {
                     // Use traditional search
-                    best_move = search_res.move;
-                    best_score = search_res.score;
+                    best_move = res.move;
+                    best_score = res.score;
                 }
             }
         }
@@ -362,7 +373,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             history.push(state.zobrist_hash);
 
             try stdout.writeByte('\n');
-            try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+            try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
 
             if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {
