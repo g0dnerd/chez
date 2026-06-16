@@ -427,6 +427,7 @@ pub const InfoCallback = struct {
 pub const SearchOptions = struct {
     stop: ?*Atomic(bool) = null,
     max_time_ms: ?u64 = null,
+    max_nodes: ?u64 = null,
     on_info: ?InfoCallback = null,
     search_params: SearchParams = .{},
 };
@@ -489,6 +490,11 @@ fn checkTime(shared: *SharedSearchState) void {
             std.time.ns_per_ms,
         ));
         if (elapsed >= max_ms) {
+            shared.stop_flag.store(true, .monotonic);
+        }
+    }
+    if (shared.options.max_nodes) |max_nodes| {
+        if (shared.node_count.load(.monotonic) >= max_nodes) {
             shared.stop_flag.store(true, .monotonic);
         }
     }

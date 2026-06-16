@@ -14,8 +14,14 @@ const random_plies: u16 = 8;
 const skip_plies: u16 = 16;
 const score_filter: i32 = 3000;
 const sample_interval: u16 = 4;
-const adjudication_threshold: i32 = 1500;
-const adjudication_count: u16 = 5;
+const adjudication_threshold: i32 = 1000;
+const adjudication_count: u16 = 4;
+// Draw adjudication: balanced eval for many consecutive plies past the opening.
+const draw_adjudication_threshold: i32 = 10;
+const draw_adjudication_count: u16 = 8;
+const draw_adjudication_min_ply: u16 = 80;
+// Hard cap on game length so worst-case games can't run to the 50-move rule at full depth.
+const max_game_plies: u16 = 200;
 
 const GameOutcome = enum(u8) {
     white_wins = 0,
@@ -37,13 +43,15 @@ const SelfplayGame = struct {
     ttable: *engine.search.TranspositionTable,
     network: ?*const nnue.Network,
     depth: u8,
+    max_nodes: ?u64,
     ply: u16,
     records: [max_game_records]TrainingRecord,
     num_records: usize,
     adjudication_consecutive: u16,
     adjudication_winning_side: engine.Color,
+    draw_consecutive: u16,
 
-    fn init(rng: std.Random, depth: u8, ttable: *engine.search.TranspositionTable, network: ?*const nnue.Network) Self {
+    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, ttable: *engine.search.TranspositionTable, network: ?*const nnue.Network) Self {
         return .{
             .state = .defaultPosition(),
             .rng = rng,
@@ -51,11 +59,13 @@ const SelfplayGame = struct {
             .ttable = ttable,
             .network = network,
             .depth = depth,
+            .max_nodes = max_nodes,
             .ply = 0,
             .records = undefined,
             .num_records = 0,
             .adjudication_consecutive = 0,
             .adjudication_winning_side = engine.Colors.white,
+            .draw_consecutive = 0,
         };
     }
 
@@ -65,6 +75,7 @@ const SelfplayGame = struct {
         self.ply = 0;
         self.num_records = 0;
         self.adjudication_consecutive = 0;
+        self.draw_consecutive = 0;
         self.ttable.newSearch();
     }
 
@@ -121,24 +132,23 @@ const SelfplayGame = struct {
             return gameResultToOutcome(res);
         }
 
-        const search_res = (try engine.search.searchWithHistory(
+        const search_res = (try engine.search.searchParallel(
             &self.state,
             self.depth,
             1,
             &self.history,
             self.ttable,
-            null,
+            .{ .max_nodes = self.max_nodes },
+            self.network,
         )) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
 
+        // Label with the backed-up search score (NNUE-driven when a net is loaded),
+        // a stronger target than a static eval of the same position.
         if (self.shouldRecord(score)) {
-            const record_score = if (self.network) |net|
-                nnue.evaluate(&self.state, net)
-            else
-                score;
-            try self.bufferPosition(record_score);
+            try self.bufferPosition(score);
         }
 
         const abs_score = @as(i32, @intCast(@abs(score)));
@@ -155,6 +165,16 @@ const SelfplayGame = struct {
             }
         } else {
             self.adjudication_consecutive = 0;
+        }
+
+        // Draw adjudication: a long run of near-zero evals past the opening.
+        if (self.ply >= draw_adjudication_min_ply and abs_score <= draw_adjudication_threshold) {
+            self.draw_consecutive += 1;
+            if (self.draw_consecutive >= draw_adjudication_count) {
+                return .draw;
+            }
+        } else {
+            self.draw_consecutive = 0;
         }
 
         _ = self.state.makeMove(best_move, self.state.to_move, self.state.mailbox[best_move.start].?);
@@ -180,11 +200,12 @@ const SelfplayGame = struct {
         }
 
         // Search phase
-        while (true) {
+        while (self.ply < max_game_plies) {
             if (try self.makeMoveAtDepth()) |outcome| {
                 return .{ .outcome = outcome, .positions = self.num_records };
             }
         }
+        return .{ .outcome = .draw, .positions = self.num_records };
     }
 
     // Write all buffered records to the output writer.
@@ -204,6 +225,7 @@ const SelfplayGame = struct {
 const WorkerCtx = struct {
     games_per_worker: usize,
     depth: u8,
+    max_nodes: ?u64,
     seed: u64,
     writer: *std.Io.Writer,
     write_mutex: *std.Io.Mutex,
@@ -220,16 +242,18 @@ fn workerLoop(ctx: *WorkerCtx) void {
     defer ttable.deinit();
 
     var rng = std.Random.Pcg.init(ctx.seed);
-    var game = SelfplayGame.init(rng.random(), ctx.depth, &ttable, ctx.network);
+    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, &ttable, ctx.network);
 
     for (0..ctx.games_per_worker) |_| {
         const result = game.playGame() catch continue;
 
         if (result.positions > 0) {
+            // No flush here: the shared writer's buffer auto-drains when full and
+            // is flushed once at the end. Flushing per game would serialize a
+            // syscall under the write mutex across all workers.
             ctx.write_mutex.lock(ctx.io) catch continue;
             defer ctx.write_mutex.unlock(ctx.io);
             game.writeRecords(ctx.writer, result.outcome) catch return;
-            ctx.writer.flush() catch return;
         }
 
         _ = ctx.total_positions.fetchAdd(result.positions, .monotonic);
@@ -249,6 +273,7 @@ const nnue = engine.nnue;
 
 const Args = struct {
     depth: ?u8,
+    nodes: ?u64,
     num_games: ?usize,
     num_threads: ?usize,
     eval: ?[]const u8,
@@ -264,6 +289,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const parsed_args = try arg_parser.parse(&args_iter);
 
     const depth = parsed_args.depth orelse default_depth;
+    const max_nodes = parsed_args.nodes;
     const num_games = parsed_args.num_games orelse default_games;
     const num_threads = parsed_args.num_threads orelse default_threads;
 
@@ -293,6 +319,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer if (network) |n| n.deinit(std.heap.page_allocator);
 
     try stderr.print("Selfplay: {d} games, depth {d}, {d} thread(s)", .{ num_games, depth, num_threads });
+    if (max_nodes) |n| try stderr.print(", node cap {d}", .{n});
     if (network != null) try stderr.print(", NNUE eval", .{});
     try stderr.print("\n", .{});
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
@@ -317,6 +344,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         contexts[i] = .{
             .games_per_worker = games_per_worker + @as(usize, if (i < remainder) 1 else 0),
             .depth = depth,
+            .max_nodes = max_nodes,
             .seed = base_seed +% i,
             .writer = stdout,
             .write_mutex = &write_mutex,
