@@ -1,9 +1,7 @@
-// src/tune.zig
-//
-// Texel SPSA tuner binary.
+// Texel SPSA tuner.
 //
 // Usage:
-//   zig build -Dgb10=true tune -- [options]
+//   zig build tune -- [options]
 //
 //   --dataset <path>          Quiet-labeled EPD file (required)
 //   --output <path>           Output params.zig path [src/engine/params.zig]
@@ -27,6 +25,7 @@
 const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez");
+
 const params_mod = chez.engine.params;
 const PARAM_COUNT = params_mod.PARAM_COUNT;
 const Params = params_mod.Params;
@@ -72,42 +71,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
         init.args.iterate();
     const args = try arg_parser.parse(&args_iter);
 
-    // Parse CLI arguments
     const output_path: []const u8 = args.output_path orelse "src/engine/params.zig";
     const max_positions: usize = args.max_positions orelse 5_000_000;
     const calibrate_n: usize = args.calibrate_n orelse 50;
     var cfg = spsa_mod.SpsaConfig{};
 
-    if (args.a) |a| {
-        cfg.a = a;
-    }
-    if (args.big_a) |big_a| {
-        cfg.big_a = big_a;
-    }
-    if (args.alpha) |alpha| {
-        cfg.alpha = alpha;
-    }
-    if (args.c) |c| {
-        cfg.c = c;
-    }
-    if (args.gamma) |gamma| {
-        cfg.gamma = gamma;
-    }
-    if (args.iterations) |iterations| {
-        cfg.iterations = iterations;
-    }
-    if (args.batch_size) |batch_size| {
-        cfg.batch_size = batch_size;
-    }
-    if (args.checkpoint_interval) |checkpoint_interval| {
-        cfg.checkpoint_interval = checkpoint_interval;
-    }
-    if (args.threads) |num_threads| {
-        cfg.num_threads = num_threads;
-    }
-    if (args.no_early_stop != null) {
-        cfg.early_stop = false;
-    }
+    if (args.a) |a| cfg.a = a;
+    if (args.big_a) |big_a| cfg.big_a = big_a;
+    if (args.alpha) |alpha| cfg.alpha = alpha;
+    if (args.c) |c| cfg.c = c;
+    if (args.gamma) |gamma| cfg.gamma = gamma;
+    if (args.iterations) |iterations| cfg.iterations = iterations;
+    if (args.batch_size) |batch_size| cfg.batch_size = batch_size;
+    if (args.checkpoint_interval) |checkpoint_interval| cfg.checkpoint_interval = checkpoint_interval;
+    if (args.threads) |num_threads| cfg.num_threads = num_threads;
+    if (args.no_early_stop != null) cfg.early_stop = false;
 
     const dataset_path = args.dataset;
 
@@ -116,7 +94,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const positions = try dataset.load(io, allocator, dataset_path, max_positions);
     std.debug.print("tune: {d} positions loaded\n", .{positions.len});
     if (positions.len == 0) {
-        std.debug.print("tune: no positions loaded — check dataset path and format\n", .{});
+        std.debug.print("tune: no positions loaded: check dataset path and format\n", .{});
         return error.EmptyDataset;
     }
 

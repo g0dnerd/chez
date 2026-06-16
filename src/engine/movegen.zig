@@ -186,6 +186,9 @@ pub const MoveList = struct {
         history: ?*const engine.evaluation.HistoryTable,
         countermove: ?Move = null,
         tt_move: ?Move = null,
+        // 1-ply continuation history (null = no valid previous move / qsearch).
+        cont1: ?*const engine.evaluation.ContHistTable = null,
+        prev1_pt: u16 = 0,
     };
 
     // Pre-compute scores for all moves (one scoreMove call per move).
@@ -621,7 +624,7 @@ fn isLegalMove(state: *const State, m: Move, c: Color, p: Piece, king_square: Sq
 }
 
 // Check if there's a slider pinning this piece to the king.
-// If so, return the ray from king to pinner (inclusive) — the piece may only move along it.
+// If so, return the ray from king to pinner (inclusive): the piece may only move along it.
 fn pinRay(state: *const State, s: Square, king_square: Square, c: Color) Bitboard {
     if (s == king_square) return Bitboard.empty;
 

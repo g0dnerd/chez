@@ -23,7 +23,7 @@ pub const ScoreF64 = score_mod.Score(f64);
 pub const PARAM_COUNT: usize = 1055;
 
 // ==============================================================================
-// Params — integer (i16) evaluation parameters used at search time
+// Params: integer (i16) evaluation parameters used at search time
 // ==============================================================================
 
 pub const Params = struct {
@@ -115,7 +115,7 @@ pub const Params = struct {
     }
 
     // Deserialise from f64 slice, rounding each value to nearest i16 (clamped).
-    // Only called at checkpoint writes and final codegen — never during SPSA.
+    // Only called at checkpoint writes and final codegen: never during SPSA.
     pub fn fromFloats(floats: []const f64) Params {
         std.debug.assert(floats.len >= PARAM_COUNT);
         var p: Params = undefined;
@@ -183,7 +183,7 @@ pub const Params = struct {
 };
 
 // ==============================================================================
-// ParamsF64 — floating-point mirror of Params, used exclusively in the SPSA
+// ParamsF64: floating-point mirror of Params, used exclusively in the SPSA
 // hot loop so that gradient estimation never sees i16 quantisation noise.
 // ==============================================================================
 
@@ -345,7 +345,7 @@ pub const ParamsF64 = struct {
 };
 
 // ==============================================================================
-// Default parameters — verbatim copy of the constants in evaluation.zig.
+// Default parameters: verbatim copy of the constants in evaluation.zig.
 // This is the starting point for tuning and the production fallback.
 // ==============================================================================
 

@@ -29,21 +29,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import chess
-except ImportError:
-    print(
-        "Error: python-chess is required. Install with: uv add chess",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+import chess
 
 DEFAULT_ENGINE = "zig-out/bin/uci"
-DEFAULT_DEPTH = 12
+DEFAULT_DEPTH = 16
 DEFAULT_THREADS = 1
-
-
-# -- UCI Engine ----------------------------------------------------------------
 
 
 class UCIEngine:
@@ -66,6 +56,7 @@ class UCIEngine:
 
         if p is None:
             raise RuntimeError("Failed to spawn subprocess")
+
         self.process = p
 
         self._send("uci")
@@ -78,10 +69,16 @@ class UCIEngine:
         self._read_until("readyok")
 
     def _send(self, cmd: str):
+        assert self.process is not None
+        assert self.process.stdin is not None
+
         self.process.stdin.write(cmd + "\n")
         self.process.stdin.flush()
 
     def _readline(self) -> str:
+        assert self.process is not None
+        assert self.process.stdout is not None
+
         line = self.process.stdout.readline()
         if not line:
             raise RuntimeError("Engine process terminated unexpectedly")
@@ -153,9 +150,6 @@ class UCIEngine:
 
     def __exit__(self, *args):
         self.quit()
-
-
-# -- EPD Parsing ---------------------------------------------------------------
 
 
 @dataclass

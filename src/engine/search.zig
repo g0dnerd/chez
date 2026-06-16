@@ -1,39 +1,77 @@
 const std = @import("std");
-const expectEqual = std.testing.expectEqual;
-const expect = std.testing.expect;
-const Atomic = std.atomic.Value;
-
 const engine = @import("engine.zig");
 const Bitboard = @import("Bitboard.zig");
 const State = @import("State.zig");
 const movegen = @import("movegen.zig");
+const nnue = @import("nnue.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
+
+const Atomic = std.atomic.Value;
+const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const GameResult = engine.GameResult;
 const Move = engine.Move;
 const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
+pub const SearchParams = struct {
+    nnue_scale: i32 = 1,
+    rfp_base: i32 = 80,
+    futility_margin_1: i32 = 300,
+    futility_margin_2: i32 = 600,
+    delta_margin: i32 = 200,
+    // LMR reduction = lmr_base/100 + ln(d)*ln(i) / (lmr_div/100). Stored as
+    // hundredths so they can be exposed as integer UCI spin options.
+    lmr_base: i32 = 75,
+    lmr_div: i32 = 120,
+    // LMR history adjustment: reduction -= clamp(combined_history/lmr_hist_div, -2, 2).
+    lmr_hist_div: i32 = 8000,
+    // History-based pruning: at depth <= histprune_depth, skip late quiet moves
+    // whose combined history < -histprune_margin * depth.
+    histprune_depth: i32 = 3,
+    histprune_margin: i32 = 2000,
+    // Internal Iterative Reductions: with no TT move at depth >= iir_min_depth,
+    // search one ply shallower.
+    iir_min_depth: i32 = 4,
+};
+
+// Precompute the LMR reduction table [depth][move_index] from the log formula.
+// Runtime (not comptime) so lmr_base/lmr_div stay tunable and we avoid any
+// @log-at-comptime dependency.
+fn computeLmrTable(lmr_base: i32, lmr_div: i32) [64][64]u8 {
+    var table: [64][64]u8 = undefined;
+    const base: f64 = @as(f64, @floatFromInt(lmr_base)) / 100.0;
+    const div: f64 = @as(f64, @floatFromInt(@max(1, lmr_div))) / 100.0;
+    for (0..64) |d| {
+        for (0..64) |i| {
+            if (d == 0 or i == 0) {
+                table[d][i] = 0;
+                continue;
+            }
+            const ld = @log(@as(f64, @floatFromInt(d)));
+            const li = @log(@as(f64, @floatFromInt(i)));
+            const r = @floor(base + ld * li / div);
+            table[d][i] = if (r < 0) 0 else if (r > 32) 32 else @intFromFloat(r);
+        }
+    }
+    return table;
+}
+
 const checkmate_score: i32 = 100000;
+const max_ply: usize = 64;
 const mate_score_threshold: i32 = checkmate_score - max_ply;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
 const beta_init: i32 = std.math.maxInt(i32);
-const max_ply: usize = 64;
 const max_threads: usize = 16;
 const default_threads: usize = 8;
-
-// Maximum game length - 1024 half-moves (512 full moves)
 const max_game_length: usize = 1024;
 
-// Position history for threefold repetition detection
+// Position history for threefold repetition detection.
 // Stores Zobrist hashes of positions since game start
 pub const PositionHistory = struct {
     hashes: [max_game_length]u64 = undefined,
     len: usize = 0,
-
-    pub fn init() PositionHistory {
-        return .{};
-    }
 
     pub fn push(self: *PositionHistory, hash: u64) void {
         if (self.len < max_game_length) {
@@ -48,9 +86,9 @@ pub const PositionHistory = struct {
         }
     }
 
-    // Check if current position is a repetition
-    // halfmove_clock tells us how far back we need to look (since last irreversible move)
-    // For search: returns true for 2-fold (implies 3-fold in game context)
+    // Check if current position is a repetition.
+    // halfmove_clock tells us how far back we need to look since last irreversible move.
+    // For search: returns true for 2-fold (implies 3-fold in game context).
     // For game: set require_threefold=true to check for actual threefold
     pub fn isRepetition(self: *const PositionHistory, hash: u64, halfmove_clock: u16, require_threefold: bool) bool {
         if (self.len < 5) return false; // Need at least 5 positions for a repetition
@@ -63,10 +101,13 @@ pub const PositionHistory = struct {
         if (max_lookback < 4) return false;
 
         var count: u8 = 0;
-        const target = if (require_threefold) @as(u8, 2) else @as(u8, 1);
+        const target: u8 = if (require_threefold)
+            2
+        else
+            1;
 
         // Check every 2 positions (same side to move)
-        // i represents how many ply back from current position (len-1)
+        // i represents how many ply back from current position (len - 1)
         var i: usize = 4;
         while (i <= max_lookback) : (i += 2) {
             const idx = self.len - 1 - i;
@@ -78,27 +119,26 @@ pub const PositionHistory = struct {
         return false;
     }
 
-    // Check for threefold repetition (for game-over detection)
     pub fn isThreefold(self: *const PositionHistory, hash: u64, halfmove_clock: u16) bool {
         return self.isRepetition(hash, halfmove_clock, true);
     }
 
-    // Check for twofold repetition (for search pruning)
     pub fn isTwofold(self: *const PositionHistory, hash: u64, halfmove_clock: u16) bool {
         return self.isRepetition(hash, halfmove_clock, false);
     }
 };
 
-// Killer move table: stores 2 killer moves per ply
-// Killer moves are quiet moves that caused beta cutoffs
+// Killer move table: stores 2 killer moves per ply.
+// Killer moves are quiet moves that caused beta cutoffs.
 const KillerTable = struct {
     moves: [max_ply][2]?Move = [_][2]?Move{.{ null, null }} ** max_ply,
 
     fn store(self: *KillerTable, ply: usize, m: Move) void {
         if (ply >= max_ply) return;
+
         // Don't store if it's already the first killer
         if (self.moves[ply][0]) |k| {
-            if (k.start == m.start and k.end == m.end) return;
+            if (m.eql(k)) return;
         }
         // Shift first killer to second slot, store new as first
         self.moves[ply][1] = self.moves[ply][0];
@@ -107,11 +147,12 @@ const KillerTable = struct {
 
     fn isKiller(self: *const KillerTable, ply: usize, m: Move) bool {
         if (ply >= max_ply) return false;
+
         if (self.moves[ply][0]) |k| {
-            if (k.start == m.start and k.end == m.end) return true;
+            if (m.eql(k)) return true;
         }
         if (self.moves[ply][1]) |k| {
-            if (k.start == m.start and k.end == m.end) return true;
+            if (m.eql(k)) return true;
         }
         return false;
     }
@@ -121,8 +162,8 @@ const KillerTable = struct {
     }
 };
 
-// Countermove table: stores the move that refuted the opponent's previous move
-// Indexed by [from_square][to_square] of the previous move
+// Countermove table: stores the move that refuted the opponent's previous move.
+// Indexed by [from_square][to_square] of the previous move.
 pub const CountermoveTable = struct {
     table: [64][64]?Move = [_][64]?Move{[_]?Move{null} ** 64} ** 64,
 
@@ -144,7 +185,7 @@ pub const CountermoveTable = struct {
     }
 };
 
-const Flag = enum(u2) {
+const TranspositionFlag = enum(u2) {
     empty = 0,
     exact = 1,
     lowerBound = 2,
@@ -155,29 +196,32 @@ const TranspositionEntry = struct {
     hash: u64 = 0,
     score: i32 = 0,
     depth: u8 = 0,
-    flag: Flag = .empty,
+    flag: TranspositionFlag = .empty,
     best_move: ?Move = null,
 };
 
 // Lock-free transposition table entry packed into two 64-bit words
-// This allows atomic read/write without locks (Stockfish-style)
 // Word 1: hash XOR data (for validation)
 // Word 2: data (score:16, depth:8, flag:2, move_start:6, move_end:6, move_valid:1,
 //          is_promotion:1, promotion_piece:3 = 43 bits)
-//
-// On 32-bit platforms (WASM), we use non-atomic access since search is single-threaded.
 const builtin = @import("builtin");
 const is_wasm = builtin.target.cpu.arch == .wasm32;
 
+// For WASM, provide aliased methods to allow the "generic" type to function.
 const TTWord = if (is_wasm) struct {
+    const Self = @This();
+
     raw: u64 = 0,
-    fn init(v: u64) @This() {
+
+    fn init(v: u64) Self {
         return .{ .raw = v };
     }
-    fn load(self: *const @This(), _: std.builtin.AtomicOrder) u64 {
+
+    fn load(self: *const Self, _: std.builtin.AtomicOrder) u64 {
         return self.raw;
     }
-    fn store(self: *@This(), v: u64, _: std.builtin.AtomicOrder) void {
+
+    fn store(self: *Self, v: u64, _: std.builtin.AtomicOrder) void {
         self.raw = v;
     }
 } else Atomic(u64);
@@ -186,18 +230,16 @@ const PackedTTEntry = struct {
     key: TTWord = TTWord.init(0),
     data: TTWord = TTWord.init(0),
 
-    fn pack(hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move, generation: u8) struct { key: u64, data: u64 } {
-        // Pack data into 64 bits:
-        // bits 0-15: score (as u16, offset by 32768 to handle negatives)
-        // bits 16-23: depth
-        // bits 24-25: flag
-        // bits 26-31: move start
-        // bits 32-37: move end
-        // bit 38: move valid
-        // bit 39: is_promotion
-        // bits 40-42: promotion_piece
-        // bits 43-50: generation
-        // Clamp score to i16 range to avoid corruption of mate scores
+    // bits 0-15: score (as u16, offset by 32768 to handle negatives)
+    // bits 16-23: depth
+    // bits 24-25: flag
+    // bits 26-31: move start
+    // bits 32-37: move end
+    // bit 38: move valid
+    // bit 39: is_promotion
+    // bits 40-42: promotion_piece
+    // bits 43-50: generation
+    fn pack(hash: u64, score: i32, depth: u8, flag: TranspositionFlag, best_move: ?Move, generation: u8) struct { key: u64, data: u64 } {
         const clamped_score = std.math.clamp(score, std.math.minInt(i16), std.math.maxInt(i16));
         const score_u: u16 = @bitCast(@as(i16, @intCast(clamped_score)));
         var data: u64 = score_u;
@@ -213,19 +255,19 @@ const PackedTTEntry = struct {
             }
         }
         data |= @as(u64, generation) << 43;
-        // XOR hash with data for validation
+
         const key = hash ^ data;
         return .{ .key = key, .data = data };
     }
 
     fn unpack(key: u64, data: u64, hash: u64) ?TranspositionEntry {
-        // Validate: key XOR data should equal original hash
+        // Key XOR data should equal original hash
         if ((key ^ data) != hash) return null;
 
         const score_u: u16 = @truncate(data);
         const score: i32 = @as(i16, @bitCast(score_u));
         const depth: u8 = @truncate(data >> 16);
-        const flag: Flag = @enumFromInt(@as(u2, @truncate(data >> 24)));
+        const flag: TranspositionFlag = @enumFromInt(@as(u2, @truncate(data >> 24)));
         const move_start: u6 = @truncate(data >> 26);
         const move_end: u6 = @truncate(data >> 32);
         const move_valid: u1 = @truncate(data >> 38);
@@ -254,14 +296,14 @@ const PackedTTEntry = struct {
 // When storing, we add ply so the stored score is distance from root.
 // When retrieving, we subtract ply to get distance from the retrieval node.
 fn scoreToTT(score: i32, ply: usize) i32 {
-    const p = @as(i32, @intCast(ply));
+    const p: i32 = @intCast(ply);
     if (score > mate_score_threshold) return score + p;
     if (score < -mate_score_threshold) return score - p;
     return score;
 }
 
 fn scoreFromTT(score: i32, ply: usize) i32 {
-    const p = @as(i32, @intCast(ply));
+    const p: i32 = @intCast(ply);
     if (score > mate_score_threshold) return score - p;
     if (score < -mate_score_threshold) return score + p;
     return score;
@@ -271,18 +313,23 @@ pub const TranspositionTable = struct {
     entries: []PackedTTEntry,
     alloc: std.mem.Allocator,
     generation: u8 = 0,
+    bucket_mask: u64,
 
     // Multi-bucket transposition table: 4 entries per bucket = 1 cache line (64 bytes)
     const bucket_size: usize = 4;
-    const num_buckets_bits = 18; // 2^18 buckets
-    const num_buckets: usize = 1 << num_buckets_bits;
-    const bucket_mask: u64 = num_buckets - 1;
-    const num_entries: usize = num_buckets * bucket_size;
+    const default_buckets_bits: u6 = 18;
 
     pub fn init(alloc: std.mem.Allocator) !TranspositionTable {
-        const entries = try alloc.alloc(PackedTTEntry, num_entries);
+        return initSized(alloc, default_buckets_bits);
+    }
+
+    // Allocate 2^buckets_bits buckets (bucket_size entries each). Larger tables
+    // cut re-search at high depth; self-play uses this to size up.
+    pub fn initSized(alloc: std.mem.Allocator, buckets_bits: u6) !TranspositionTable {
+        const num_buckets: usize = @as(usize, 1) << buckets_bits;
+        const entries = try alloc.alloc(PackedTTEntry, num_buckets * bucket_size);
         @memset(entries, PackedTTEntry{});
-        return .{ .entries = entries, .alloc = alloc };
+        return .{ .entries = entries, .alloc = alloc, .bucket_mask = num_buckets - 1 };
     }
 
     pub fn newSearch(self: *TranspositionTable) void {
@@ -294,7 +341,7 @@ pub const TranspositionTable = struct {
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
-        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
 
         for (0..bucket_size) |i| {
             const entry = &self.entries[base + i];
@@ -308,8 +355,8 @@ pub const TranspositionTable = struct {
         return null;
     }
 
-    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: Flag, best_move: ?Move) void {
-        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
+    fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: TranspositionFlag, best_move: ?Move) void {
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
         const gen = self.generation;
 
         var victim_idx: usize = base;
@@ -321,7 +368,7 @@ pub const TranspositionTable = struct {
             const idx = base + i;
             const entry = &self.entries[idx];
             const old_data = entry.data.load(.monotonic);
-            const old_flag: Flag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
+            const old_flag: TranspositionFlag = @enumFromInt(@as(u2, @truncate(old_data >> 24)));
 
             // Empty slot: use immediately
             if (old_flag == .empty) {
@@ -385,17 +432,52 @@ pub const InfoCallback = struct {
 pub const SearchOptions = struct {
     stop: ?*Atomic(bool) = null,
     max_time_ms: ?u64 = null,
+    max_nodes: ?u64 = null,
     on_info: ?InfoCallback = null,
+    search_params: SearchParams = .{},
 };
 
 // Minimal shared state for Lazy SMP - threads run independently
 const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
     node_count: Atomic(u64) = Atomic(u64).init(0),
+    // Move-ordering quality counters: total beta cutoffs and cutoffs on the
+    // first move searched. first/total ≈ 85-92% indicates healthy ordering.
+    cutoffs: Atomic(u64) = Atomic(u64).init(0),
+    first_move_cutoffs: Atomic(u64) = Atomic(u64).init(0),
     max_depth: u8 = 0,
     io: std.Io,
     start_time: std.Io.Timestamp,
     options: SearchOptions = .{},
+    network: ?*const nnue.Network = null,
+    search_params: SearchParams = .{},
+    // LMR reductions [depth][move_index], filled per search from search_params.
+    // Zero until set (qsearch-only shared states never use it).
+    lmr_table: [64][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** 64,
+
+    fn futilityMargin(self: *const SharedSearchState, depth: u8) i32 {
+        return switch (depth) {
+            0 => 0,
+            1 => self.search_params.futility_margin_1,
+            2 => self.search_params.futility_margin_2,
+            else => 0,
+        };
+    }
+
+    fn evalPosition(
+        self: *const SharedSearchState,
+        state: *const State,
+        acc_stack: *nnue.AccumulatorStack,
+        ply: usize,
+    ) i32 {
+        // NNUE returns centipawns (pawn ≈ 100). HCE uses an internal scale
+        // (pawn endgame ≈ 208). Pruning margins in this file (futility_margins,
+        // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
+        // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
+        // a Phase 6 concern.
+        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
+        return evaluation.evaluate(state);
+    }
 };
 
 // Check time limit and external stop signal periodically.
@@ -416,6 +498,37 @@ fn checkTime(shared: *SharedSearchState) void {
             shared.stop_flag.store(true, .monotonic);
         }
     }
+    if (shared.options.max_nodes) |max_nodes| {
+        if (shared.node_count.load(.monotonic) >= max_nodes) {
+            shared.stop_flag.store(true, .monotonic);
+        }
+    }
+}
+
+// Sentinel for "no static eval at this ply" (in check, or out of stack range).
+const no_eval: i32 = std.math.minInt(i32);
+
+// Per-ply search stack: one entry per ply, shared across a thread's search.
+// Holds the data later phases need - static eval (for `improving` and
+// improving-aware pruning) and the (color,piece,to) of the move made at this
+// ply (for continuation history).
+const StackEntry = struct {
+    static_eval: i32 = no_eval,
+    piece_to: u16 = 0, // (color*6 + piece)*64 + to of the move made here
+    moved_valid: bool = false, // false for null move / root
+};
+
+// "improving": is the side-to-move's static eval better than two plies ago?
+// Later phases prune less when improving. Per the plan: false in check (current
+// node has no eval) or at ply < 2; optimistic-true when only the grandparent
+// eval is missing.
+fn isImproving(stack: []const StackEntry, ply: usize) bool {
+    if (ply < 2) return false;
+    const cur = stack[ply].static_eval;
+    if (cur == no_eval) return false;
+    const prev = stack[ply - 2].static_eval;
+    if (prev == no_eval) return true;
+    return cur > prev;
 }
 
 // Per-thread context for search
@@ -425,17 +538,16 @@ const ThreadContext = struct {
     history: PositionHistory,
     history_table: evaluation.HistoryTable,
     countermoves: CountermoveTable,
+    search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1),
+    cont_hist: *evaluation.ContHistTable,
     thread_id: usize,
     tbl: *TranspositionTable,
     shared: *SharedSearchState,
-    // Each thread reports its best result here
+    acc_stack: nnue.AccumulatorStack,
     best_move: ?Move = null,
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
 };
-
-// Delta pruning margin - captures unlikely to improve alpha if below this threshold
-const delta_margin: i32 = 200;
 
 // Quiescence search: search only captures until the position is "quiet"
 // This prevents the horizon effect where we evaluate positions mid-tactical-sequence
@@ -445,8 +557,10 @@ fn quiescence(
     alpha_initial: i32,
     beta: i32,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
 ) i32 {
     const nodes = shared.node_count.fetchAdd(1, .monotonic);
+
     if (nodes & 2047 == 0) checkTime(shared);
     if (shared.stop_flag.load(.monotonic)) return 0;
 
@@ -469,8 +583,11 @@ fn quiescence(
             const m = moves.pickNext(i);
             const p = state.mailbox[m.start].?;
             const undo = state.makeMove(m, to_move, p);
+            if (shared.network) |net| {
+                nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+            }
 
-            const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
+            const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
 
             state.unmakeMove(m, to_move, p, undo);
 
@@ -486,7 +603,7 @@ fn quiescence(
 
     // Stand pat: evaluate the current position
     // We can always choose not to capture when not in check
-    const stand_pat = evaluation.evaluate(state);
+    const stand_pat = shared.evalPosition(state, acc_stack, ply);
 
     // Beta cutoff: position is so good opponent wouldn't allow it
     if (stand_pat >= beta) {
@@ -525,14 +642,17 @@ fn quiescence(
             if (m.is_promotion) {
                 gain += evaluation.piece_values_mg[m.promotion_piece] - evaluation.piece_values_mg[piece.pawn];
             }
-            if (stand_pat + gain + delta_margin < alpha) {
+            if (stand_pat + gain + shared.search_params.delta_margin < alpha) {
                 continue;
             }
         }
 
         const undo = state.makeMove(m, to_move, p);
+        if (shared.network) |net| {
+            nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+        }
 
-        const score = -quiescence(state, ply + 1, -beta, -alpha, shared);
+        const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
 
         state.unmakeMove(m, to_move, p, undo);
 
@@ -547,12 +667,8 @@ fn quiescence(
     return alpha;
 }
 
-// Futility pruning margins by depth
-const futility_margins = [_]i32{ 0, 300, 600 };
-
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
-// More conservative: 5 + depth^2
-const lmp_thresholds = [4]u8{ 5, 6, 9, 14 }; // depth 0, 1, 2, 3
+const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
 
 const SearchContext = struct {
     tt: *TranspositionTable,
@@ -562,11 +678,14 @@ const SearchContext = struct {
     countermoves: *CountermoveTable,
     prev_move: ?Move,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 };
 
 fn negamax(
     state: *State,
-    depth: u8,
+    depth_param: u8,
     ply: usize,
     alpha_initial: i32,
     beta_param: i32,
@@ -576,6 +695,8 @@ fn negamax(
     if (nodes & 2047 == 0) checkTime(search_ctx.shared);
     if (search_ctx.shared.stop_flag.load(.monotonic)) return 0;
 
+    // Mutable so Internal Iterative Reductions can lower it after the TT probe.
+    var depth = depth_param;
     const hash = state.zobrist_hash;
     var alpha = alpha_initial;
     var best_move: ?Move = null;
@@ -615,44 +736,65 @@ fn negamax(
     // Quiescence handles checkmate detection when in check.
     // This avoids generating a full MoveList at the most numerous nodes.
     if (depth == 0) {
-        return quiescence(state, ply, alpha, beta, search_ctx.shared);
+        return quiescence(state, ply, alpha, beta, search_ctx.shared, search_ctx.acc_stack);
     }
 
     const in_check = state.in_check == to_move;
     const is_pv_node = beta_param - alpha_initial > 1;
 
-    // Compute static eval once for pruning decisions (depths 1-6, not in check)
-    const static_eval: ?i32 = if (depth <= 6 and !in_check) evaluation.evaluate(state) else null;
+    // Compute static eval at every non-check node so `improving` and
+    // continuation-aware pruning have it at all depths; record it in the
+    // per-ply stack for later phases.
+    const static_eval: ?i32 = if (!in_check)
+        search_ctx.shared.evalPosition(state, search_ctx.acc_stack, ply)
+    else
+        null;
+    if (ply < max_ply) {
+        search_ctx.stack[ply].static_eval = static_eval orelse no_eval;
+    }
+
+    // Improving: is our static eval better than two plies ago? Used to reduce
+    // less (LMR) when the position is trending our way. Gated on ply < max_ply
+    // to match the static_eval write above: beyond it stack[ply] is stale, and
+    // at ply == max_ply + 1 it is out of bounds (stack has max_ply + 1 entries).
+    const improving = ply < max_ply and isImproving(search_ctx.stack, ply);
 
     // Reverse futility pruning (static null move pruning):
-    // If eval is far above beta, the position is so good we can prune
-    if (!is_pv_node) {
+    // If eval is far above beta, the position is so good we can prune.
+    // Gated to depth <= 6 to preserve prior behavior (eval used to be computed
+    // only at depths 1-6, so RFP only ever fired there).
+    if (!is_pv_node and depth <= 6) {
         if (static_eval) |eval| {
-            if (eval - 80 * @as(i32, depth) >= beta) {
+            if (eval - search_ctx.shared.search_params.rfp_base * @as(i32, depth) >= beta) {
                 return eval;
             }
         }
     }
 
+    // Internal Iterative Reductions: with no TT move the ordering is unreliable,
+    // so search one ply shallower (the reduced search also seeds the TT).
+    if (tt_move == null and @as(i32, depth) >= search_ctx.shared.search_params.iir_min_depth) {
+        depth -= 1;
+    }
+
     var moves = movegen.legalMoves(state, to_move);
 
     if (moves.len == 0) {
-        if (in_check) {
-            return -checkmate_score + @as(i32, @intCast(ply));
-        } else {
+        if (in_check)
+            return -checkmate_score + @as(i32, @intCast(ply))
+        else
             return 0;
-        }
     }
 
     // Futility pruning setup: at shallow depths, if static eval is far below alpha,
-    // we can skip quiet moves that are unlikely to improve
+    // we can skip quiet moves that are unlikely to improve.
     const can_futility_prune = if (static_eval) |eval|
-        depth <= 2 and eval + futility_margins[depth] <= alpha
+        depth <= 2 and eval + search_ctx.shared.futilityMargin(depth) <= alpha
     else
         false;
 
     // Null move pruning: if giving opponent a free move still results in beta cutoff,
-    // the position is so good we can prune
+    // the position is so good we can prune.
     if (depth >= 3 and !in_check and state.hasNonPawnMaterial(to_move)) {
         const keys = State.getZobristKeys();
         // Save state for null move
@@ -670,17 +812,16 @@ fn negamax(
         }
         state.*.in_check = null; // After null move, we're not giving check
 
+        if (search_ctx.shared.network) |_| {
+            nnue.recordNullMove(search_ctx.acc_stack, ply + 1);
+        }
+
         // Adaptive reduction: R = 2 + depth/4
         const R: u8 = 2 + depth / 4;
-        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, .{
-            .tt = search_ctx.tt,
-            .killers = search_ctx.killers,
-            .history = search_ctx.history,
-            .history_table = search_ctx.history_table,
-            .countermoves = search_ctx.countermoves,
-            .prev_move = null,
-            .shared = search_ctx.shared,
-        });
+        if (ply < max_ply) search_ctx.stack[ply].moved_valid = false;
+        var null_ctx = search_ctx;
+        null_ctx.prev_move = null;
+        const null_score = -negamax(state, depth - 1 - R, ply + 1, -beta, -beta + 1, null_ctx);
 
         // Unmake null move
         state.*.to_move = old_to_move;
@@ -696,6 +837,10 @@ fn negamax(
     // Order moves with killer, countermove, and history heuristics
     const ply_killers = if (ply < max_ply) search_ctx.killers.moves[ply] else [2]?Move{ null, null };
     const countermove = if (search_ctx.prev_move) |pm| search_ctx.countermoves.get(pm) else null;
+    // Continuation history: condition on the previous move when it was a real
+    // move (not null move / root) and within stack range.
+    const prev1_valid = ply >= 1 and (ply - 1) < max_ply and search_ctx.stack[ply - 1].moved_valid;
+    const prev1_pt: u16 = if (prev1_valid) search_ctx.stack[ply - 1].piece_to else 0;
     const sort_ctx = MoveList.SortCtx{
         .state = state,
         .color = to_move,
@@ -703,16 +848,24 @@ fn negamax(
         .history = search_ctx.history_table,
         .countermove = countermove,
         .tt_move = tt_move,
+        .cont1 = if (prev1_valid) search_ctx.cont_hist else null,
+        .prev1_pt = prev1_pt,
     };
     moves.scoreAll(&sort_ctx);
 
     var max_score: i32 = std.math.minInt(i32);
-    var quiets_tried: [256]struct { start: u6, end: u6 } = undefined;
+    var quiets_tried: [256]struct { start: u6, end: u6, piece_to: u16 } = undefined;
     var num_quiets: usize = 0;
 
     for (0..moves.len) |i| {
         const m = moves.pickNext(i);
         const p = state.mailbox[m.start].?;
+        // Piece-to index of this move, for continuation history / the stack.
+        const cur_pt: u16 = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+        // Combined history of this move (butterfly + 1-ply continuation), used
+        // by LMR history adjustment. ~0 for captures (not stored there).
+        const combined_hist: i32 = search_ctx.history_table.get(to_move, m.start, m.end) +
+            (if (prev1_valid) search_ctx.cont_hist.get(prev1_pt, cur_pt) else 0);
 
         // Check if this is a capture before making the move (for LMR decision)
         const is_capture = state.mailbox[m.end] != null;
@@ -729,7 +882,16 @@ fn negamax(
         const should_lmp = depth <= 3 and !in_check and i >= lmp_thresholds[depth] and
             !is_capture and !is_promotion and !is_killer;
 
+        // History-based pruning: at shallow depths, skip late quiet moves whose
+        // combined history is strongly negative (proven bad).
+        const should_histprune = @as(i32, depth) <= search_ctx.shared.search_params.histprune_depth and
+            !in_check and i > 0 and !is_capture and !is_promotion and !is_killer and
+            combined_hist < -search_ctx.shared.search_params.histprune_margin * @as(i32, depth);
+
         const undo = state.makeMove(m, to_move, p);
+        if (search_ctx.shared.network) |net| {
+            nnue.recordMove(search_ctx.acc_stack, ply + 1, state, net, m, to_move, p, &undo);
+        }
         search_ctx.history.push(state.zobrist_hash);
 
         // Check extension: extend search by 1 ply when giving check
@@ -747,35 +909,49 @@ fn negamax(
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
             }
+            if (should_histprune) {
+                search_ctx.history.pop();
+                state.unmakeMove(m, to_move, p, undo);
+                continue;
+            }
         }
 
-        const extension: u8 = if (gives_check) 1 else 0;
+        const extension: u8 = if (gives_check)
+            1
+        else
+            0;
         const new_depth = depth - 1 + extension;
+
+        // Record the move made at this ply (for continuation history, consumed
+        // by later phases) and thread the child context via copy-and-modify so
+        // future field additions stay one-liners.
+        if (ply < max_ply) {
+            search_ctx.stack[ply].piece_to = cur_pt;
+            search_ctx.stack[ply].moved_valid = true;
+        }
+        var child_ctx = search_ctx;
+        child_ctx.prev_move = m;
 
         var score: i32 = undefined;
         if (i == 0) {
             // First move: search with full window
-            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
-                .tt = search_ctx.tt,
-                .killers = search_ctx.killers,
-                .history = search_ctx.history,
-                .history_table = search_ctx.history_table,
-                .countermoves = search_ctx.countermoves,
-                .prev_move = m,
-                .shared = search_ctx.shared,
-            });
+            score = -negamax(state, new_depth, ply + 1, -beta, -alpha, child_ctx);
         } else {
             // Late Move Reductions (LMR):
             // Moves ordered later are likely worse, so search with reduced depth first.
             // Only reduce quiet moves at sufficient depth that don't give check.
             var reduction: u8 = 0;
             if (i >= 3 and depth >= 3 and !is_capture and !gives_check and !in_check) {
-                // Base reduction + increase for later moves and higher depths
-                // Formula: 1 + ln(depth) * ln(moveIndex) / 2 (simplified integer version)
-                reduction = 1;
-                if (i >= 6) reduction += 1;
-                if (i >= 12) reduction += 1;
-                if (depth >= 6) reduction += 1;
+                // Log-based base reduction, precomputed in shared.lmr_table.
+                var r: i32 = search_ctx.shared.lmr_table[@min(depth, 63)][@min(i, 63)];
+                // Runtime adjustments: reduce less on PV nodes, when improving,
+                // and for moves with good history; more for bad history.
+                if (is_pv_node) r -= 1;
+                if (improving) r -= 1;
+                const hist_div = @max(1, search_ctx.shared.search_params.lmr_hist_div);
+                r -= std.math.clamp(@divTrunc(combined_hist, hist_div), -2, 2);
+                if (r < 0) r = 0;
+                reduction = @intCast(@min(r, 63));
                 // Don't reduce into qsearch
                 if (reduction >= new_depth) {
                     reduction = if (new_depth > 1) new_depth - 1 else 0;
@@ -783,40 +959,16 @@ fn negamax(
             }
 
             // PVS with LMR: search with reduced depth and null window
-            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, .{
-                .tt = search_ctx.tt,
-                .killers = search_ctx.killers,
-                .history = search_ctx.history,
-                .history_table = search_ctx.history_table,
-                .countermoves = search_ctx.countermoves,
-                .prev_move = m,
-                .shared = search_ctx.shared,
-            });
+            score = -negamax(state, new_depth - reduction, ply + 1, -alpha - 1, -alpha, child_ctx);
 
             // Re-search at full depth if reduced search improved alpha
             if (score > alpha and reduction > 0) {
-                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, .{
-                    .tt = search_ctx.tt,
-                    .killers = search_ctx.killers,
-                    .history = search_ctx.history,
-                    .history_table = search_ctx.history_table,
-                    .countermoves = search_ctx.countermoves,
-                    .prev_move = m,
-                    .shared = search_ctx.shared,
-                });
+                score = -negamax(state, new_depth, ply + 1, -alpha - 1, -alpha, child_ctx);
             }
 
             // Re-search with full window if null window failed high
             if (score > alpha and score < beta) {
-                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, .{
-                    .tt = search_ctx.tt,
-                    .killers = search_ctx.killers,
-                    .history = search_ctx.history,
-                    .history_table = search_ctx.history_table,
-                    .countermoves = search_ctx.countermoves,
-                    .prev_move = m,
-                    .shared = search_ctx.shared,
-                });
+                score = -negamax(state, new_depth, ply + 1, -beta, -alpha, child_ctx);
             }
         }
 
@@ -827,7 +979,7 @@ fn negamax(
         state.unmakeMove(m, to_move, p, undo);
 
         if (!was_capture and !is_promotion) {
-            quiets_tried[num_quiets] = .{ .start = m.start, .end = m.end };
+            quiets_tried[num_quiets] = .{ .start = m.start, .end = m.end, .piece_to = cur_pt };
             num_quiets += 1;
         }
 
@@ -838,17 +990,24 @@ fn negamax(
         alpha = @max(alpha, score);
 
         if (alpha >= beta) {
+            // Move-ordering quality: count this cutoff, and whether it came on
+            // the first move searched (ideal ordering).
+            _ = search_ctx.shared.cutoffs.fetchAdd(1, .monotonic);
+            if (i == 0) _ = search_ctx.shared.first_move_cutoffs.fetchAdd(1, .monotonic);
+
             // Beta cutoff - store killer, countermove, and update history for quiet moves
             if (!was_capture) {
                 const bonus: i32 = @as(i32, depth) * @as(i32, depth);
                 search_ctx.killers.store(ply, m);
                 search_ctx.history_table.update(to_move, m.start, m.end, bonus);
+                if (prev1_valid) search_ctx.cont_hist.update(prev1_pt, cur_pt, bonus);
                 // Malus: penalize all quiet moves tried before the cutoff move
-                // If cutoff move is quiet it's the last entry in quiets_tried; skip it.
-                // If cutoff move is a promotion it's not in quiets_tried; penalize all.
+                // If cutoff move is quiet it's the last entry in quiets_tried: skip it.
+                // If cutoff move is a promotion it's not in quiets_tried: penalize all.
                 const malus_count = if (!is_promotion) num_quiets - 1 else num_quiets;
                 for (0..malus_count) |qi| {
                     search_ctx.history_table.update(to_move, quiets_tried[qi].start, quiets_tried[qi].end, -bonus);
+                    if (prev1_valid) search_ctx.cont_hist.update(prev1_pt, quiets_tried[qi].piece_to, -bonus);
                 }
                 // Store countermove: this move refutes opponent's previous move
                 if (search_ctx.prev_move) |pm| {
@@ -860,7 +1019,7 @@ fn negamax(
     }
 
     // Determine flag for TT entry
-    const flag: Flag = if (max_score <= alpha_initial)
+    const flag: TranspositionFlag = if (max_score <= alpha_initial)
         .upperBound
     else if (max_score >= beta)
         .lowerBound
@@ -876,6 +1035,11 @@ pub const SearchResult = struct {
     move: Move,
     score: i32,
     depth: u8,
+    // Search instrumentation (populated only at the top-level return).
+    // Intermediate per-depth results leave these at the defaults.
+    nodes: u64 = 0,
+    cutoffs: u64 = 0,
+    first_move_cutoffs: u64 = 0,
 };
 
 // Search at a specific depth with an optional hint for the best move from the previous iteration
@@ -892,6 +1056,9 @@ fn searchAtDepthWithBounds(
     alpha_bound: i32,
     beta_bound: i32,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -930,6 +1097,9 @@ fn searchAtDepthWithBounds(
         const m = moves.pickNext(i);
         const p = state.mailbox[m.start].?;
         const undo = state.makeMove(m, to_move, p);
+        if (shared.network) |net| {
+            nnue.recordMove(acc_stack, 1, state, net, m, to_move, p, &undo);
+        }
         history.push(state.zobrist_hash);
 
         // Take mate in 1
@@ -944,6 +1114,10 @@ fn searchAtDepthWithBounds(
             }
         }
 
+        // Record the root move so 1-ply continuation history is active at ply 1.
+        stack[0].piece_to = (@as(u16, to_move) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+        stack[0].moved_valid = true;
+
         var score: i32 = undefined;
         const ctx = SearchContext{
             .tt = tbl,
@@ -953,6 +1127,9 @@ fn searchAtDepthWithBounds(
             .countermoves = countermoves,
             .prev_move = m,
             .shared = shared,
+            .acc_stack = acc_stack,
+            .stack = stack,
+            .cont_hist = cont_hist,
         };
         if (i == 0) {
             // First move: full window search
@@ -1003,6 +1180,9 @@ fn searchAtDepth(
     history_table: *evaluation.HistoryTable,
     countermoves: *CountermoveTable,
     shared: *SharedSearchState,
+    acc_stack: *nnue.AccumulatorStack,
+    stack: *[max_ply + 1]StackEntry,
+    cont_hist: *evaluation.ContHistTable,
 ) ?SearchResult {
     return searchAtDepthWithBounds(
         state,
@@ -1016,10 +1196,14 @@ fn searchAtDepth(
         alpha_init,
         beta_init,
         shared,
+        acc_stack,
+        stack,
+        cont_hist,
     );
 }
 
 // Aspiration window initial size (centipawns)
+// FIXME: Check/tune this.
 const aspiration_window: i32 = 25;
 
 // Extract the principal variation from the transposition table
@@ -1062,11 +1246,16 @@ fn workerThread(ctx: *ThreadContext) void {
     var pv_move: ?Move = null;
     var prev_score: i32 = 0;
 
+    // Refresh the root accumulator once; subsequent plies update incrementally.
+    if (ctx.shared.network) |net| {
+        nnue.refreshAccumulator(&ctx.state, net, &ctx.acc_stack.accs[0]);
+    }
+
     // Each thread does iterative deepening up to max_depth
-    for (1..ctx.shared.max_depth + 1) |depth_usize| {
+    for (1..ctx.shared.max_depth + 1) |d| {
         if (ctx.shared.stop_flag.load(.monotonic)) break;
 
-        const depth: u8 = @intCast(depth_usize);
+        const depth: u8 = @intCast(d);
 
         // Get PV hint from TT (may have been populated by other threads)
         const tt_move = if (ctx.tbl.probe(ctx.state.zobrist_hash)) |entry| entry.best_move else null;
@@ -1076,7 +1265,7 @@ fn workerThread(ctx: *ThreadContext) void {
 
         // Use aspiration windows after depth 1
         if (depth > 1) {
-            var window: i32 = aspiration_window;
+            var window = aspiration_window;
             var alpha = prev_score - window;
             var beta = prev_score + window;
             var attempts: u8 = 0;
@@ -1094,6 +1283,9 @@ fn workerThread(ctx: *ThreadContext) void {
                     alpha,
                     beta,
                     ctx.shared,
+                    &ctx.acc_stack,
+                    &ctx.search_stack,
+                    ctx.cont_hist,
                 );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1130,6 +1322,9 @@ fn workerThread(ctx: *ThreadContext) void {
                             &ctx.history_table,
                             &ctx.countermoves,
                             ctx.shared,
+                            &ctx.acc_stack,
+                            &ctx.search_stack,
+                            ctx.cont_hist,
                         );
                     }
                 }
@@ -1146,6 +1341,9 @@ fn workerThread(ctx: *ThreadContext) void {
                 &ctx.history_table,
                 &ctx.countermoves,
                 ctx.shared,
+                &ctx.acc_stack,
+                &ctx.search_stack,
+                ctx.cont_hist,
             );
         }
 
@@ -1174,6 +1372,7 @@ fn workerThread(ctx: *ThreadContext) void {
             }
 
             // Early exit if checkmate found
+            // FIXME: why -100? Check this
             if (r.score >= checkmate_score - 100) {
                 ctx.shared.stop_flag.store(true, .monotonic);
                 break;
@@ -1193,10 +1392,18 @@ pub fn searchParallel(
     game_history: ?*const PositionHistory,
     tbl: *TranspositionTable,
     options: SearchOptions,
+    network: ?*const nnue.Network,
 ) !?SearchResult {
     const actual_threads = @min(num_threads, max_threads);
 
     tbl.newSearch();
+
+    // Per-thread 1-ply continuation history. Heap-allocated because each table
+    // is ~2.25 MB, far too large to embed in the stack-resident contexts array.
+    // Zeroed per search like the other per-thread move-ordering tables.
+    const cont_tables = try std.heap.page_allocator.alloc(evaluation.ContHistTable, actual_threads);
+    defer std.heap.page_allocator.free(cont_tables);
+    for (cont_tables) |*t| t.clear();
 
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
     const io = threaded.io();
@@ -1207,13 +1414,16 @@ pub fn searchParallel(
         .io = io,
         .start_time = clock.now(io),
         .options = options,
+        .network = network,
+        .search_params = options.search_params,
     };
+    shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
 
     // Create thread contexts
     var contexts: [max_threads]ThreadContext = undefined;
     for (0..actual_threads) |i| {
         // Initialize history with game history if provided
-        var history = PositionHistory.init();
+        var history = PositionHistory{};
         if (game_history) |gh| {
             for (0..gh.len) |j| {
                 history.push(gh.hashes[j]);
@@ -1229,10 +1439,16 @@ pub fn searchParallel(
             .history = history,
             .history_table = evaluation.HistoryTable{},
             .countermoves = CountermoveTable{},
+            .cont_hist = &cont_tables[i],
             .thread_id = i,
             .tbl = tbl,
             .shared = &shared,
+            .acc_stack = undefined,
         };
+        // Mark every accumulator dirty; the worker refreshes accs[0] before
+        // its first eval and lazily fills the rest as deltas accumulate.
+        for (&contexts[i].acc_stack.accs) |*acc| acc.computed = .{ false, false };
+        contexts[i].acc_stack.debug_eval_count = 0;
     }
 
     // Spawn worker threads
@@ -1271,26 +1487,22 @@ pub fn searchParallel(
     }
 
     if (best_move) |m| {
-        var sq_start: [2]u8 = undefined;
-        var sq_end: [2]u8 = undefined;
-        square.toAlgebraic(m.start, &sq_start) catch {};
-        square.toAlgebraic(m.end, &sq_end) catch {};
-
         return .{
             .move = m,
             .score = best_score,
             .depth = best_depth,
+            .nodes = shared.node_count.load(.monotonic),
+            .cutoffs = shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
         };
     } else {
         return null;
     }
 }
 
-// Iterative deepening search: searches depth 1, then 2, etc. up to max_depth.
-// Uses parallel search with default thread count.
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
-    return searchParallel(state, max_depth, default_threads, null, &tbl, .{});
+    return searchParallel(state, max_depth, default_threads, null, &tbl, .{}, null);
 }
 
 // Search with game history for repetition detection
@@ -1300,8 +1512,9 @@ pub fn searchWithHistory(
     num_threads: usize,
     history: *const PositionHistory,
     tbl: *TranspositionTable,
+    network: ?*const nnue.Network,
 ) !?SearchResult {
-    return searchParallel(state, max_depth, num_threads, history, tbl, .{});
+    return searchParallel(state, max_depth, num_threads, history, tbl, .{}, network);
 }
 
 // Single-threaded search for testing and debugging
@@ -1310,7 +1523,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     defer tbl.deinit();
 
     var killers = KillerTable{};
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
     var history_table = evaluation.HistoryTable{};
     var countermoves = CountermoveTable{};
     history.push(state.zobrist_hash);
@@ -1322,9 +1535,6 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var best_score: i32 = undefined;
     var best_depth: u8 = 0;
 
-    var sq_start: [2]u8 = undefined;
-    var sq_end: [2]u8 = undefined;
-
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
     const now = std.Io.Clock.awake.now(io);
@@ -1333,6 +1543,17 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
         .max_depth = max_depth,
         .start_time = now,
     };
+    shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
+
+    var acc_stack: nnue.AccumulatorStack = undefined;
+    for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+    acc_stack.debug_eval_count = 0;
+
+    var search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
+
+    const cont_hist = try std.heap.page_allocator.create(evaluation.ContHistTable);
+    defer std.heap.page_allocator.destroy(cont_hist);
+    cont_hist.clear();
 
     for (1..max_depth + 1) |depth| {
         const result = searchAtDepth(
@@ -1345,14 +1566,13 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             &history_table,
             &countermoves,
             &shared,
+            &acc_stack,
+            &search_stack,
+            cont_hist,
         );
         if (result) |r| {
             best_move = r.move;
             best_score = r.score;
-
-            try square.toAlgebraic(best_move.?.start, &sq_start);
-            try square.toAlgebraic(best_move.?.end, &sq_end);
-
             best_depth = r.depth;
 
             // Early exit if we found a checkmate
@@ -1367,6 +1587,9 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
             .move = m,
             .score = best_score,
             .depth = best_depth,
+            .nodes = shared.node_count.load(.monotonic),
+            .cutoffs = shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
         };
     } else {
         return null;
@@ -1385,7 +1608,10 @@ pub fn quiescenceEval(state: *const State) i32 {
         .io = io,
         .start_time = now,
     };
-    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared);
+    var acc_stack: nnue.AccumulatorStack = undefined;
+    for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
+    acc_stack.debug_eval_count = 0;
+    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared, &acc_stack);
 }
 
 pub fn isGameOver(state: *const State) ?GameResult {
@@ -1502,7 +1728,7 @@ test "search avoids stalemate when winning" {
 
 // Repetition detection tests
 test "twofold repetition detection" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Push some positions
     history.push(0x1234);
@@ -1523,7 +1749,7 @@ test "twofold repetition detection" {
 }
 
 test "threefold repetition detection" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Simulate a game with repetitions:
     // For threefold, we need position A to appear 3 times at same-side-to-move positions
@@ -1553,7 +1779,7 @@ test "threefold repetition detection" {
 }
 
 test "repetition respects halfmove clock" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // Push positions
     history.push(0x1111);
@@ -1571,7 +1797,7 @@ test "repetition respects halfmove clock" {
 }
 
 test "repetition only checks same side to move" {
-    var history = PositionHistory.init();
+    var history = PositionHistory{};
 
     // In a real game, positions with same side to move are at even intervals
     // Push 6 positions: 0, 1, 2, 3, 4, 5
@@ -1590,240 +1816,29 @@ test "repetition only checks same side to move" {
     try expect(!history.isTwofold(0xBBBB, 5));
 }
 
-test "repetition detection with empty and minimal histories" {
-    var history = PositionHistory.init();
+test "isImproving semantics" {
+    var stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
 
-    // Empty history should not crash or detect anything
-    try expect(!history.isTwofold(0x1234, 0));
-    try expect(!history.isThreefold(0x1234, 0));
+    // ply < 2 is never improving.
+    try expect(!isImproving(&stack, 0));
+    try expect(!isImproving(&stack, 1));
 
-    // 1 entry
-    history.push(0x1234);
-    try expect(!history.isTwofold(0x1234, 10));
+    // Current node has no eval (in check) => not improving.
+    stack[2].static_eval = 50;
+    stack[4].static_eval = no_eval;
+    try expect(!isImproving(&stack, 4));
 
-    // 2 entries
-    history.push(0x5678);
-    try expect(!history.isTwofold(0x1234, 10));
+    // Grandparent eval missing => optimistic true.
+    stack[2].static_eval = no_eval;
+    stack[4].static_eval = 50;
+    try expect(isImproving(&stack, 4));
 
-    // 3 entries
-    history.push(0x1234);
-    try expect(!history.isTwofold(0x1234, 10));
-
-    // 4 entries - still below the len < 5 guard
-    history.push(0x5678);
-    try expect(!history.isTwofold(0x1234, 10));
-
-    // 5 entries - now twofold should work
-    // [0x1234, 0x5678, 0x1234, 0x5678, 0x1234]
-    history.push(0x1234);
-    try expect(history.isTwofold(0x1234, 10));
-}
-
-test "halfmove clock boundary: exact match and off-by-one" {
-    var history = PositionHistory.init();
-
-    // [A, B, C, D, A] - A at indices 0 and 4
-    history.push(0xAAAA);
-    history.push(0xBBBB);
-    history.push(0xCCCC);
-    history.push(0xDDDD);
-    history.push(0xAAAA);
-
-    // halfmove_clock = 4: max_lookback = 4, i=4 checks index 0 → match
-    try expect(history.isTwofold(0xAAAA, 4));
-
-    // halfmove_clock = 3: max_lookback = 3 < 4 → false (can't look back far enough)
-    try expect(!history.isTwofold(0xAAAA, 3));
-
-    // halfmove_clock = 5: max_lookback = min(5, 4) = 4 → still works
-    try expect(history.isTwofold(0xAAAA, 5));
-}
-
-test "threefold with non-adjacent occurrences" {
-    var history = PositionHistory.init();
-
-    // Position A appears at indices 0, 4, 10 (distances 10, 6 from current)
-    // This simulates a real game where the same position recurs after different intervals
-    history.push(0xAAAA); // 0: A
-    history.push(0x1111); // 1
-    history.push(0x2222); // 2
-    history.push(0x3333); // 3
-    history.push(0xAAAA); // 4: A (2nd)
-    history.push(0x4444); // 5
-    history.push(0x5555); // 6
-    history.push(0x6666); // 7
-    history.push(0x7777); // 8
-    history.push(0x8888); // 9
-    history.push(0xAAAA); // 10: A (3rd, current)
-
-    // threefold: need 2 matches at even distances
-    // i=4: idx=6 → 0x5555 no
-    // i=6: idx=4 → 0xAAAA yes (count=1)
-    // i=8: idx=2 → 0x2222 no
-    // i=10: idx=0 → 0xAAAA yes (count=2) → threefold!
-    try expect(history.isThreefold(0xAAAA, 10));
-
-    // twofold also works
-    try expect(history.isTwofold(0xAAAA, 10));
-}
-
-test "push and pop maintain correct state" {
-    var history = PositionHistory.init();
-
-    history.push(0x1111);
-    history.push(0x2222);
-    history.push(0x3333);
-    history.push(0x4444);
-    history.push(0x1111); // twofold of position at index 0
-    try expect(history.isTwofold(0x1111, 5));
-
-    // Pop the repeated position, restoring pre-repetition state
-    history.pop();
-    // Now: [0x1111, 0x2222, 0x3333, 0x4444], len=4
-    // len < 5 → false
-    try expect(!history.isTwofold(0x1111, 5));
-
-    // Push the same hash back - repetition should be detectable again
-    history.push(0x1111);
-    try expect(history.isTwofold(0x1111, 5));
-
-    // Pop and push something different
-    history.pop();
-    history.push(0x5555);
-    // Now: [0x1111, 0x2222, 0x3333, 0x4444, 0x5555], len=5
-    // 0x5555 is only at index 4, no repetition
-    try expect(!history.isTwofold(0x5555, 5));
-}
-
-test "real chess: twofold repetition via knight shuffle" {
-    // Start from a simple position with knights
-    // Play Ng1-f3, Ng8-f6, Nf3-g1, Nf6-g8 to return to start
-    var state = State.defaultPosition();
-    var history = PositionHistory.init();
-    history.push(state.zobrist_hash);
-
-    const initial_hash = state.zobrist_hash;
-
-    // 1. Nf3
-    var undo = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    const after_nf3 = state.zobrist_hash;
-    try expect(after_nf3 != initial_hash);
-
-    // 1... Nf6
-    undo = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // 2. Ng1
-    undo = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // 2... Ng8
-    undo = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // Position should now equal the initial position
-    try expectEqual(initial_hash, state.zobrist_hash);
-    // History: [init, Nf3, Nf6, Ng1, Ng8] len=5, halfmove_clock=4
-    try expectEqual(@as(u16, 4), state.halfmove_clock);
-    try expect(history.isTwofold(state.zobrist_hash, state.halfmove_clock));
-    try expect(!history.isThreefold(state.zobrist_hash, state.halfmove_clock));
-}
-
-test "real chess: threefold repetition via knight shuffle" {
-    var state = State.defaultPosition();
-    var history = PositionHistory.init();
-    history.push(state.zobrist_hash);
-
-    const initial_hash = state.zobrist_hash;
-
-    // Cycle 1: Nf3 Nf6 Ng1 Ng8
-    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    // 2nd occurrence
-    try expectEqual(initial_hash, state.zobrist_hash);
-    try expect(!history.isThreefold(state.zobrist_hash, state.halfmove_clock));
-
-    // Cycle 2: Nf3 Nf6 Ng1 Ng8
-    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    // 3rd occurrence
-    try expectEqual(initial_hash, state.zobrist_hash);
-    try expectEqual(@as(u16, 8), state.halfmove_clock);
-    try expect(history.isThreefold(state.zobrist_hash, state.halfmove_clock));
-}
-
-test "real chess: pawn move resets halfmove clock and prevents repetition lookback" {
-    // After a pawn move, repetition should not look past it
-    var state = State.defaultPosition();
-    var history = PositionHistory.init();
-    history.push(state.zobrist_hash);
-
-    // 1. Nf3 Nf6 2. Ng1 Ng8 → back to start (twofold)
-    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // Confirm twofold works
-    try expect(history.isTwofold(state.zobrist_hash, state.halfmove_clock));
-
-    // 3. e4 - pawn move resets halfmove_clock to 0
-    _ = state.makeMove(.{ .start = square.e2, .end = square.e4 }, engine.Colors.white, piece.pawn);
-    history.push(state.zobrist_hash);
-    try expectEqual(@as(u16, 0), state.halfmove_clock);
-
-    // Even though we have lots of history, halfmove_clock=0 prevents any lookback
-    try expect(!history.isTwofold(state.zobrist_hash, state.halfmove_clock));
-}
-
-test "isGameOverWithHistory detects threefold" {
-    var state = State.defaultPosition();
-    var history = PositionHistory.init();
-    history.push(state.zobrist_hash);
-
-    // No game over at start
-    try expect(isGameOverWithHistory(&state, &history) == null);
-
-    // Cycle 1: Nf3 Nf6 Ng1 Ng8
-    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // 2nd occurrence - not yet threefold
-    try expect(isGameOverWithHistory(&state, &history) == null);
-
-    // Cycle 2: Nf3 Nf6 Ng1 Ng8
-    _ = state.makeMove(.{ .start = square.g1, .end = square.f3 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.g8, .end = square.f6 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f3, .end = square.g1 }, engine.Colors.white, piece.knight);
-    history.push(state.zobrist_hash);
-    _ = state.makeMove(.{ .start = square.f6, .end = square.g8 }, engine.Colors.black, piece.knight);
-    history.push(state.zobrist_hash);
-
-    // 3rd occurrence - should detect threefold
-    try expectEqual(GameResult.threefoldRepetition, isGameOverWithHistory(&state, &history));
+    // Both present: improving iff current > grandparent (equal is not improving).
+    stack[2].static_eval = 30;
+    stack[4].static_eval = 50;
+    try expect(isImproving(&stack, 4));
+    stack[4].static_eval = 10;
+    try expect(!isImproving(&stack, 4));
+    stack[4].static_eval = 30;
+    try expect(!isImproving(&stack, 4));
 }

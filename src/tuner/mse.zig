@@ -5,7 +5,6 @@
 // MSE = (1/N) * sum_i (sigmoid(eval_i, K) - result_i)^2
 //
 // All evaluations use evaluateWithParamsF64 so that gradient signal is never
-// lost to i16 rounding — see pitfall #1 in the tuning plan.
 
 const std = @import("std");
 const chez = @import("chez");
@@ -97,7 +96,6 @@ pub fn compute(
 }
 
 // ==============================================================================
-// Batch (indexed) MSE — used inside the SPSA hot loop
 // ==============================================================================
 //
 // Takes a slice of indices into the full positions array. Avoids copying

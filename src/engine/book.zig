@@ -366,7 +366,7 @@ pub fn polyglotHash(state: *const State) u64 {
         }
     }
 
-    // Castling keys (explicit mapping — order differs between Polyglot and engine)
+    // Castling keys (explicit mapping: order differs between Polyglot and engine)
     // Polyglot: [768]=white OO, [769]=white OOO, [770]=black OO, [771]=black OOO
     // Engine:   white_kingside=1, white_queenside=2, black_queenside=4, black_kingside=8
     if (state.castling_rights & castling.white_kingside != 0) hash ^= polyglot_random[768];

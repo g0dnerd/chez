@@ -3,6 +3,7 @@ const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez.zig");
 const engine = chez.engine;
+const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
 fn parseMove(input: []const u8) ?engine.Move {
     const trimmed = std.mem.trimEnd(u8, input, &std.ascii.whitespace);
@@ -46,23 +47,25 @@ fn printLegalMoves(m: engine.movegen.MoveList, w: *std.Io.Writer) !void {
 }
 
 fn containsMove(haystack: *const [256]engine.Move, needle: *const engine.Move) bool {
+    // If not a promotion, mask out the promotion_piece bits (13-15)
+    const mask: u16 = if (needle.is_promotion) 0xFFFF else 0x1FFF;
+    const needle_val = @as(u16, @bitCast(needle.*)) & mask;
     for (haystack) |straw| {
-        if (straw.start == needle.start and straw.end == needle.end and straw.promotion_piece == needle.promotion_piece) {
-            return true;
-        }
+        if (@as(u16, @bitCast(straw)) & mask == needle_val) return true;
     }
     return false;
 }
-const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
 const Args = struct {
     engine_color: ?[]const u8,
     depth: ?u8,
+    time: ?u32, // Fixed seconds per engine move (overrides depth when set)
     num_threads: ?usize,
     fen: ?[]const u8,
     nn_engine: ?[]const u8, // Path to NN checkpoint, e.g. "models/iter_0100.pt"
     nn_simulations: ?u32, // MCTS simulations for NN engine
     book: ?[]const u8, // Path to Polyglot opening book (.bin)
+    nnue: ?[]const u8, // Path to .nnue file for NNUE evaluation
 };
 
 // Neural network engine subprocess
@@ -73,7 +76,7 @@ const NNEngine = struct {
 
     fn init(io: std.Io, checkpoint: []const u8, simulations: u32) !NNEngine {
         var sim_buf: [16]u8 = undefined;
-        var child = try std.process.spawn(io, .{
+        const child = try std.process.spawn(io, .{
             .argv = &.{
                 "/home/paul/.local/bin/uv",
                 "run",
@@ -118,11 +121,13 @@ const NNEngine = struct {
     }
 };
 
-fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, num_threads: usize, nn_mode: bool) !void {
+fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, time: ?u32, num_threads: usize, nn_mode: bool) !void {
     try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
     try stdout.writeAll(" === Chez Paul ===\n");
     if (nn_mode) {
         try stdout.print(" Move {d} - Neural Network Engine\n\n", .{state.fullmove_clock});
+    } else if (time) |t| {
+        try stdout.print(" Move {d} - {d}s/move - {d} Threads\n\n", .{ state.fullmove_clock, t, num_threads });
     } else if (depth) |d| {
         try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, d, num_threads });
     }
@@ -159,7 +164,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
 
     // Initialize position history for repetition detection
-    var history = engine.search.PositionHistory.init();
+    var history = engine.search.PositionHistory{};
     history.push(state.zobrist_hash);
 
     var tbl = try engine.search.TranspositionTable.init(std.heap.page_allocator);
@@ -175,6 +180,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var depth: u8 = parsed_args.depth orelse 14;
     const num_threads: usize = parsed_args.num_threads orelse 4;
+
+    // When --time is set, the engine searches for a fixed budget per move
+    // (seconds) instead of to a fixed depth.
+    const move_time_ms: ?u64 = if (parsed_args.time) |t| @as(u64, t) * 1000 else null;
 
     // Initialize NN engine if requested
     const nn_mode = parsed_args.nn_engine != null;
@@ -194,12 +203,27 @@ pub fn main(init: std.process.Init.Minimal) !void {
         opening_book = engine.book.Book.load(io, std.heap.page_allocator, book_path) catch null;
     }
 
+    var network: ?*engine.nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    if (parsed_args.nnue) |nnue_path| {
+        network = engine.nnue.Network.load(io, std.heap.page_allocator, nnue_path) catch |err| blk: {
+            try stdout.print("Failed to load NNUE file: {}\n", .{err});
+            try stdout.flush();
+            break :blk null;
+        };
+        if (network != null) {
+            try stdout.writeAll("NNUE evaluation loaded.\n");
+            try stdout.flush();
+        }
+    }
+
     var undo_info: [2]engine.State.UndoInfo = undefined;
     var undo_moves: [2]engine.Move = undefined;
     var undo_pieces: [2]engine.piece.Piece = undefined;
 
     outer: while (true) {
-        try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
 
         if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
@@ -283,7 +307,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
 
                 if (parseMove(move)) |*user_move| {
-                    // try stdout.print("{any}\n", .{moves.moves});
                     if (containsMove(&moves.moves, user_move)) {
                         last_move = user_move.*;
                         const piece = state.pieceAt(user_move.start).?;
@@ -292,7 +315,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         undo_pieces[0] = piece;
                         undo_moves[0] = user_move.*;
                         history.push(state.zobrist_hash);
-                        try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+                        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
                         break;
                     } else {
                         try stdout.print(" Illegal move {s}! Try again.\n", .{move});
@@ -323,10 +346,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 var move_buf: [16]u8 = undefined;
                 best_move = try eng.getMove(io, &state, &move_buf);
             } else {
-                if (try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl)) |search_res| {
+                const search_res = if (move_time_ms) |mt|
+                    try engine.search.searchParallel(&state, 64, num_threads, &history, &tbl, .{ .max_time_ms = mt }, network)
+                else
+                    try engine.search.searchWithHistory(&state, depth, num_threads, &history, &tbl, network);
+                if (search_res) |res| {
                     // Use traditional search
-                    best_move = search_res.move;
-                    best_score = search_res.score;
+                    best_move = res.move;
+                    best_score = res.score;
                 }
             }
         }
@@ -346,7 +373,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             history.push(state.zobrist_hash);
 
             try stdout.writeByte('\n');
-            try writeHeader(stdout, &state, depth, num_threads, nn_mode);
+            try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
 
             if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {

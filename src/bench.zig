@@ -1,10 +1,9 @@
 const std = @import("std");
 const chez = @import("chez.zig");
+const nnue = chez.engine.nnue;
 const search = chez.engine.search;
 const State = chez.engine.State;
 
-// Standard bench positions covering various game phases and structures.
-// Sourced from common engine bench suites (Ethereal, Stockfish).
 const positions = [_][]const u8{
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -28,12 +27,13 @@ const positions = [_][]const u8{
     "2kr3r/pp3ppp/2nbbn2/3p4/3P4/2NBBN2/PP3PPP/2KR3R w - - 8 14",
 };
 
-const depth_default: u8 = 11;
+const depth_default: u8 = 16;
 const threads_default: usize = 1;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var depth: u8 = depth_default;
     var threads: usize = threads_default;
+    var nnue_path: ?[]const u8 = null;
 
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .empty });
     const io = threaded.io();
@@ -54,15 +54,56 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (args.next()) |t| {
                 threads = std.fmt.parseInt(usize, t, 10) catch threads_default;
             }
+        } else if (std.mem.eql(u8, arg, "--nnue")) {
+            nnue_path = args.next();
         }
     }
 
-    try stdout.print("Bench: {d} positions, depth {d}, {d} thread(s)\n", .{ positions.len, depth, threads });
+    // Fix the Zobrist seed so the node signature is reproducible across runs:
+    // identical keys => identical TT bucket mapping => identical search tree.
+    State.setZobristSeed(0xBEEF_CAFE_1234_5678);
+
+    var network: ?*nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    if (nnue_path) |path| {
+        network = nnue.Network.load(io, std.heap.page_allocator, path) catch |err| blk: {
+            try stdout.print("Failed to load NNUE file: {}\n", .{err});
+            try stdout.flush();
+            break :blk null;
+        };
+    }
+
+    const eval_label: []const u8 = if (network != null) "NNUE" else "HCE";
+    try stdout.print("Bench: {d} positions, depth {d}, {d} thread(s), eval={s}\n", .{ positions.len, depth, threads, eval_label });
+
+    const clock = std.Io.Clock.awake;
+
+    // Micro-bench the evaluation function directly.
+    {
+        const micro_state = State.fromFen(positions[0]) catch unreachable;
+        const iters: usize = 50_000;
+        var sink: i64 = 0;
+        const eval_start = std.Io.Timestamp.now(io, clock);
+        if (network) |net| {
+            for (0..iters) |_| sink +|= nnue.evaluate(&micro_state, net);
+        } else {
+            for (0..iters) |_| sink +|= chez.engine.evaluation.evaluate(&micro_state);
+        }
+        const eval_ns = std.Io.Timestamp.now(io, clock).nanoseconds - eval_start.nanoseconds;
+        const per_eval_ns = @divTrunc(eval_ns, @as(i128, @intCast(iters)));
+        const evals_per_sec = if (eval_ns > 0) @divTrunc(@as(i128, @intCast(iters)) * 1_000_000_000, eval_ns) else 0;
+        try stdout.print("Eval microbench: {d} iters, {d}ns/eval, {d} evals/sec (sink={d})\n", .{ iters, per_eval_ns, evals_per_sec, sink });
+        try stdout.flush();
+    }
 
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
-    const clock = std.Io.Clock.awake;
+    var total_nodes: u64 = 0;
+    var total_cutoffs: u64 = 0;
+    var total_first_cutoffs: u64 = 0;
+
     var start = std.Io.Timestamp.now(io, clock);
 
     try stdout.flush();
@@ -72,14 +113,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
             continue;
         };
 
-        const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{});
+        const result = try search.searchParallel(&state, depth, threads, null, &tbl, .{}, network);
         if (result) |r| {
+            total_nodes += r.nodes;
+            total_cutoffs += r.cutoffs;
+            total_first_cutoffs += r.first_move_cutoffs;
             var start_buf: [2]u8 = undefined;
             var end_buf: [2]u8 = undefined;
             try chez.engine.square.toAlgebraic(r.move.start, &start_buf);
             try chez.engine.square.toAlgebraic(r.move.end, &end_buf);
             const cp_score = chez.engine.evaluation.toCentipawns(r.score);
-            try stdout.print("  #{d}: {s}{s} score={d:.2} depth={d}\n", .{ i, start_buf, end_buf, cp_score, r.depth });
+            try stdout.print("  #{d}: {s}{s} score={d:.2} depth={d} nodes={d}\n", .{ i, start_buf, end_buf, cp_score, r.depth, r.nodes });
             try stdout.flush();
         } else {
             try stdout.print("  #{d}: no result\n", .{i});
@@ -92,11 +136,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const elapsed_ms = elapsed.toMilliseconds();
     const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ms)) / @as(f64, @floatFromInt(std.time.ms_per_s));
 
+    const nps: u64 = if (elapsed_ms > 0) total_nodes * std.time.ms_per_s / @as(u64, @intCast(elapsed_ms)) else 0;
+    const first_pct: f64 = if (total_cutoffs > 0)
+        @as(f64, @floatFromInt(total_first_cutoffs)) * 100.0 / @as(f64, @floatFromInt(total_cutoffs))
+    else
+        0.0;
+
     try stdout.print("\n===========================\n", .{});
     try stdout.print("Total time: {d}ms ({d:.2}s)\n", .{ elapsed_ms, elapsed_s });
     try stdout.print("Positions:  {d}\n", .{positions.len});
     try stdout.print("Depth:      {d}\n", .{depth});
     try stdout.print("Threads:    {d}\n", .{threads});
+    try stdout.print("Nodes:      {d}  <- signature (reproducible at 1 thread, HCE)\n", .{total_nodes});
+    try stdout.print("NPS:        {d}\n", .{nps});
+    try stdout.print("Ordering:   {d}/{d} first-move cutoffs ({d:.1}%)\n", .{ total_first_cutoffs, total_cutoffs, first_pct });
     try stdout.print("===========================\n", .{});
     try stdout.flush();
 }

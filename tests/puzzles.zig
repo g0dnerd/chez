@@ -62,7 +62,7 @@ test "puzzles" {
     const puzzles: []Puzzle = try std.json.parseFromSliceLeaky([]Puzzle, alloc, puzzle_file, .{});
     pz: for (puzzles, 0..) |p, p_i| {
         var state = try chez.engine.State.fromFen(p.fen);
-        var history = chez.engine.search.PositionHistory.init();
+        var history = chez.engine.search.PositionHistory{};
         history.push(state.zobrist_hash);
 
         var tbl: chez.engine.search.TranspositionTable = try .init(std.heap.page_allocator);
@@ -76,7 +76,7 @@ test "puzzles" {
 
             // Engine's move
             if (i % 2 == 0) {
-                if (try chez.engine.search.searchParallel(&state, 12, num_threads, &history, &tbl, .{})) |res| {
+                if (try chez.engine.search.searchParallel(&state, 12, num_threads, &history, &tbl, .{}, null)) |res| {
                     const eng_mv = res.move;
                     const is_move_correct = eng_mv.eql(parsed_move);
                     if (!is_move_correct) {

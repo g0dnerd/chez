@@ -1,6 +1,7 @@
 const std = @import("std");
 const chez = @import("chez.zig");
 const engine = chez.engine;
+const nnue = engine.nnue;
 const search = engine.search;
 const State = engine.State;
 const Move = engine.Move;
@@ -24,7 +25,8 @@ fn applyMove(state: *State, notation: []const u8) bool {
     const from = squaremod.algebraicToSquare(trimmed[0..2]) orelse return false;
     const to = squaremod.algebraicToSquare(trimmed[2..4]) orelse return false;
 
-    var legal = movegen.legalMoves(state, state.to_move);
+    const legal = movegen.legalMoves(state, state.to_move);
+
     for (0..legal.len) |i| {
         const m = legal.moves[i];
         if (m.start != from or m.end != to) continue;
@@ -101,6 +103,7 @@ const SearchRunArgs = struct {
     history: search.PositionHistory,
     tbl: *search.TranspositionTable,
     options: search.SearchOptions,
+    network: ?*const nnue.Network,
     writer: *std.Io.Writer,
     mutex: *std.Io.Mutex,
     io: std.Io,
@@ -114,6 +117,7 @@ fn runSearch(args: *SearchRunArgs) void {
         &args.history,
         args.tbl,
         args.options,
+        args.network,
     ) catch null;
 
     args.mutex.lock(args.io) catch {};
@@ -141,7 +145,7 @@ pub fn main() !void {
     var stdout_mutex = std.Io.Mutex.init;
 
     var state = State.defaultPosition();
-    var history = search.PositionHistory.init();
+    var history = search.PositionHistory{};
     history.push(state.zobrist_hash);
 
     var tbl = try search.TranspositionTable.init(std.heap.page_allocator);
@@ -155,6 +159,11 @@ pub fn main() !void {
     var own_book = true;
     var opening_book: ?engine.book.Book = null;
     defer if (opening_book) |*b| b.deinit();
+
+    var network: ?*nnue.Network = null;
+    defer if (network) |n| n.deinit(std.heap.page_allocator);
+
+    var search_params = search.SearchParams{};
 
     var info_ctx = InfoCtx{
         .writer = stdout,
@@ -176,6 +185,18 @@ pub fn main() !void {
             stdout.writeAll("option name Threads type spin default 4 min 1 max 16\n") catch {};
             stdout.writeAll("option name OwnBook type check default true\n") catch {};
             stdout.writeAll("option name BookFile type string default /home/paul/projects/chez/testing/books/komodo.bin\n") catch {};
+            stdout.writeAll("option name EvalFile type string default <empty>\n") catch {};
+            stdout.writeAll("option name NnueScale type spin default 2 min 1 max 10\n") catch {};
+            stdout.writeAll("option name RfpBase type spin default 80 min 20 max 200\n") catch {};
+            stdout.writeAll("option name FutilityMargin1 type spin default 300 min 50 max 800\n") catch {};
+            stdout.writeAll("option name FutilityMargin2 type spin default 600 min 100 max 1500\n") catch {};
+            stdout.writeAll("option name DeltaMargin type spin default 200 min 50 max 600\n") catch {};
+            stdout.writeAll("option name LmrBase type spin default 75 min 0 max 300\n") catch {};
+            stdout.writeAll("option name LmrDiv type spin default 120 min 50 max 500\n") catch {};
+            stdout.writeAll("option name LmrHistDiv type spin default 8000 min 500 max 32000\n") catch {};
+            stdout.writeAll("option name HistPruneDepth type spin default 3 min 0 max 8\n") catch {};
+            stdout.writeAll("option name HistPruneMargin type spin default 2000 min 200 max 12000\n") catch {};
+            stdout.writeAll("option name IirMinDepth type spin default 4 min 2 max 12\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -191,7 +212,7 @@ pub fn main() !void {
                 search_thread = null;
             }
             state = State.defaultPosition();
-            history = search.PositionHistory.init();
+            history = search.PositionHistory{};
             history.push(state.zobrist_hash);
             tbl.newSearch();
         } else if (std.mem.startsWith(u8, line, "setoption ")) {
@@ -211,6 +232,33 @@ pub fn main() !void {
                     if (opening_book) |*b| b.deinit();
                     opening_book = engine.book.Book.load(io, std.heap.page_allocator, opt_val) catch null;
                 }
+            } else if (std.mem.eql(u8, opt_name, "EvalFile")) {
+                if (opt_val.len > 0) {
+                    if (network) |n| n.deinit(std.heap.page_allocator);
+                    network = nnue.Network.load(io, std.heap.page_allocator, opt_val) catch null;
+                }
+            } else if (std.mem.eql(u8, opt_name, "NnueScale")) {
+                search_params.nnue_scale = std.fmt.parseInt(i32, opt_val, 10) catch search_params.nnue_scale;
+            } else if (std.mem.eql(u8, opt_name, "RfpBase")) {
+                search_params.rfp_base = std.fmt.parseInt(i32, opt_val, 10) catch search_params.rfp_base;
+            } else if (std.mem.eql(u8, opt_name, "FutilityMargin1")) {
+                search_params.futility_margin_1 = std.fmt.parseInt(i32, opt_val, 10) catch search_params.futility_margin_1;
+            } else if (std.mem.eql(u8, opt_name, "FutilityMargin2")) {
+                search_params.futility_margin_2 = std.fmt.parseInt(i32, opt_val, 10) catch search_params.futility_margin_2;
+            } else if (std.mem.eql(u8, opt_name, "DeltaMargin")) {
+                search_params.delta_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.delta_margin;
+            } else if (std.mem.eql(u8, opt_name, "LmrBase")) {
+                search_params.lmr_base = std.fmt.parseInt(i32, opt_val, 10) catch search_params.lmr_base;
+            } else if (std.mem.eql(u8, opt_name, "LmrDiv")) {
+                search_params.lmr_div = std.fmt.parseInt(i32, opt_val, 10) catch search_params.lmr_div;
+            } else if (std.mem.eql(u8, opt_name, "LmrHistDiv")) {
+                search_params.lmr_hist_div = std.fmt.parseInt(i32, opt_val, 10) catch search_params.lmr_hist_div;
+            } else if (std.mem.eql(u8, opt_name, "HistPruneDepth")) {
+                search_params.histprune_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_depth;
+            } else if (std.mem.eql(u8, opt_name, "HistPruneMargin")) {
+                search_params.histprune_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_margin;
+            } else if (std.mem.eql(u8, opt_name, "IirMinDepth")) {
+                search_params.iir_min_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.iir_min_depth;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
@@ -219,7 +267,7 @@ pub fn main() !void {
 
             if (std.mem.startsWith(u8, rest, " startpos")) {
                 state = State.defaultPosition();
-                history = search.PositionHistory.init();
+                history = search.PositionHistory{};
                 history.push(state.zobrist_hash);
                 rest = rest[" startpos".len..];
             } else if (std.mem.startsWith(u8, rest, " fen ")) {
@@ -227,7 +275,7 @@ pub fn main() !void {
                 const moves_idx = std.mem.indexOf(u8, rest, " moves");
                 const fen = if (moves_idx) |idx| rest[0..idx] else rest;
                 state = State.fromFen(fen) catch continue;
-                history = search.PositionHistory.init();
+                history = search.PositionHistory{};
                 history.push(state.zobrist_hash);
                 rest = if (moves_idx) |idx| rest[idx..] else "";
             }
@@ -313,7 +361,9 @@ pub fn main() !void {
                         .context = &info_ctx,
                         .func = infoCallback,
                     },
+                    .search_params = search_params,
                 },
+                .network = network,
                 .io = io,
                 .writer = stdout,
                 .mutex = &stdout_mutex,

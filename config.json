@@ -1,0 +1,187 @@
+{
+    "resign": {
+        "move_count": 5,
+        "score": 1000,
+        "twosided": false,
+        "enabled": true
+    },
+    "draw": {
+        "move_number": 40,
+        "move_count": 10,
+        "score": 5,
+        "enabled": true
+    },
+    "maxmoves": {
+        "move_count": 1,
+        "enabled": false
+    },
+    "tb_adjudication": {
+        "syzygy_dirs": "",
+        "max_pieces": 0,
+        "ignore_50_move_rule": false,
+        "enabled": false
+    },
+    "opening": {
+        "file": "",
+        "format": 2,
+        "order": 1,
+        "plies": -1,
+        "start": 1
+    },
+    "pgn": {
+        "additional_lines_rgx": [],
+        "event_name": "Fastchess Tournament",
+        "site": "?",
+        "file": "",
+        "notation": 0,
+        "append_file": true,
+        "track_nodes": false,
+        "track_seldepth": false,
+        "track_nps": false,
+        "track_hashfull": false,
+        "track_tbhits": false,
+        "track_timeleft": false,
+        "track_latency": false,
+        "track_pv": false,
+        "min": false,
+        "crc": false
+    },
+    "epd": {
+        "file": "",
+        "append_file": true
+    },
+    "sprt": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "elo0": 0.0,
+        "elo1": 0.0,
+        "model": "normalized",
+        "enabled": false
+    },
+    "config_name": "config.json",
+    "output": 1,
+    "seed": 1183542987803568304,
+    "variant": 0,
+    "type": 0,
+    "gauntlet_seeds": 1,
+    "ratinginterval": 10,
+    "scoreinterval": 1,
+    "wait": 0,
+    "autosaveinterval": 20,
+    "games": 2,
+    "rounds": 20,
+    "concurrency": 4,
+    "force_concurrency": false,
+    "recover": true,
+    "noswap": false,
+    "reverse": false,
+    "report_penta": false,
+    "affinity": false,
+    "check_mate_pvs": false,
+    "show_latency": false,
+    "log": {
+        "file": "",
+        "level": 2,
+        "append_file": true,
+        "compress": false,
+        "realtime": true,
+        "engine_coms": false
+    },
+    "engines": [
+        {
+            "name": "nnue",
+            "dir": "",
+            "cmd": "./zig-out/bin/uci",
+            "args": "",
+            "restart": true,
+            "options": [
+                [
+                    "EvalFile",
+                    "data/net_v6_wd0_lambda1.nnue"
+                ],
+                [
+                    "Threads",
+                    "4"
+                ],
+                [
+                    "OwnBook",
+                    "false"
+                ],
+                [
+                    "NnueScale",
+                    "1"
+                ],
+                [
+                    "RfpBase",
+                    "10"
+                ],
+                [
+                    "FutilityMargin1",
+                    "40"
+                ],
+                [
+                    "FutilityMargin2",
+                    "80"
+                ],
+                [
+                    "DeltaMargin",
+                    "25"
+                ]
+            ],
+            "limit": {
+                "tc": {
+                    "increment": 10,
+                    "fixed_time": 0,
+                    "time": 1000,
+                    "moves": 0,
+                    "timemargin": 300
+                },
+                "nodes": 0,
+                "plies": 0
+            },
+            "variant": 0
+        },
+        {
+            "name": "hce",
+            "dir": "",
+            "cmd": "./zig-out/bin/uci",
+            "args": "",
+            "restart": true,
+            "options": [
+                [
+                    "Threads",
+                    "4"
+                ],
+                [
+                    "OwnBook",
+                    "false"
+                ]
+            ],
+            "limit": {
+                "tc": {
+                    "increment": 10,
+                    "fixed_time": 0,
+                    "time": 1000,
+                    "moves": 0,
+                    "timemargin": 300
+                },
+                "nodes": 0,
+                "plies": 0
+            },
+            "variant": 0
+        }
+    ],
+    "stats": {
+        "nnue vs hce": {
+            "wins": 9,
+            "losses": 21,
+            "draws": 10,
+            "penta_WW": 0,
+            "penta_WD": 0,
+            "penta_WL": 0,
+            "penta_DD": 0,
+            "penta_LD": 0,
+            "penta_LL": 0
+        }
+    }
+}

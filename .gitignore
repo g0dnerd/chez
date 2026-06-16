@@ -13,3 +13,4 @@ testing/books/
 testing/.builds/
 testing/results/*.json
 testing/results/*.pgn
+*.ktml

@@ -10,6 +10,7 @@ pub const castling = @import("castling.zig");
 pub const evaluation = @import("evaluation.zig");
 pub const params = @import("params.zig");
 pub const movegen = @import("movegen.zig");
+pub const nnue = @import("nnue.zig");
 pub const piece = @import("piece.zig");
 pub const square = @import("square.zig");
 pub const search = @import("search.zig");

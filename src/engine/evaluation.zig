@@ -1,18 +1,18 @@
 const std = @import("std");
-
 const Bitboard = @import("Bitboard.zig");
-const State = @import("State.zig");
 const engine = @import("engine.zig");
-const Move = engine.Move;
 const movegen = @import("movegen.zig");
+const params_mod = @import("params.zig");
+const piece = @import("piece.zig");
+const score_mod = @import("score.zig");
+const square = @import("square.zig");
+const State = @import("State.zig");
+
+const Move = engine.Move;
 const MoveList = movegen.MoveList;
 const Color = engine.Color;
 const Colors = engine.Colors;
-const piece = @import("piece.zig");
-const square = @import("square.zig");
 const Square = square.Square;
-const score_mod = @import("score.zig");
-const params_mod = @import("params.zig");
 pub const Score = score_mod.Score(i16);
 pub const Params = params_mod.Params;
 const max_phase_mg = score_mod.max_phase_mg;
@@ -199,7 +199,7 @@ fn computeMobilityArea(state: *const State, c: Color, enemy_pawn_attacks: u64, b
 // Single-pass evaluation for one color. Iterates each piece type once,
 // accumulating material, PST, mobility, and structural scores together.
 // Returns the total score, phase accumulator, and accumulated piece attacks.
-// `p` is anytype — either *const Params (i16) or *const ParamsF64 (f64).
+// `p` is anytype: either *const Params (i16) or *const ParamsF64 (f64).
 fn evaluateColorGeneric(
     state: *const State,
     c: Color,
@@ -227,7 +227,6 @@ fn evaluateColorGeneric(
     const our_rq = (state.pieceBitboard(piece.rook).bits | our_queens_bb) & our_pieces;
     const occ_without_our_rq = Bitboard{ .bits = occupied ^ our_rq };
 
-    // --- Pawns: material + PST + pawn structure ---
     {
         var pawns = our_pawns_bb;
         const pawn_count: i32 = @intCast(pawns.popCount());
@@ -381,7 +380,6 @@ fn evaluateColorGeneric(
         }
     }
 
-    // --- Knights: material + PST + mobility + outposts ---
     {
         var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
@@ -412,7 +410,6 @@ fn evaluateColorGeneric(
         }
     }
 
-    // --- Bishops: material + PST + mobility + bishop pair + outposts ---
     {
         var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
@@ -447,7 +444,6 @@ fn evaluateColorGeneric(
         }
     }
 
-    // --- Rooks: material + PST + mobility + open file + 7th rank ---
     {
         var rooks = Bitboard{ .bits = state.pieceBitboard(piece.rook).bits & our_pieces };
         const rook_count: i32 = @intCast(rooks.popCount());
@@ -488,7 +484,6 @@ fn evaluateColorGeneric(
         }
     }
 
-    // --- Queens: material + PST (mobility deferred to evaluateQueenMobilityGeneric) ---
     {
         var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
@@ -503,7 +498,6 @@ fn evaluateColorGeneric(
         }
     }
 
-    // --- King: PST + king safety ---
     {
         const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
         const king_sq: Square = @intCast(@ctz(king_bb.bits));
@@ -539,7 +533,7 @@ fn evaluateColorGeneric(
 
 // Evaluate queen mobility separately, after both colors' piece attacks are known.
 // Queen mobility excludes squares defended by enemy minor pieces and rooks.
-// `p` is anytype — either *const Params (i16) or *const ParamsF64 (f64).
+// `p` is anytype: either *const Params (i16) or *const ParamsF64 (f64).
 fn evaluateQueenMobilityGeneric(
     state: *const State,
     our_pieces: u64,
@@ -547,8 +541,8 @@ fn evaluateQueenMobilityGeneric(
     enemy_attacks: PieceAttacks,
     p: anytype,
 ) @TypeOf(p.piece_values[0]) {
-    const ScoreT = @TypeOf(p.piece_values[0]);
-    var score = ScoreT.zero;
+    const T = @TypeOf(p.piece_values[0]);
+    var score = T.zero;
     var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
     const enemy_minor_rook = enemy_attacks.knight | enemy_attacks.bishop | enemy_attacks.rook;
 
@@ -556,8 +550,8 @@ fn evaluateQueenMobilityGeneric(
         const bishop_moves = movegen.sliderMoves(state, s, piece.bishop);
         const rook_moves = movegen.sliderMoves(state, s, piece.rook);
         const queen_atk = bishop_moves | rook_moves;
-        const mob = queen_atk & mobility_area & ~enemy_minor_rook;
-        const move_count = @popCount(mob);
+        const mobility = queen_atk & mobility_area & ~enemy_minor_rook;
+        const move_count = @popCount(mobility);
         score = score.add(p.mobility_bonus[3][move_count]);
     }
     return score;
@@ -583,23 +577,35 @@ fn evaluateGeneric(state: *const State, p: anytype) @TypeOf(p.piece_values[0].ta
     const opp_pawn_atk = pawnAttacksBB(opp_pawns.bits, opp);
     const our_blockers = blockersForKing(state, to_move);
     const opp_blockers = blockersForKing(state, opp);
-    const our_mob_area = computeMobilityArea(state, to_move, opp_pawn_atk, our_blockers);
-    const opp_mob_area = computeMobilityArea(state, opp, our_pawn_atk, opp_blockers);
+    const our_mobility_area = computeMobilityArea(state, to_move, opp_pawn_atk, our_blockers);
+    const opp_mobility_area = computeMobilityArea(state, opp, our_pawn_atk, opp_blockers);
 
     // Evaluate both colors (accumulates attack maps, defers queen mobility)
-    const our = evaluateColorGeneric(state, to_move, our_pieces, our_pawns, opp_pawns, our_mob_area, p);
-    const their = evaluateColorGeneric(state, opp, opp_pieces, opp_pawns, our_pawns, opp_mob_area, p);
+    const our = evaluateColorGeneric(state, to_move, our_pieces, our_pawns, opp_pawns, our_mobility_area, p);
+    const their = evaluateColorGeneric(state, opp, opp_pieces, opp_pawns, our_pawns, opp_mobility_area, p);
 
     // Queen mobility using opponent's accumulated attack maps
-    const our_q = evaluateQueenMobilityGeneric(state, our_pieces, our_mob_area, their.attacks, p);
-    const their_q = evaluateQueenMobilityGeneric(state, opp_pieces, opp_mob_area, our.attacks, p);
+    const our_q = evaluateQueenMobilityGeneric(state, our_pieces, our_mobility_area, their.attacks, p);
+    const their_q = evaluateQueenMobilityGeneric(state, opp_pieces, opp_mobility_area, our.attacks, p);
 
     const phase = @min(our.phase + their.phase, max_phase_mg);
     const total = our.score.add(our_q).sub(their.score).sub(their_q).add(p.tempo);
     return total.taper(phase);
 }
+
+// ==============================================================================
+// Trace evaluation (debug-only, not hot path)
+// ==============================================================================
+
 pub fn evaluate(state: *const State) i32 {
-    return evaluateGeneric(state, &params_mod.default_params);
+    const raw = evaluateGeneric(state, &params_mod.default_params);
+    if (raw == 0) return 0;
+    // raw is from the side-to-move's perspective; the favored ("strong") side
+    // is whoever the score points at. If that side cannot force mate with its
+    // material, the edge is unconvertible -> score it as the draw it is.
+    const strong: Color = if (raw > 0) state.to_move else ~state.to_move;
+    if (state.cannotForceWin(strong)) return 0;
+    return raw;
 }
 
 pub fn evaluateWithParams(state: *const State, p: *const Params) i32 {
@@ -612,10 +618,6 @@ pub fn evaluateWithParams(state: *const State, p: *const Params) i32 {
 pub fn evaluateWithParamsF64(state: *const State, p: *const params_mod.ParamsF64) f64 {
     return evaluateGeneric(state, p);
 }
-
-// ==============================================================================
-// Trace evaluation (debug-only, not hot path)
-// ==============================================================================
 
 pub const EvalTrace = struct {
     material: [2]Score,
@@ -662,7 +664,7 @@ pub const EvalTrace = struct {
     }
 };
 
-// Trace variant of evaluateColorGeneric. Not parametric — always references
+// Trace variant of evaluateColorGeneric. Not parametric: always references
 // default_params directly, since the trace is a debug tool and does not need
 // to reflect in-flight tuning state.
 fn evaluateColorTrace(
@@ -711,7 +713,6 @@ fn evaluateColorTrace(
     const our_rq = (state.pieceBitboard(piece.rook).bits | our_queens_bb) & our_pieces;
     const occ_without_our_rq = Bitboard{ .bits = occupied ^ our_rq };
 
-    // --- Pawns ---
     {
         var pawns = our_pawns_bb;
         const pawn_count: i32 = @intCast(pawns.popCount());
@@ -727,7 +728,10 @@ fn evaluateColorTrace(
         while (pawns.next()) |s| {
             const file: Square = s % 8;
             const rank: Square = s / 8;
-            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black)
+                @intCast((7 - rank) * 8 + file)
+            else
+                s;
             pst_score = pst_score.add(dp.pst[piece.pawn][sq]);
 
             const connected = blk: {
@@ -749,7 +753,10 @@ fn evaluateColorTrace(
 
             const ahead_mask = computePassedPawnMask(c, file, rank);
             if ((opp_pawns_bb.bits & ahead_mask) == 0) {
-                const passed_rank = if (c == Colors.white) rank else 7 - rank;
+                const passed_rank = if (c == Colors.white)
+                    rank
+                else
+                    7 - rank;
                 passed_pawns_score = passed_pawns_score.add(dp.passed_pawn_bonus[passed_rank]);
 
                 const is_protected = blk: {
@@ -847,7 +854,6 @@ fn evaluateColorTrace(
         }
     }
 
-    // --- Knights ---
     {
         var knights = state.pieceBitboard(piece.knight).bitAnd(u64, our_pieces);
         const knight_count: i32 = @intCast(knights.popCount());
@@ -855,15 +861,18 @@ fn evaluateColorTrace(
         phase += knight_count * phase_weights[piece.knight];
 
         while (knights.next()) |s| {
-            const file: u3 = @intCast(s % 8);
-            const rank: u3 = @intCast(s / 8);
-            const sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - rank) * 8 + file) else s;
+            const file: Square = @intCast(s % 8);
+            const rank: Square = @intCast(s / 8);
+            const sq: Square = if (c == Colors.black)
+                @intCast((@as(Square, 7) - rank) * 8 + file)
+            else
+                s;
             pst_score = pst_score.add(dp.pst[piece.knight][sq]);
 
             const knight_atk = movegen.knight_move_mask[s];
             attacks.knight |= knight_atk;
-            const mob = knight_atk & mobility_area;
-            const move_count = @popCount(mob);
+            const mobility = knight_atk & mobility_area;
+            const move_count = @popCount(mobility);
             mobility_score = mobility_score.add(dp.mobility_bonus[0][move_count]);
 
             if (isOutpost(c, file, rank, opp_pawns_bb) and
@@ -874,7 +883,6 @@ fn evaluateColorTrace(
         }
     }
 
-    // --- Bishops ---
     {
         var bishops = state.pieceBitboard(piece.bishop).bitAnd(u64, our_pieces);
         const bishop_count: i32 = @intCast(bishops.popCount());
@@ -888,13 +896,16 @@ fn evaluateColorTrace(
         while (bishops.next()) |s| {
             const rank: Square = s / 8;
             const file: Square = s % 8;
-            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black)
+                @intCast((7 - rank) * 8 + file)
+            else
+                s;
             pst_score = pst_score.add(dp.pst[piece.bishop][sq]);
 
             const bishop_atk = movegen.sliderMovesWithOccupancy(s, piece.bishop, occ_without_our_queens);
             attacks.bishop |= bishop_atk;
-            const mob = bishop_atk & mobility_area;
-            const move_count = @popCount(mob);
+            const mobility = bishop_atk & mobility_area;
+            const move_count = @popCount(mobility);
             mobility_score = mobility_score.add(dp.mobility_bonus[1][move_count]);
 
             // Bishop outpost (defended only)
@@ -906,25 +917,30 @@ fn evaluateColorTrace(
         }
     }
 
-    // --- Rooks ---
     {
         var rooks = state.pieceBitboard(piece.rook).bitAnd(u64, our_pieces);
         const rook_count: i32 = @intCast(rooks.popCount());
         material_score = material_score.add(dp.piece_values[piece.rook].mul(rook_count));
         phase += rook_count * phase_weights[piece.rook];
 
-        const seventh_rank: Square = if (c == Colors.white) 6 else 1;
+        const seventh_rank: Square = if (c == Colors.white)
+            6
+        else
+            1;
 
         while (rooks.next()) |s| {
             const file: Square = s % 8;
             const rank: Square = s / 8;
-            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black)
+                @intCast((7 - rank) * 8 + file)
+            else
+                s;
             pst_score = pst_score.add(dp.pst[piece.rook][sq]);
 
             const rook_atk = movegen.sliderMovesWithOccupancy(s, piece.rook, occ_without_our_rq);
             attacks.rook |= rook_atk;
-            const mob = rook_atk & mobility_area;
-            const move_count = @popCount(mob);
+            const mobility = rook_atk & mobility_area;
+            const move_count = @popCount(mobility);
             mobility_score = mobility_score.add(dp.mobility_bonus[2][move_count]);
 
             const fmask = file_masks[file];
@@ -942,7 +958,6 @@ fn evaluateColorTrace(
         }
     }
 
-    // --- Queens (material + PST only, mobility deferred) ---
     {
         var queens = state.pieceBitboard(piece.queen).bitAnd(u64, our_pieces);
         const queen_count: i32 = @intCast(queens.popCount());
@@ -952,29 +967,40 @@ fn evaluateColorTrace(
         while (queens.next()) |s| {
             const rank: Square = s / 8;
             const file: Square = s % 8;
-            const sq: Square = if (c == Colors.black) @intCast((7 - rank) * 8 + file) else s;
+            const sq: Square = if (c == Colors.black)
+                @intCast((7 - rank) * 8 + file)
+            else
+                s;
             pst_score = pst_score.add(dp.pst[piece.queen][sq]);
         }
     }
 
-    // --- King ---
     {
         const king_bb = state.pieceBitboard(piece.king).bitAnd(u64, our_pieces);
         const king_sq: Square = @intCast(@ctz(king_bb.bits));
-        const king_file: u3 = @intCast(king_sq % 8);
-        const king_rank: u3 = @intCast(king_sq / 8);
-        const pst_sq: Square = if (c == Colors.black) @intCast((@as(Square, 7) - king_rank) * 8 + king_file) else king_sq;
+        const king_file: Square = @intCast(king_sq % 8);
+        const king_rank: Square = @intCast(king_sq / 8);
+        const pst_sq: Square = if (c == Colors.black)
+            @intCast((@as(Square, 7) - king_rank) * 8 + king_file)
+        else
+            king_sq;
         pst_score = pst_score.add(dp.pst[piece.king][pst_sq]);
 
         const on_back_ranks = if (c == Colors.white) king_rank <= 1 else king_rank >= 6;
         if (on_back_ranks) {
             const shield_rank: Square = if (c == Colors.white) @as(Square, king_rank) + 1 else @as(Square, king_rank) - 1;
-            const min_file: u3 = if (king_file > 0) king_file - 1 else 0;
-            const max_file: u3 = if (king_file < 7) king_file + 1 else 7;
+            const min_file: Square = if (king_file > 0)
+                king_file - 1
+            else
+                0;
+            const max_file: Square = if (king_file < 7)
+                king_file + 1
+            else
+                7;
 
-            var f: u4 = min_file;
+            var f: Square = min_file;
             while (f <= max_file) : (f += 1) {
-                const shield_sq: Square = @as(Square, @as(u3, @intCast(f))) + shield_rank * 8;
+                const shield_sq: Square = f + shield_rank * 8;
                 const shield_mask: u64 = @as(u64, 1) << shield_sq;
                 if ((our_pawns_bb.bits & shield_mask) != 0) {
                     king_safety_score = king_safety_score.add(dp.pawn_shield);
@@ -1014,8 +1040,8 @@ fn evaluateQueenMobilityTrace(
         const bishop_moves = movegen.sliderMoves(state, s, piece.bishop);
         const rook_moves = movegen.sliderMoves(state, s, piece.rook);
         const queen_atk = bishop_moves | rook_moves;
-        const mob = queen_atk & mobility_area & ~enemy_minor_rook;
-        const move_count = @popCount(mob);
+        const mobility = queen_atk & mobility_area & ~enemy_minor_rook;
+        const move_count = @popCount(mobility);
         score = score.add(params_mod.default_params.mobility_bonus[3][move_count]);
     }
     return score;
@@ -1107,21 +1133,46 @@ pub const HistoryTable = struct {
         } ** 64,
     } ** 2,
 
+    const max_history: i32 = 16384;
+
     pub fn get(self: *const HistoryTable, color: Color, from: Square, to: Square) i32 {
         return self.table[color][from][to];
     }
 
-    const max_history: i32 = 16384;
-
     pub fn update(self: *HistoryTable, color: Color, from: Square, to: Square, bonus: i32) void {
         const entry = &self.table[color][from][to];
         // Gravity formula: bonus is damped as value approaches max_history
-        // This provides natural aging — large values get smaller effective bonuses
+        // This provides natural aging: large values get smaller effective bonuses
         entry.* += bonus - @divTrunc(entry.* * @as(i32, @intCast(@abs(bonus))), max_history);
     }
 
     pub fn clear(self: *HistoryTable) void {
         self.table = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2;
+    }
+};
+
+// Continuation history: [prev_piece_to][cur_piece_to] -> score. Conditions a
+// quiet move's score on the move that led to this position. The piece-to index
+// is (color*6 + piece)*64 + to, range 0..767 (12 piece kinds x 64 squares).
+// ~2.25 MB, so it is always heap-allocated and zeroed via clear() (the default
+// table is undefined to avoid a multi-MB comptime initializer).
+pub const ContHistTable = struct {
+    table: [768][768]i32 = undefined,
+
+    const max_history: i32 = 16384;
+
+    pub fn get(self: *const ContHistTable, prev_pt: u16, cur_pt: u16) i32 {
+        return self.table[prev_pt][cur_pt];
+    }
+
+    pub fn update(self: *ContHistTable, prev_pt: u16, cur_pt: u16, bonus: i32) void {
+        const entry = &self.table[prev_pt][cur_pt];
+        // Gravity update identical to HistoryTable.
+        entry.* += bonus - @divTrunc(entry.* * @as(i32, @intCast(@abs(bonus))), max_history);
+    }
+
+    pub fn clear(self: *ContHistTable) void {
+        @memset(std.mem.asBytes(self), 0);
     }
 };
 
@@ -1180,6 +1231,11 @@ pub fn scoreMove(ctx: *const MoveList.SortCtx, m: Move) i32 {
             ((end_rank == 7 and ctx.color == Colors.white) or (end_rank == 0 and ctx.color == Colors.black));
         if (!is_promotion) {
             score += @divTrunc(ctx.history.?.get(ctx.color, m.start, m.end), 32);
+            // Continuation history: score conditioned on the previous move.
+            if (ctx.cont1) |ch| {
+                const cur_pt: u16 = (@as(u16, ctx.color) * 6 + @as(u16, p)) * 64 + @as(u16, m.end);
+                score += @divTrunc(ch.get(ctx.prev1_pt, cur_pt), 32);
+            }
         }
     }
 
