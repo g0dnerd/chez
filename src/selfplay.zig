@@ -22,6 +22,9 @@ const draw_adjudication_count: u16 = 8;
 const draw_adjudication_min_ply: u16 = 80;
 // Hard cap on game length so worst-case games can't run to the 50-move rule at full depth.
 const max_game_plies: u16 = 200;
+// Per-worker TT size: 2^21 buckets = 8M entries (~128 MB). Larger than the engine
+// default (2^18) to cut re-search at the deep, long searches self-play runs.
+const tt_buckets_bits: u6 = 21;
 
 const GameOutcome = enum(u8) {
     white_wins = 0,
@@ -238,7 +241,7 @@ const WorkerCtx = struct {
 };
 
 fn workerLoop(ctx: *WorkerCtx) void {
-    var ttable = engine.search.TranspositionTable.init(std.heap.page_allocator) catch return;
+    var ttable = engine.search.TranspositionTable.initSized(std.heap.page_allocator, tt_buckets_bits) catch return;
     defer ttable.deinit();
 
     var rng = std.Random.Pcg.init(ctx.seed);

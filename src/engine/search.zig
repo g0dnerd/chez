@@ -313,18 +313,23 @@ pub const TranspositionTable = struct {
     entries: []PackedTTEntry,
     alloc: std.mem.Allocator,
     generation: u8 = 0,
+    bucket_mask: u64,
 
     // Multi-bucket transposition table: 4 entries per bucket = 1 cache line (64 bytes)
     const bucket_size: usize = 4;
-    const num_buckets_bits = 18;
-    const num_buckets: usize = 1 << num_buckets_bits;
-    const bucket_mask: u64 = num_buckets - 1;
-    const num_entries: usize = num_buckets * bucket_size;
+    const default_buckets_bits: u6 = 18;
 
     pub fn init(alloc: std.mem.Allocator) !TranspositionTable {
-        const entries = try alloc.alloc(PackedTTEntry, num_entries);
+        return initSized(alloc, default_buckets_bits);
+    }
+
+    // Allocate 2^buckets_bits buckets (bucket_size entries each). Larger tables
+    // cut re-search at high depth; self-play uses this to size up.
+    pub fn initSized(alloc: std.mem.Allocator, buckets_bits: u6) !TranspositionTable {
+        const num_buckets: usize = @as(usize, 1) << buckets_bits;
+        const entries = try alloc.alloc(PackedTTEntry, num_buckets * bucket_size);
         @memset(entries, PackedTTEntry{});
-        return .{ .entries = entries, .alloc = alloc };
+        return .{ .entries = entries, .alloc = alloc, .bucket_mask = num_buckets - 1 };
     }
 
     pub fn newSearch(self: *TranspositionTable) void {
@@ -336,7 +341,7 @@ pub const TranspositionTable = struct {
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
-        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
 
         for (0..bucket_size) |i| {
             const entry = &self.entries[base + i];
@@ -351,7 +356,7 @@ pub const TranspositionTable = struct {
     }
 
     fn store(self: *TranspositionTable, hash: u64, score: i32, depth: u8, flag: TranspositionFlag, best_move: ?Move) void {
-        const base: usize = @intCast((hash & bucket_mask) * bucket_size);
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
         const gen = self.generation;
 
         var victim_idx: usize = base;
