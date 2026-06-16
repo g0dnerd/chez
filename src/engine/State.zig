@@ -595,6 +595,21 @@ pub fn hasInsufficientMaterial(self: *const State) bool {
     return false;
 }
 
+// Returns true if color `c` cannot force checkmate with its material alone.
+// A king plus at most a single minor piece (no pawns, rooks, or queens) can
+// never deliver mate, regardless of the opponent's material. Per-side companion
+// to hasInsufficientMaterial(); used to scale a phantom material edge to a draw.
+pub fn cannotForceWin(self: *const State, c: Color) bool {
+    const own = self.colorBitboard(c);
+    if (!self.pieceBitboard(piece.pawn).bitAnd(Bitboard, own).isEmpty()) return false;
+    if (!self.pieceBitboard(piece.rook).bitAnd(Bitboard, own).isEmpty()) return false;
+    if (!self.pieceBitboard(piece.queen).bitAnd(Bitboard, own).isEmpty()) return false;
+
+    const knights = self.pieceBitboard(piece.knight).bitAnd(Bitboard, own);
+    const bishops = self.pieceBitboard(piece.bishop).bitAnd(Bitboard, own);
+    return knights.popCount() + bishops.popCount() <= 1;
+}
+
 pub fn makeMove(self: *State, m: Move, c: Color, p: Piece) UndoInfo {
     return self.makeMoveInner(m, c, p, true);
 }
@@ -1481,4 +1496,28 @@ test "insufficient material: K+R vs K is sufficient" {
 test "insufficient material: K+P vs K is sufficient" {
     const state = try State.fromFen("8/8/4k3/8/8/3K4/P7/8 w - - 0 1");
     try expect(!state.hasInsufficientMaterial());
+}
+
+test "cannotForceWin: K+B vs K+P (bishop side cannot win)" {
+    // White: K+B, Black: K+P. White is up material but can never mate.
+    const state = try State.fromFen("8/8/4k3/4p3/8/3K4/8/5B2 w - - 0 1");
+    try expect(state.cannotForceWin(Colors.white));
+    try expect(!state.cannotForceWin(Colors.black)); // black has a pawn
+}
+
+test "cannotForceWin: K+B+P vs K can win" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/P7/5B2 w - - 0 1");
+    try expect(!state.cannotForceWin(Colors.white));
+}
+
+test "cannotForceWin: K+R vs K can win" {
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/R7 w - - 0 1");
+    try expect(!state.cannotForceWin(Colors.white));
+}
+
+test "cannotForceWin: K+N+N not caught by minimal rule" {
+    // Two knights genuinely cannot force mate, but the minimal rule only covers
+    // a single minor; KNN is a documented future extension, so this returns false.
+    const state = try State.fromFen("8/8/4k3/8/8/3K4/8/NN6 w - - 0 1");
+    try expect(!state.cannotForceWin(Colors.white));
 }

@@ -590,7 +590,14 @@ fn evaluateGeneric(state: *const State, p: anytype) @TypeOf(p.piece_values[0].ta
 }
 
 pub fn evaluate(state: *const State) i32 {
-    return evaluateGeneric(state, &params_mod.default_params);
+    const raw = evaluateGeneric(state, &params_mod.default_params);
+    if (raw == 0) return 0;
+    // raw is from the side-to-move's perspective; the favored ("strong") side
+    // is whoever the score points at. If that side cannot force mate with its
+    // material, the edge is unconvertible -> score it as the draw it is.
+    const strong: Color = if (raw > 0) state.to_move else ~state.to_move;
+    if (state.cannotForceWin(strong)) return 0;
+    return raw;
 }
 
 pub fn evaluateWithParams(state: *const State, p: *const Params) i32 {
