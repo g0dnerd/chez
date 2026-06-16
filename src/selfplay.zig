@@ -10,6 +10,9 @@ const max_game_records = 512;
 const default_depth: u8 = 8;
 const default_games: usize = 1000;
 const default_threads: usize = 4;
+// Upper bound on selfplay worker threads (sizes the fixed context/thread arrays).
+// High enough to saturate large many-core data-gen boxes.
+const max_threads: usize = 256;
 const random_plies: u16 = 8;
 const skip_plies: u16 = 16;
 const score_filter: i32 = 3000;
@@ -328,7 +331,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
     try stderr.flush();
 
-    const actual_threads = @min(num_threads, 16);
+    const actual_threads = @min(num_threads, max_threads);
     const games_per_worker = num_games / actual_threads;
     const remainder = num_games % actual_threads;
 
@@ -342,7 +345,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var shared_positions = std.atomic.Value(usize).init(0);
     var shared_games = std.atomic.Value(usize).init(0);
 
-    var contexts: [16]WorkerCtx = undefined;
+    var contexts: [max_threads]WorkerCtx = undefined;
     for (0..actual_threads) |i| {
         contexts[i] = .{
             .games_per_worker = games_per_worker + @as(usize, if (i < remainder) 1 else 0),
@@ -361,7 +364,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     // Spawn worker threads (thread 0 runs on main)
-    var threads: [16]std.Thread = undefined;
+    var threads: [max_threads]std.Thread = undefined;
     var spawned: usize = 0;
     for (1..actual_threads) |i| {
         threads[i] = std.Thread.spawn(.{}, workerLoop, .{&contexts[i]}) catch break;
