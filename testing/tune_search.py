@@ -123,17 +123,23 @@ def parse_score(output):
     score_re = re.compile(
         r"Score of plus vs minus: (\d+) - (\d+) - (\d+)"
     )
+    # fastchess (cutechess format) prints the running tally after EVERY game,
+    # so take the LAST match (final result), not the first (that was game 1 --
+    # which collapsed every step to a 1-game, pure-noise signal).
+    last = None
     for line in output.splitlines():
         m = score_re.search(line)
         if m:
-            wins = int(m.group(1))
-            losses = int(m.group(2))
-            draws = int(m.group(3))
-            total = wins + losses + draws
-            if total == 0:
-                return 0.5
-            return (wins + draws / 2) / total
-    return 0.5
+            last = m
+    if last is None:
+        return 0.5
+    wins = int(last.group(1))
+    losses = int(last.group(2))
+    draws = int(last.group(3))
+    total = wins + losses + draws
+    if total == 0:
+        return 0.5
+    return (wins + draws / 2) / total
 
 
 def spsa_step_sizes(k, a, c, alpha, gamma, big_a):
