@@ -1,0 +1,8 @@
+# Latitude.sh fleet — 2x f4.metal.medium (AMD EPYC 4564P, 16c/32t @ 4.5 GHz)
+# Format: user@host [identity] [cost-$/hr]   (# comments and blank lines ignored)
+# Cost is per-hour and only used by `monitor` (summed into the dashboard).
+# 1.52 = f4.metal.medium effective hourly (listed $0.76 doubled) — adjust to your billing.
+debian@64.34.85.167    ~/.ssh/cloud   1.52
+debian@67.213.113.201  ~/.ssh/cloud   1.52
+root@80.240.18.248 ~/.ssh/cloud 0.253
+root@136.244.84.30 ~/.ssh/cloud 0.253
