@@ -689,6 +689,12 @@ fn quiescence(
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
 const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
 
+// SEE pruning of losing captures in the main search at shallow depth: at
+// depth <= see_prune_depth, skip non-first captures whose SEE loss exceeds
+// see_prune_margin * depth (SEE units, pawn ~= 126). Tunable for screening.
+const see_prune_depth: i32 = 3;
+const see_prune_margin: i32 = 0;
+
 const SearchContext = struct {
     tt: *TranspositionTable,
     killers: *KillerTable,
@@ -910,6 +916,13 @@ fn negamax(
             !in_check and i > 0 and !is_capture and !is_promotion and !is_killer and
             combined_hist < -search_ctx.shared.search_params.histprune_margin * @as(i32, depth);
 
+        // SEE pruning: at shallow depth, skip captures that lose material badly.
+        // Only a higher-value attacker can lose (victim >= attacker => SEE >= 0).
+        const should_see_prune = @as(i32, depth) <= see_prune_depth and is_capture and i > 0 and
+            !in_check and !is_promotion and
+            evaluation.piece_values_mg[p] > evaluation.piece_values_mg[state.mailbox[m.end].?] and
+            movegen.staticExchangeEvaluation(state, m) < -see_prune_margin * @as(i32, depth);
+
         const undo = state.makeMove(m, to_move, p);
         if (search_ctx.shared.network) |net| {
             nnue.recordMove(search_ctx.acc_stack, ply + 1, state, net, m, to_move, p, &undo);
@@ -932,6 +945,11 @@ fn negamax(
                 continue;
             }
             if (should_histprune) {
+                search_ctx.history.pop();
+                state.unmakeMove(m, to_move, p, undo);
+                continue;
+            }
+            if (should_see_prune) {
                 search_ctx.history.pop();
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
