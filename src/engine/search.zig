@@ -645,17 +645,11 @@ fn quiescence(
         const m = captures.pickNext(i);
         const p = state.mailbox[m.start].?;
 
-        // SEE + delta pruning: skip captures that can't help. Only a
-        // higher-value attacker can lose material (victim >= attacker =>
-        // SEE >= 0), so the SEE cost is paid only there. Not reached when in
-        // check (that path is handled above and searches all evasions).
+        // SEE + delta pruning: skip captures that can't help. Not reached when
+        // in check (that path is handled above and searches all evasions).
         if (state.mailbox[m.end]) |captured_piece| {
             // SEE pruning: drop captures that lose material outright.
-            if (evaluation.piece_values_mg[p] > evaluation.piece_values_mg[captured_piece] and
-                movegen.staticExchangeEvaluation(state, m) < 0)
-            {
-                continue;
-            }
+            if (seeLoses(state, m, 0)) continue;
             // Delta pruning: skip captures that can't possibly improve alpha.
             var gain = evaluation.piece_values_mg[captured_piece];
             if (m.is_promotion) {
@@ -690,10 +684,21 @@ fn quiescence(
 const lmp_thresholds = [4]u8{ 4, 5, 7, 11 };
 
 // SEE pruning of losing captures in the main search at shallow depth: at
-// depth <= see_prune_depth, skip non-first captures whose SEE loss exceeds
-// see_prune_margin * depth (SEE units, pawn ~= 126). Tunable for screening.
+// depth <= see_prune_depth, skip non-first captures that lose more than
+// see_prune_margin SEE units (pawn ~= 126). Tunable for screening.
 const see_prune_depth: i32 = 3;
 const see_prune_margin: i32 = 0;
+
+// True when capturing move `m` loses material per static exchange evaluation:
+// its SEE is below `threshold`. Only a higher-value attacker can lose (victim
+// >= attacker => SEE >= 0), so the exchange is evaluated only there. Caller
+// guarantees `m` captures a piece sitting on m.end.
+fn seeLoses(state: *const State, m: Move, threshold: i32) bool {
+    const attacker = state.mailbox[m.start].?;
+    const victim = state.mailbox[m.end].?;
+    return evaluation.piece_values_mg[attacker] > evaluation.piece_values_mg[victim] and
+        movegen.staticExchangeEvaluation(state, m) < threshold;
+}
 
 const SearchContext = struct {
     tt: *TranspositionTable,
@@ -917,11 +922,14 @@ fn negamax(
             combined_hist < -search_ctx.shared.search_params.histprune_margin * @as(i32, depth);
 
         // SEE pruning: at shallow depth, skip captures that lose material badly.
-        // Only a higher-value attacker can lose (victim >= attacker => SEE >= 0).
-        const should_see_prune = @as(i32, depth) <= see_prune_depth and is_capture and i > 0 and
-            !in_check and !is_promotion and
-            evaluation.piece_values_mg[p] > evaluation.piece_values_mg[state.mailbox[m.end].?] and
-            movegen.staticExchangeEvaluation(state, m) < -see_prune_margin * @as(i32, depth);
+        // Evaluated on the pre-move state, so we prune before makeMove and skip
+        // the accumulator update entirely. Unlike the quiet-move prunes below, a
+        // losing capture is dropped even when it would give check.
+        if (@as(i32, depth) <= see_prune_depth and is_capture and i > 0 and
+            !in_check and !is_promotion and seeLoses(state, m, -see_prune_margin))
+        {
+            continue;
+        }
 
         const undo = state.makeMove(m, to_move, p);
         if (search_ctx.shared.network) |net| {
@@ -945,11 +953,6 @@ fn negamax(
                 continue;
             }
             if (should_histprune) {
-                search_ctx.history.pop();
-                state.unmakeMove(m, to_move, p, undo);
-                continue;
-            }
-            if (should_see_prune) {
                 search_ctx.history.pop();
                 state.unmakeMove(m, to_move, p, undo);
                 continue;
