@@ -14,15 +14,29 @@
 #             into one validated dataset (via merge_datasets.fish).
 #
 # Hosts come from a file (--hosts) and/or repeated --host flags. A hosts file
-# has one entry per line: "user@host [identity_path] [cost]". Fields after the
-# host are an identity path and/or a numeric per-host cost in $/HOUR, in any
-# order (a number is the cost, anything else the key). Blank lines and lines
-# starting with # are ignored; hosts without their own key use --identity.
-# The cost column is optional and only used by `monitor`, which sums it into a
-# $/hour total, a $/1M-positions figure, and a projected cost on each ETA.
+# has one entry per line:
+#   "user@host [identity_path] [cost] [port=N] [repo=PATH] [build=FLAGS]".
+# Fields after the host are matched by shape, in any order: a number is the
+# per-host cost in $/HOUR, a key=value token is an option (port=N for a
+# non-default ssh port, repo=/build= below), anything else the identity key.
+# Blank lines and lines starting with # are ignored; hosts
+# without their own key use --identity. The cost column is optional and only
+# used by `monitor`, which sums it into a $/hour total, a $/1M-positions
+# figure, and a projected cost on each ETA.
+#
+# A repo= token switches that host to build-on-remote: instead of uploading a
+# binary, the box builds selfplay itself from the checkout at PATH (use build=
+# for flags it needs, e.g. -Dgb10=true on the DGX Spark). Everything else --
+# monitor, collect -- is identical to upload hosts.
+#
+# A host of localhost/127.0.0.1 is this machine: every step runs directly via
+# bash/cp instead of ssh/scp, so no sshd or loopback key is needed. It joins the
+# fleet like any other host (identity/port ignored).
 #   # fleet.txt
 #   debian@64.34.81.41   ~/.ssh/cloud   1.52
 #   debian@64.34.81.42   ~/.ssh/cloud
+#   paul@192.168.178.22  ~/.ssh/cloud   0.0  repo=~/misc/chez  build=-Dgb10=true
+#   localhost            0.0
 #
 # Examples:
 #   scripts/fleet_selfplay.sh start  --hosts fleet.txt --identity ~/.ssh/cloud \
@@ -82,6 +96,9 @@ done
 declare -a HOSTS=()
 declare -a KEYS=()
 declare -a COSTS=()
+declare -a PORTS=()       # ssh port, empty => default 22
+declare -a REPOS=()       # remote checkout path; set => build on that host
+declare -a BUILDARGS=()   # extra 'zig build' flags for remote-build hosts
 
 if [[ -n "$hosts_file" ]]; then
   [[ -f "$hosts_file" ]] || die "hosts file not found: $hosts_file"
@@ -89,17 +106,26 @@ if [[ -n "$hosts_file" ]]; then
     line="${line%%#*}"                       # strip comments
     line="$(echo "$line" | xargs)"           # trim whitespace
     [[ -z "$line" ]] && continue
-    # Fields after the host are an identity path and/or a numeric cost ($/hour),
-    # in any order: a token matching a number is the cost, else the identity.
+    # Fields after the host: a numeric token is the cost ($/hour), a key=value
+    # token is an option (port=N, repo=PATH, build=FLAGS), anything else the
+    # identity. A repo= token switches the host to build-on-remote (no binary
+    # upload), e.g. the DGX Spark which needs build=-Dgb10=true. Order is free.
     # shellcheck disable=SC2206
     fields=($line)
-    _host=${fields[0]}; _key=""; _cost=""
+    _host=${fields[0]}; _key=""; _cost=""; _port=""; _repo=""; _build=""
     for f in "${fields[@]:1}"; do
-      if [[ "$f" =~ ^\$?[0-9]+(\.[0-9]+)?$ ]]; then _cost=${f#\$}; else _key=$f; fi
+      if [[ "$f" =~ ^\$?[0-9]+(\.[0-9]+)?$ ]]; then _cost=${f#\$}
+      elif [[ "$f" == port=* ]]; then _port=${f#port=}
+      elif [[ "$f" == repo=* ]]; then _repo=${f#repo=}
+      elif [[ "$f" == build=* ]]; then _build=${f#build=}
+      else _key=$f; fi
     done
     HOSTS+=("$_host")
     KEYS+=("${_key:-$identity}")
     COSTS+=("$_cost")
+    PORTS+=("$_port")
+    REPOS+=("$_repo")
+    BUILDARGS+=("$_build")
   done < "$hosts_file"
 fi
 
@@ -108,25 +134,43 @@ for h in "${cli_hosts[@]:-}"; do
   HOSTS+=("$h")
   KEYS+=("$identity")
   COSTS+=("")
+  PORTS+=("")
+  REPOS+=("")
+  BUILDARGS+=("")
 done
 
 [[ ${#HOSTS[@]} -gt 0 ]] || die "no hosts given (use --hosts FILE and/or --host USER@HOST)"
+
+# A loopback host means this machine: ssh_to/scp_from run locally (bash/cp), and
+# `start` passes --local to cloud_selfplay.sh. Lets this box join the fleet with
+# no sshd or loopback key.
+declare -a LOCAL=()
+for i in "${!HOSTS[@]}"; do
+  case "${HOSTS[$i]##*@}" in
+    localhost|127.0.0.1|::1) LOCAL+=(1);;
+    *) LOCAL+=(0);;
+  esac
+done
 
 # ---- ssh/scp helpers ---------------------------------------------------------
 
 # ssh_to <index> <remote command...>
 ssh_to() {
   local i="$1"; shift
+  [[ "${LOCAL[$i]}" -eq 1 ]] && { bash -c "$*"; return; }
   local opts=(-o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   [[ -n "${KEYS[$i]}" ]] && opts+=(-i "${KEYS[$i]}")
+  [[ -n "${PORTS[$i]}" ]] && opts+=(-p "${PORTS[$i]}")
   command ssh "${opts[@]}" "${HOSTS[$i]}" "$@"
 }
 
 # scp_from <index> <remote path> <local path>
 scp_from() {
   local i="$1" remote="$2" local="$3"
+  [[ "${LOCAL[$i]}" -eq 1 ]] && { cp -f "$remote" "$local"; return; }
   local opts=(-o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   [[ -n "${KEYS[$i]}" ]] && opts+=(-i "${KEYS[$i]}")
+  [[ -n "${PORTS[$i]}" ]] && opts+=(-P "${PORTS[$i]}")
   command scp "${opts[@]}" "${HOSTS[$i]}:$remote" "$local"
 }
 
@@ -134,7 +178,13 @@ scp_from() {
 
 cmd_start() {
   [[ -x "$cloud" ]] || die "missing $cloud"
-  if [[ "$do_build" -eq 1 ]]; then
+  # Build locally only if some host needs an uploaded binary; remote-build hosts
+  # (repo= set) build for themselves, so a fleet of only those skips it.
+  local need_local_build=0 i
+  for i in "${!HOSTS[@]}"; do
+    [[ -z "${REPOS[$i]}" ]] && need_local_build=1
+  done
+  if [[ "$do_build" -eq 1 && "$need_local_build" -eq 1 ]]; then
     echo ">> building selfplay once locally (zig build)" >&2
     zig build || die "local build failed"
   fi
@@ -171,7 +221,13 @@ cmd_start() {
   for i in "${to_launch[@]}"; do
     (
       args=(--host "${HOSTS[$i]}" --no-build --remote-dir "$remote_dir")
+      [[ "${LOCAL[$i]}" -eq 1 ]] && args+=(--local)
       [[ -n "${KEYS[$i]}" ]] && args+=(--identity "${KEYS[$i]}")
+      [[ -n "${PORTS[$i]}" ]] && args+=(--port "${PORTS[$i]}")
+      if [[ -n "${REPOS[$i]}" ]]; then
+        args+=(--remote-build --repo "${REPOS[$i]}")
+        [[ -n "${BUILDARGS[$i]}" ]] && args+=(--build-args "${BUILDARGS[$i]}")
+      fi
       [[ -n "$eval_file" ]] && args+=(--eval "$eval_file")
       args+=(--)
       args+=("${passthrough[@]}")
@@ -210,7 +266,7 @@ cmd_monitor() {
 
   local nodes=() i
   for i in "${!HOSTS[@]}"; do
-    nodes+=(--node "${HOSTS[$i]}|${KEYS[$i]}|${COSTS[$i]:-}")
+    nodes+=(--node "${HOSTS[$i]}|${KEYS[$i]}|${COSTS[$i]:-}|${PORTS[$i]:-}")
   done
   local extra=()
   [[ "$once" -eq 1 ]] && extra+=(--once)
