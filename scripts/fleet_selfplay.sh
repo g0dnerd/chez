@@ -10,8 +10,10 @@
 #             every host (delegates per host to cloud_selfplay.sh --no-build).
 #   monitor   live aggregate dashboard: per-box + total positions and pos/s,
 #             refreshing until Ctrl-C (--once for a single snapshot).
-#   collect   stop selfplay on every host, download every shard, and merge them
-#             into one validated dataset (via merge_datasets.fish).
+#   collect   stop selfplay on every host, download the current run's shards,
+#             merge them into one validated dataset (via merge_datasets.fish),
+#             and prune stale shard dirs left by past runs (keeping the one it
+#             just pulled).
 #
 # Hosts come from a file (--hosts) and/or repeated --host flags. A hosts file
 # has one entry per line:
@@ -155,13 +157,18 @@ done
 # ---- ssh/scp helpers ---------------------------------------------------------
 
 # ssh_to <index> <remote command...>
+# The command is fed to a remote `bash -s` over stdin rather than handed to the
+# host's login shell. Some boxes log in with fish (e.g. the DGX Spark), which
+# can't parse the bash payloads below (pkill chains, $(...), globs); piping into
+# bash -s runs them the same everywhere -- the same trick fleet_monitor.py uses.
 ssh_to() {
   local i="$1"; shift
-  [[ "${LOCAL[$i]}" -eq 1 ]] && { bash -c "$*"; return; }
+  local cmd="$*"
+  [[ "${LOCAL[$i]}" -eq 1 ]] && { bash -c "$cmd"; return; }
   local opts=(-o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
   [[ -n "${KEYS[$i]}" ]] && opts+=(-i "${KEYS[$i]}")
   [[ -n "${PORTS[$i]}" ]] && opts+=(-p "${PORTS[$i]}")
-  command ssh "${opts[@]}" "${HOSTS[$i]}" "$@"
+  command ssh "${opts[@]}" "${HOSTS[$i]}" bash -s <<<"$cmd"
 }
 
 # scp_from <index> <remote path> <local path>
@@ -303,8 +310,18 @@ cmd_collect() {
   local i
   for i in "${!HOSTS[@]}"; do
     (
-      files=$(ssh_to "$i" 'ls /tmp/selfplay_shards.*/shard_*.bin 2>/dev/null')
+      # Only the NEWEST selfplay_shards.* dir -- the current run. shard_selfplay.sh
+      # leaves its tmpdir behind whenever it's killed (it only cleans up on clean
+      # completion, and long data-gen runs are always pkill'd), so a box accrues
+      # one stale dir per past run. Globbing all of them downloaded every run's
+      # shard_0.bin onto the same local name (host{i}_shard_0.bin), clobbering to a
+      # single random stale shard. Picking the newest dir matches what `monitor`
+      # counts (it too reads the newest log), so the two agree.
+      newest=$(ssh_to "$i" 'ls -td /tmp/selfplay_shards.*/ 2>/dev/null | head -1')
+      [[ -z "$newest" ]] && { echo "   no shard on ${HOSTS[$i]}" >&2; exit 0; }
+      files=$(ssh_to "$i" "ls ${newest}shard_*.bin 2>/dev/null")
       [[ -z "$files" ]] && { echo "   no shard on ${HOSTS[$i]}" >&2; exit 0; }
+      local ok=1
       while IFS= read -r rf; do
         [[ -z "$rf" ]] && continue
         local base="host${i}_${rf##*/}"
@@ -312,8 +329,18 @@ cmd_collect() {
           echo "   ${HOSTS[$i]}:${rf##*/} -> $base ($(stat -c %s "$dldir/$base") bytes)" >&2
         else
           echo "   FAILED download ${HOSTS[$i]}:$rf" >&2
+          ok=0
         fi
       done <<<"$files"
+      # Prune every stale shard dir (all but the one we just pulled), so /tmp
+      # doesn't grow one dir per past run. Only when all of this host's downloads
+      # succeeded -- never delete remote data we failed to retrieve. The dir we
+      # collected is kept as a remote backup until the next run replaces it.
+      if [[ "$ok" -eq 1 ]]; then
+        local pruned
+        pruned=$(ssh_to "$i" "n=0; for d in /tmp/selfplay_shards.*/; do [ -d \"\$d\" ] || continue; [ \"\$d\" = '$newest' ] && continue; rm -rf \"\$d\" && n=\$((n+1)); done; echo \$n")
+        [[ "${pruned:-0}" -gt 0 ]] && echo "   pruned $pruned stale shard dir(s) on ${HOSTS[$i]}" >&2
+      fi
     ) &
   done
   wait
