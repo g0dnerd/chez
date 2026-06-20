@@ -24,6 +24,7 @@ const Args = struct {
     checkpoint: ?[]const u8,
     @"export": ?[]const u8,
     checkpoint_interval: ?u32,
+    loader_threads: ?usize,
 };
 
 const default_epochs: u32 = 50;
@@ -54,6 +55,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const lambda = args.lambda orelse default_lambda;
     const export_path = args.@"export" orelse "output.nnue";
     const checkpoint_interval = args.checkpoint_interval orelse default_checkpoint_interval;
+    const loader_threads = args.loader_threads orelse (std.Thread.getCpuCount() catch 4);
 
     var single_threaded: std.Io.Threaded = .init_single_threaded;
     const io = single_threaded.io();
@@ -67,6 +69,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("  batch_size: {d}\n", .{batch_size});
     try stderr.print("  lr: {d:.6}\n", .{lr});
     try stderr.print("  lambda: {d:.2}\n", .{lambda});
+    try stderr.print("  loader_threads: {d}\n", .{loader_threads});
     try stderr.flush();
 
     // GPU setup
@@ -100,7 +103,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer adam_dense.deinit();
 
     // Data loader
-    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda);
+    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda, loader_threads);
     defer loader.deinit();
 
     try stderr.print("Data: {d} records ({d} train, {d} val)\n", .{
@@ -124,7 +127,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (args.checkpoint) |ckpt_path| {
         const named_params = try model.namedParameters();
         defer allocator.free(named_params);
-        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &adam_ft);
+        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &.{ &adam_ft, &adam_dense });
         start_epoch = meta.epoch + 1;
         best_val_loss = meta.best_val_loss;
         adam_ft.step_count = meta.adam_step;
@@ -238,7 +241,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try ckpt_w.print("checkpoint_epoch{d}.ktml", .{epoch + 1});
             const ckpt_name = ckpt_w.buffered();
 
-            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &adam_ft, .{
+            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &.{ &adam_ft, &adam_dense }, .{
                 .epoch = epoch,
                 .step = adam_ft.step_count,
                 .learning_rate = adam_ft.config.lr,
