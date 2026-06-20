@@ -687,7 +687,7 @@ fn quiescence(
 }
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
-const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
+const lmp_thresholds = [4]u8{ 4, 5, 7, 11 };
 
 // SEE pruning of losing captures in the main search at shallow depth: at
 // depth <= see_prune_depth, skip non-first captures whose SEE loss exceeds
