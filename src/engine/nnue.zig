@@ -34,6 +34,9 @@ pub const fc2_out = 32;
 
 pub const max_active_features = 30;
 
+// SIMD width for accumulator (i16) passes.
+const ft_vec_len = std.simd.suggestVectorLength(i16) orelse 8;
+
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
 pub const format_version: u32 = 3;
@@ -443,8 +446,10 @@ fn applyDeltaPerspective(
     delta: *const StackDelta,
     net: *const Network,
 ) void {
-    @memcpy(child, parent);
-    if (delta.is_null) return;
+    if (delta.is_null) {
+        @memcpy(child, parent);
+        return;
+    }
 
     const own_king_raw: Square = if (perspective == Colors.white)
         delta.parent_white_king_sq
@@ -452,33 +457,65 @@ fn applyDeltaPerspective(
         delta.parent_black_king_sq;
     const own_king: u32 = if (perspective == Colors.black) flipSquare(own_king_raw) else own_king_raw;
 
-    // 1. Remove moved piece's parent feature (kings are not features).
+    // Gather the feature rows to add/subtract, then apply them in a single fused
+    // pass below. Every legal delta touches at most one "add" and two "sub"
+    // features (kings are not features, and castling -- a king move -- cannot
+    // also capture), so three optionals cover all cases. The previous code did
+    // a 256-wide memcpy followed by up to four separate in-place add/sub passes,
+    // each reloading and rewriting the whole accumulator; the fused pass reads
+    // parent and each weight row once and writes child once. Result is identical
+    // (integer add/sub reassociation).
+    var add0: ?*const [ft_out]i16 = null;
+    var sub0: ?*const [ft_out]i16 = null;
+    var sub1: ?*const [ft_out]i16 = null;
+
+    // Moved piece: remove parent feature, add child feature (promoted if applicable).
     if (delta.piece != piece.king) {
         const old_idx = computeFeatureIndex(own_king, delta.color, perspective, delta.piece, delta.move.start);
-        ops.subVec_i16(ft_out, child, &net.ft_weights[old_idx]);
-    }
-
-    // 2. Add moved piece's child feature (using promoted type if applicable).
-    if (delta.piece != piece.king) {
+        sub0 = &net.ft_weights[old_idx];
         const new_piece: Piece = if (delta.was_promotion) delta.promotion_piece else delta.piece;
         const new_idx = computeFeatureIndex(own_king, delta.color, perspective, new_piece, delta.move.end);
-        ops.addVec_i16(ft_out, child, &net.ft_weights[new_idx]);
+        add0 = &net.ft_weights[new_idx];
     }
 
-    // 3. Captured piece (opposite color, may be off m.end for en passant).
+    // Captured piece (opposite color, may be off m.end for en passant). sub0 is
+    // free iff the mover was a king (king moves skip the block above).
     if (delta.captured_piece) |cp| {
         const cap_color: Color = @intCast(~@as(u1, @intCast(delta.color)));
         const cap_idx = computeFeatureIndex(own_king, cap_color, perspective, cp, delta.captured_square);
-        ops.subVec_i16(ft_out, child, &net.ft_weights[cap_idx]);
+        if (sub0 == null) sub0 = &net.ft_weights[cap_idx] else sub1 = &net.ft_weights[cap_idx];
     }
 
-    // 4. Castling rook.
+    // Castling rook. Castling is a king move (so the moved-piece block above was
+    // skipped) and cannot capture, hence sub0/add0 are still free here -- assert
+    // it rather than rely on the invariant silently (a violation would drop a
+    // feature and slowly corrupt the accumulator).
     if (delta.was_castling) {
+        std.debug.assert(sub0 == null and add0 == null);
         const data = castling.castle_data[delta.color][delta.castling_side];
         const old_rook = computeFeatureIndex(own_king, delta.color, perspective, piece.rook, data.rook_from);
         const new_rook = computeFeatureIndex(own_king, delta.color, perspective, piece.rook, data.rook_to);
-        ops.subVec_i16(ft_out, child, &net.ft_weights[old_rook]);
-        ops.addVec_i16(ft_out, child, &net.ft_weights[new_rook]);
+        sub0 = &net.ft_weights[old_rook];
+        add0 = &net.ft_weights[new_rook];
+    }
+
+    // Single fused pass: child = parent + add0 - sub0 - sub1 (absent terms skipped).
+    // The optionals are loop-invariant, so the compiler specializes the loop body.
+    const L = ft_vec_len;
+    var i: usize = 0;
+    while (i + L <= ft_out) : (i += L) {
+        var v: @Vector(L, i16) = parent[i..][0..L].*;
+        if (add0) |a| v += @as(@Vector(L, i16), a[i..][0..L].*);
+        if (sub0) |s| v -= @as(@Vector(L, i16), s[i..][0..L].*);
+        if (sub1) |s| v -= @as(@Vector(L, i16), s[i..][0..L].*);
+        child[i..][0..L].* = v;
+    }
+    while (i < ft_out) : (i += 1) {
+        var x = parent[i];
+        if (add0) |a| x += a[i];
+        if (sub0) |s| x -= s[i];
+        if (sub1) |s| x -= s[i];
+        child[i] = x;
     }
 }
 

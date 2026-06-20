@@ -47,6 +47,7 @@ const SelfplayGame = struct {
     rng: std.Random,
     history: engine.search.PositionHistory,
     ttable: *engine.search.TranspositionTable,
+    searcher: *engine.search.ReusableSearcher,
     network: ?*const nnue.Network,
     depth: u8,
     max_nodes: ?u64,
@@ -57,12 +58,13 @@ const SelfplayGame = struct {
     adjudication_winning_side: engine.Color,
     draw_consecutive: u16,
 
-    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, ttable: *engine.search.TranspositionTable, network: ?*const nnue.Network) Self {
+    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, ttable: *engine.search.TranspositionTable, searcher: *engine.search.ReusableSearcher, network: ?*const nnue.Network) Self {
         return .{
             .state = .defaultPosition(),
             .rng = rng,
             .history = .{},
             .ttable = ttable,
+            .searcher = searcher,
             .network = network,
             .depth = depth,
             .max_nodes = max_nodes,
@@ -138,15 +140,14 @@ const SelfplayGame = struct {
             return gameResultToOutcome(res);
         }
 
-        const search_res = (try engine.search.searchParallel(
+        const search_res = self.searcher.search(
             &self.state,
             self.depth,
-            1,
             &self.history,
             self.ttable,
             .{ .max_nodes = self.max_nodes },
             self.network,
-        )) orelse return error.SearchFailed;
+        ) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
@@ -247,8 +248,13 @@ fn workerLoop(ctx: *WorkerCtx) void {
     var ttable = engine.search.TranspositionTable.initSized(std.heap.page_allocator, tt_buckets_bits) catch return;
     defer ttable.deinit();
 
+    // One reusable searcher per worker: its 2.25 MB continuation-history table and
+    // LMR table are allocated/computed once here, not per move.
+    var searcher = engine.search.ReusableSearcher.init(std.heap.page_allocator, .{}) catch return;
+    defer searcher.deinit();
+
     var rng = std.Random.Pcg.init(ctx.seed);
-    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, &ttable, ctx.network);
+    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, &ttable, &searcher, ctx.network);
 
     for (0..ctx.games_per_worker) |_| {
         const result = game.playGame() catch continue;

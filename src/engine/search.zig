@@ -340,6 +340,15 @@ pub const TranspositionTable = struct {
         self.alloc.free(self.entries);
     }
 
+    // Prefetch the bucket cache line for an upcoming probe. The probe's load is
+    // almost pure memory-latency stall (TT spills L2/L3), so issuing this as
+    // soon as the hash is known — ahead of the intervening repetition/material
+    // checks — hides part of the miss. No semantic effect.
+    fn prefetch(self: *const TranspositionTable, hash: u64) void {
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
+        @prefetch(&self.entries[base], .{ .rw = .read, .locality = 3, .cache = .data });
+    }
+
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
         const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
 
@@ -698,6 +707,9 @@ fn negamax(
     // Mutable so Internal Iterative Reductions can lower it after the TT probe.
     var depth = depth_param;
     const hash = state.zobrist_hash;
+    // Kick off the TT bucket fetch now; the repetition/material checks below
+    // run while the line travels from L3/memory, hiding part of the probe miss.
+    search_ctx.tt.prefetch(hash);
     var alpha = alpha_initial;
     var best_move: ?Move = null;
 
@@ -1500,6 +1512,97 @@ pub fn searchParallel(
     }
 }
 
+// Reusable single-threaded searcher for high-throughput callers (self-play) that
+// run one search per move across millions of moves. searchParallel allocates and
+// zeroes a 2.25 MB continuation-history table and recomputes the 64x64 LMR table
+// (thousands of @log calls) on every call; here both are owned once and reused,
+// so the per-move fixed cost drops to clearing already-resident memory. Search
+// behavior is identical to searchParallel(state, depth, 1, ...).
+pub const ReusableSearcher = struct {
+    cont_hist: *evaluation.ContHistTable,
+    lmr_table: [64][64]u8,
+    alloc: std.mem.Allocator,
+
+    // search_params must match the options.search_params later passed to search()
+    // so the precomputed LMR table stays consistent (self-play uses defaults).
+    pub fn init(alloc: std.mem.Allocator, search_params: SearchParams) !ReusableSearcher {
+        const cont = try alloc.create(evaluation.ContHistTable);
+        return .{
+            .cont_hist = cont,
+            .lmr_table = computeLmrTable(search_params.lmr_base, search_params.lmr_div),
+            .alloc = alloc,
+        };
+    }
+
+    pub fn deinit(self: *ReusableSearcher) void {
+        self.alloc.destroy(self.cont_hist);
+    }
+
+    pub fn search(
+        self: *ReusableSearcher,
+        state: *const State,
+        max_depth: u8,
+        game_history: ?*const PositionHistory,
+        tbl: *TranspositionTable,
+        options: SearchOptions,
+        network: ?*const nnue.Network,
+    ) ?SearchResult {
+        tbl.newSearch();
+        self.cont_hist.clear();
+
+        // Single-threaded: no worker pool is ever spawned, so the cheap
+        // single-threaded Io is enough (it still provides the clock).
+        var threaded: std.Io.Threaded = .init_single_threaded;
+        const io = threaded.io();
+
+        var shared = SharedSearchState{
+            .max_depth = max_depth,
+            .io = io,
+            .start_time = std.Io.Clock.awake.now(io),
+            .options = options,
+            .network = network,
+            .search_params = options.search_params,
+            .lmr_table = self.lmr_table,
+        };
+
+        var history = PositionHistory{};
+        if (game_history) |gh| {
+            for (0..gh.len) |j| history.push(gh.hashes[j]);
+        } else {
+            history.push(state.zobrist_hash);
+        }
+
+        var ctx = ThreadContext{
+            .state = state.*,
+            .killers = KillerTable{},
+            .history = history,
+            .history_table = evaluation.HistoryTable{},
+            .countermoves = CountermoveTable{},
+            .cont_hist = self.cont_hist,
+            .thread_id = 0,
+            .tbl = tbl,
+            .shared = &shared,
+            .acc_stack = undefined,
+        };
+        for (&ctx.acc_stack.accs) |*acc| acc.computed = .{ false, false };
+        ctx.acc_stack.debug_eval_count = 0;
+
+        workerThread(&ctx);
+
+        if (ctx.best_move) |m| {
+            return .{
+                .move = m,
+                .score = ctx.best_score,
+                .depth = ctx.best_depth,
+                .nodes = shared.node_count.load(.monotonic),
+                .cutoffs = shared.cutoffs.load(.monotonic),
+                .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
+            };
+        }
+        return null;
+    }
+};
+
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     return searchParallel(state, max_depth, default_threads, null, &tbl, .{}, null);
@@ -1814,6 +1917,35 @@ test "repetition only checks same side to move" {
     // 0xBBBB at position 1 should not match anything checked from position 4
     // (we check positions 2, 0 - not 1, 3)
     try expect(!history.isTwofold(0xBBBB, 5));
+}
+
+test "ReusableSearcher matches single-threaded searchParallel" {
+    // The self-play searcher must select the same move/score as
+    // searchParallel(.., 1, ..) -- it is the same search with the per-move
+    // scratch (cont-hist + LMR table) hoisted out of the hot path.
+    const fens = [_][]const u8{
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    };
+    for (fens) |fen| {
+        const state = try State.fromFen(fen);
+
+        var tbl_a = try TranspositionTable.init(std.testing.allocator);
+        defer tbl_a.deinit();
+        const a = (try searchParallel(&state, 6, 1, null, &tbl_a, .{}, null)).?;
+
+        var searcher = try ReusableSearcher.init(std.testing.allocator, .{});
+        defer searcher.deinit();
+        var tbl_b = try TranspositionTable.init(std.testing.allocator);
+        defer tbl_b.deinit();
+        const b = searcher.search(&state, 6, null, &tbl_b, .{}, null).?;
+
+        try expectEqual(a.move.start, b.move.start);
+        try expectEqual(a.move.end, b.move.end);
+        try expectEqual(a.score, b.score);
+    }
 }
 
 test "isImproving semantics" {
