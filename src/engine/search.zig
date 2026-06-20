@@ -645,8 +645,18 @@ fn quiescence(
         const m = captures.pickNext(i);
         const p = state.mailbox[m.start].?;
 
-        // Delta pruning: skip captures that can't possibly improve alpha
+        // SEE + delta pruning: skip captures that can't help. Only a
+        // higher-value attacker can lose material (victim >= attacker =>
+        // SEE >= 0), so the SEE cost is paid only there. Not reached when in
+        // check (that path is handled above and searches all evasions).
         if (state.mailbox[m.end]) |captured_piece| {
+            // SEE pruning: drop captures that lose material outright.
+            if (evaluation.piece_values_mg[p] > evaluation.piece_values_mg[captured_piece] and
+                movegen.staticExchangeEvaluation(state, m) < 0)
+            {
+                continue;
+            }
+            // Delta pruning: skip captures that can't possibly improve alpha.
             var gain = evaluation.piece_values_mg[captured_piece];
             if (m.is_promotion) {
                 gain += evaluation.piece_values_mg[m.promotion_piece] - evaluation.piece_values_mg[piece.pawn];
