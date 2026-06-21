@@ -106,6 +106,22 @@ pub fn build(b: *std.Build) !void {
     tune_step.dependOn(&run_tune.step);
     b.installArtifact(tune_exe);
 
+    const nnue_inspect = b.addExecutable(.{
+        .name = "nnue-inspect",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/nnue_inspect.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "chez", .module = chez_mod }},
+        }),
+    });
+    nnue_inspect.root_module.addImport("kore", kore);
+    const nnue_inspect_step = b.step("nnue-inspect", "Inspect/debug a trained .nnue net");
+    const run_nnue_inspect = b.addRunArtifact(nnue_inspect);
+    if (b.args) |args| run_nnue_inspect.addArgs(args);
+    nnue_inspect_step.dependOn(&run_nnue_inspect.step);
+    b.installArtifact(nnue_inspect);
+
     const quiet_filter = b.addExecutable(.{
         .name = "quiet-filter",
         .root_module = b.createModule(.{
