@@ -25,6 +25,8 @@ const Args = struct {
     @"export": ?[]const u8,
     checkpoint_interval: ?u32,
     loader_threads: ?usize,
+    weight_decay: ?f32,
+    sigmoid_divisor: ?f32,
 };
 
 const default_epochs: u32 = 50;
@@ -56,6 +58,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const export_path = args.@"export" orelse "output.nnue";
     const checkpoint_interval = args.checkpoint_interval orelse default_checkpoint_interval;
     const loader_threads = args.loader_threads orelse (std.Thread.getCpuCount() catch 4);
+    const weight_decay = args.weight_decay orelse dense_weight_decay;
+    // Target calibration: target = sigmoid(score / sigmoid_divisor). Must match
+    // the dataset's score scale (fit per dataset, like texel K). Default 400.
+    const target_sigmoid_k: f32 = 1.0 / (args.sigmoid_divisor orelse 400.0);
 
     var single_threaded: std.Io.Threaded = .init_single_threaded;
     const io = single_threaded.io();
@@ -70,6 +76,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("  lr: {d:.6}\n", .{lr});
     try stderr.print("  lambda: {d:.2}\n", .{lambda});
     try stderr.print("  loader_threads: {d}\n", .{loader_threads});
+    try stderr.print("  dense_weight_decay: {d:.4}\n", .{weight_decay});
+    try stderr.print("  sigmoid_divisor: {d:.1}\n", .{args.sigmoid_divisor orelse 400.0});
     try stderr.flush();
 
     // GPU setup
@@ -99,11 +107,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const dense_params = params[2..]; // fc1-fc2-output weights and biases
     var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = 0 });
     defer adam_ft.deinit();
-    var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = dense_weight_decay });
+    var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = weight_decay });
     defer adam_dense.deinit();
 
     // Data loader
-    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda, loader_threads);
+    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda, loader_threads, target_sigmoid_k);
     defer loader.deinit();
 
     try stderr.print("Data: {d} records ({d} train, {d} val)\n", .{

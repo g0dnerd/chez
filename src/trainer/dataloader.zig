@@ -13,7 +13,6 @@ const Batch = @import("model.zig").Batch;
 
 const record_size = 35; // 32 position + 2 score + 1 WDL
 const max_active = nnue.max_active_features; // 30
-const sigmoid_k: f32 = 1.0 / 400.0;
 
 fn uploadU32(ctx: *const Context, data: []const u32) Context.Error!Buffer {
     const cl = Context.cl;
@@ -50,6 +49,9 @@ pub const DataLoader = struct {
     val_records: usize,
     batch_size: usize,
     lambda: f32,
+    // Score->target sigmoid steepness (target = sigmoid(score * sigmoid_k)).
+    // Must be calibrated to the dataset's score scale, not hardcoded.
+    sigmoid_k: f32,
     ctx: *const Context,
     allocator: std.mem.Allocator,
 
@@ -78,6 +80,7 @@ pub const DataLoader = struct {
         batch_size: usize,
         lambda: f32,
         num_threads: usize,
+        sigmoid_k: f32,
     ) !DataLoader {
         var single_threaded: std.Io.Threaded = .init_single_threaded;
         const io = single_threaded.io();
@@ -134,6 +137,7 @@ pub const DataLoader = struct {
             .val_records = val_records,
             .batch_size = batch_size,
             .lambda = lambda,
+            .sigmoid_k = sigmoid_k,
             .ctx = ctx,
             .allocator = allocator,
             .indices = indices,
@@ -276,7 +280,7 @@ pub const DataLoader = struct {
             // Flip if STM is black (score is already STM perspective)
             const wdl_value = if (stm == engine.Colors.black) 1.0 - wdl_raw else wdl_raw;
 
-            const score_sigmoid = sigmoid(score * sigmoid_k);
+            const score_sigmoid = sigmoid(score * self.sigmoid_k);
             self.target_buf[b] = self.lambda * score_sigmoid + (1.0 - self.lambda) * wdl_value;
         }
     }
