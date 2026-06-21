@@ -41,8 +41,12 @@
 #   localhost            0.0
 #
 # Examples:
+#   # Recommended defaults are built in (NNUE-labelled, depth 10, ~200k node cap,
+#   # decisive positions kept), so a bare start is sound:
+#   scripts/fleet_selfplay.sh start  --hosts fleet.txt --identity ~/.ssh/cloud
+#   # Override per run after `--` (e.g. more games / different net):
 #   scripts/fleet_selfplay.sh start  --hosts fleet.txt --identity ~/.ssh/cloud \
-#       --eval data/net_v7_lambda075.nnue -- --depth 9 --nodes 220000 --games 2000000
+#       --eval data/net_v7_lambda075.nnue -- --games 4000000 --depth 10 --nodes 200000
 #   scripts/fleet_selfplay.sh monitor --hosts fleet.txt --identity ~/.ssh/cloud
 #   scripts/fleet_selfplay.sh collect --hosts fleet.txt --identity ~/.ssh/cloud \
 #       --out data/selfplay_fleet.bin
@@ -64,7 +68,9 @@ cmd="$1"; shift
 hosts_file=""
 identity=""
 remote_dir='~/chez-selfplay'
-eval_file=""
+# Label self-play with the current best NNUE net (uploaded to each host).
+# Bump this to the latest net each generation; pass --eval to override.
+eval_file="data/net_v7_lambda075.nnue"
 do_build=1
 interval=10
 once=0
