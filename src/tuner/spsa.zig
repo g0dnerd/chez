@@ -217,11 +217,12 @@ pub fn run(
         const mse_plus = try mse.computeIndexed(positions, batch_indices, &params_plus, k, cfg.num_threads, allocator);
         const mse_minus = try mse.computeIndexed(positions, batch_indices, &params_minus, k, cfg.num_threads, allocator);
 
-        // SPSA gradient estimate. Dividing by c_scales[i] cancels the
-        // per-parameter perturbation scaling so the gradient is unbiased.
+        // SPSA gradient estimate. c_scales affects perturbation size only;
+        // the step size is kept uniform so that c_scales doesn't inversely
+        // scale the update (which would amplify PST noise).
         const g_scalar = (mse_plus - mse_minus) / (2.0 * c_t);
         for (0..PARAM_COUNT) |i| {
-            floats[i] -= a_t * g_scalar * delta[i] / c_scales[i];
+            floats[i] -= a_t * g_scalar * delta[i];
         }
 
         // Snap frozen indices back. This must happen every iteration, not just
