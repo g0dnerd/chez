@@ -1983,6 +1983,120 @@ test "repetition only checks same side to move" {
     try expect(!history.isTwofold(0xBBBB, 5));
 }
 
+// Test helper: play a (non-promotion) move by from/to square, keeping the
+// position history in sync the way the real game loops do.
+fn playMove(state: *State, history: *PositionHistory, from: square.Square, to: square.Square) void {
+    const p = state.pieceAt(from).?;
+    _ = state.makeMove(.{ .start = from, .end = to }, state.to_move, p);
+    history.push(state.zobrist_hash);
+}
+
+test "threefold detected exactly on the third occurrence (real game)" {
+    // Both sides shuffle knights out and back: every 4 plies returns to the
+    // start position. The start position is the only one repeating on the same
+    // side to move, so the draw must fire precisely when it appears a 3rd time.
+    var state = State.defaultPosition();
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash); // start position, 1st occurrence
+
+    // First cycle -> start position appears a 2nd time. Twofold is NOT a draw.
+    playMove(&state, &history, square.g1, square.f3); // 1. Nf3
+    playMove(&state, &history, square.g8, square.f6); // 1... Nf6
+    playMove(&state, &history, square.f3, square.g1); // 2. Ng1
+    playMove(&state, &history, square.f6, square.g8); // 2... Ng8  (2nd occurrence)
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // Second cycle, ply by ply: none of the intermediate positions is a 3rd
+    // occurrence of any single position, so no draw should be reported early.
+    playMove(&state, &history, square.g1, square.f3); // 3. Nf3
+    try expect(isGameOverWithHistory(&state, &history) == null);
+    playMove(&state, &history, square.g8, square.f6); // 3... Nf6
+    try expect(isGameOverWithHistory(&state, &history) == null);
+    playMove(&state, &history, square.f3, square.g1); // 4. Ng1
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // 4... Ng8 completes the start position's 3rd occurrence. This requires the
+    // lookback to reach all the way back to the initial position (halfmove_clock
+    // == 8, the earliest occurrence at distance 8) -- a strict off-by-one guard.
+    playMove(&state, &history, square.f6, square.g8);
+    try expectEqual(@as(u16, 8), state.halfmove_clock);
+    try expectEqual(GameResult.threefoldRepetition, isGameOverWithHistory(&state, &history).?);
+}
+
+test "fifty-move rule triggers exactly at 100 halfmoves, not a move early or late" {
+    // Kings + a lone white rook, halfmove clock already at 98.
+    var state = try State.fromFen("8/8/8/4k3/8/4K3/8/R7 w - - 98 60");
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash);
+
+    // hmc == 98: not a draw.
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // Reversible rook move -> hmc == 99: still not a draw (the off-by-one trap).
+    playMove(&state, &history, square.a1, square.a2);
+    try expectEqual(@as(u16, 99), state.halfmove_clock);
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    // Reversible king move -> hmc == 100: draw by the 50-move rule.
+    playMove(&state, &history, square.e5, square.e6);
+    try expectEqual(@as(u16, 100), state.halfmove_clock);
+    try expectEqual(GameResult.fiftyMoveRule, isGameOverWithHistory(&state, &history).?);
+}
+
+test "checkmate takes precedence over the fifty-move rule" {
+    // hmc == 99, white to move; Ra1-a8 is a reversible move (no capture, no pawn)
+    // that both pushes the clock to 100 and delivers back-rank mate. Mate wins.
+    var state = try State.fromFen("6k1/5ppp/8/8/8/8/8/R5K1 w - - 99 60");
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash);
+
+    playMove(&state, &history, square.a1, square.a8); // Ra8#
+    try expectEqual(@as(u16, 100), state.halfmove_clock);
+
+    const res = isGameOverWithHistory(&state, &history).?;
+    try expect(res == .checkmate);
+    try expectEqual(engine.Colors.white, res.checkmate);
+}
+
+test "irreversible move resets the fifty-move counter" {
+    // At hmc == 99 a pawn push must reset the clock to 0 rather than draw.
+    var state = try State.fromFen("4k3/8/8/8/8/4P3/8/4K3 w - - 99 60");
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash);
+    try expect(isGameOverWithHistory(&state, &history) == null);
+
+    playMove(&state, &history, square.e3, square.e4); // pawn push: irreversible
+    try expectEqual(@as(u16, 0), state.halfmove_clock);
+    try expect(isGameOverWithHistory(&state, &history) == null);
+}
+
+test "repetition lookback stops at an irreversible move (real game)" {
+    // Reach the start position a 2nd time via a knight shuffle, then make an
+    // irreversible pawn move. The pre-pawn-move occurrences must no longer count
+    // toward repetition, because halfmove_clock resets the lookback window.
+    var state = State.defaultPosition();
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash);
+
+    playMove(&state, &history, square.g1, square.f3); // 1. Nf3
+    playMove(&state, &history, square.g8, square.f6); // 1... Nf6
+    playMove(&state, &history, square.f3, square.g1); // 2. Ng1
+    playMove(&state, &history, square.f6, square.g8); // 2... Ng8 (start, 2nd time)
+
+    // Irreversible pawn move clears the reversible history window.
+    playMove(&state, &history, square.e2, square.e4); // 3. e4
+    try expectEqual(@as(u16, 0), state.halfmove_clock);
+
+    // Shuffle knights again: the position after 3.e4 can recur, but the two
+    // earlier start-position occurrences are now unreachable by the lookback.
+    playMove(&state, &history, square.g8, square.f6); // 3... Nf6
+    playMove(&state, &history, square.g1, square.f3); // 4. Nf3
+    playMove(&state, &history, square.f6, square.g8); // 4... Ng8
+    playMove(&state, &history, square.f3, square.g1); // 5. Ng1 (post-e4 pos, 2nd)
+    // Only a twofold of the post-e4 position -> not a draw.
+    try expect(isGameOverWithHistory(&state, &history) == null);
+}
+
 test "ReusableSearcher matches single-threaded searchParallel" {
     // The self-play searcher must select the same move/score as
     // searchParallel(.., 1, ..) -- it is the same search with the per-move
