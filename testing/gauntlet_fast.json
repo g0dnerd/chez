@@ -1,0 +1,55 @@
+{
+  "_comment": "FAST companion to gauntlet.json for quick directional checks when you can't wait for 2+1. TC 5+0.05 (tiny increment) runs ~6x faster per game than 2+1 while keeping enough base time to avoid time-loss artifacts (used throughout this session with no flagging). TRADEOFFS vs the 2+1 config: (1) less depth -> weaker Chez, so the opponent ladder is shifted DOWN (2400-3000) to keep cells in the informative 30-70% band; (2) absolute Elo is NOT comparable to the 2+1 gauntlet - use this for relative A/B (regression checks, tuning sweeps), not for an absolute rating claim; (3) rounds=40 (80 games/opp, ~+/-80 Elo CI) trades precision for speed - bump to 100 if a cell looks borderline. Same machine assumptions as gauntlet.json: threads=4 x concurrency=3 = 15/16 cores, clean timing. SF Threads=1 (skill fixed by UCI_Elo). Total ~240 games ~= 15-20 min on 16 cores.",
+  "time_control": "5+0.05",
+  "rounds_per_opponent": 40,
+  "concurrency": 8,
+  "threads": 2,
+  "rating_list": "Stockfish UCI_Elo",
+  "opening_book": "books/8moves_v3.pgn",
+  "opponents": [
+    {
+      "name": "Stockfish (2400)",
+      "cmd": "stockfish",
+      "rating": 2400,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2400"
+      }
+    },
+    {
+      "name": "Stockfish (2600)",
+      "cmd": "stockfish",
+      "rating": 2600,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2600"
+      }
+    },
+    {
+      "name": "Stockfish (2800)",
+      "cmd": "stockfish",
+      "rating": 2800,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "2800"
+      }
+    },
+    {
+      "name": "Stockfish (3000)",
+      "cmd": "stockfish",
+      "rating": 3000,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "3000"
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "_comment": "Capped-strength Stockfish gauntlet for rough absolute Elo. Opponent 'rating' = its Stockfish UCI_Elo (SF's own scale, NOT CCRL). The v9-vs-v7 delta vs the SAME opponents is the robust comparison. v9 swept SF<=2100 in smoke, so bracket raised. If v9 also sweeps SF_3190, switch to fixed-nodes full-strength SF.",
+  "time_control": "5+0.05",
+  "rounds_per_opponent": 50,
+  "concurrency": 8,
+  "threads": 1,
+  "rating_list": "Stockfish UCI_Elo (approx, SF scale)",
+  "opponents": [
+    { "name": "SF_2200", "cmd": "/usr/local/bin/stockfish", "rating": 2200, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2200 } },
+    { "name": "SF_2600", "cmd": "/usr/local/bin/stockfish", "rating": 2600, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2600 } },
+    { "name": "SF_2900", "cmd": "/usr/local/bin/stockfish", "rating": 2900, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2900 } },
+    { "name": "SF_3190", "cmd": "/usr/local/bin/stockfish", "rating": 3190, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 3190 } }
+  ]
+}

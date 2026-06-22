@@ -1,0 +1,15 @@
+{
+  "_comment": "Captures Chez at its strongest vs capped Stockfish. Changes from the old config and WHY: (1) threads=4 (Chez default, Lazy SMP) — strength is hugely thread-sensitive (baseline measured 0.56@1t -> 0.89@2t vs SF_2400), so 1-thread gauntlets undersell Chez badly; 4t@conc3 = 15/16 cores, clean timing, no oversubscription. (2) Opponent ladder shifted UP and SF_2400 dropped — at threads=2 baseline already beat SF_2400 +24-2 (saturated, ±249 Elo, uninformative); informative cells are where Chez scores 30-70%, which at 4t is ~SF_2800-3190. (3) rounds=100 (200 games/opp) -> ~±50 Elo CI instead of ±250. (4) balanced 8moves opening book for representative absolute Elo + lower variance + no repeated lines. (5) SF kept at Threads=1: with UCI_LimitStrength its skill is fixed by UCI_Elo regardless of threads, so extra SF threads do nothing and would only steal cores from Chez. SF UCI_Elo caps at 3190; if Chez sweeps 3190, switch the top rung to fixed-NODES full-strength SF (UCI_LimitStrength=false, e.g. nodes=200000) — capped SF cannot measure above 3190.",
+  "time_control": "2+1",
+  "rounds_per_opponent": 100,
+  "threads": 4,
+  "concurrency": 3,
+  "rating_list": "Stockfish UCI_Elo (SF scale, reads high vs CCRL)",
+  "opening_book": "books/8moves_v3.pgn",
+  "opponents": [
+    { "name": "SF_2600", "cmd": "/usr/local/bin/stockfish", "rating": 2600, "proto": "uci", "options": { "Threads": 1, "UCI_LimitStrength": "true", "UCI_Elo": 2600 } },
+    { "name": "SF_2800", "cmd": "/usr/local/bin/stockfish", "rating": 2800, "proto": "uci", "options": { "Threads": 1, "UCI_LimitStrength": "true", "UCI_Elo": 2800 } },
+    { "name": "SF_3000", "cmd": "/usr/local/bin/stockfish", "rating": 3000, "proto": "uci", "options": { "Threads": 1, "UCI_LimitStrength": "true", "UCI_Elo": 3000 } },
+    { "name": "SF_3190", "cmd": "/usr/local/bin/stockfish", "rating": 3190, "proto": "uci", "options": { "Threads": 1, "UCI_LimitStrength": "true", "UCI_Elo": 3190 } }
+  ]
+}

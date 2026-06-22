@@ -1,0 +1,13 @@
+{
+  "_comment": "Exact reproduction of the 2026-03-19 baseline gauntlet config (gauntlet_20260319_201445.json): 2+1, threads=2, concurrency=6, 30 rounds, SF UCI_Elo 2400/2600/2800, bookless. Used to validate the baseline binary against its own historical result.",
+  "time_control": "2+1",
+  "rounds_per_opponent": 30,
+  "threads": 2,
+  "concurrency": 6,
+  "rating_list": "CCRL Blitz",
+  "opponents": [
+    { "name": "Stockfish (2400)", "cmd": "/usr/local/bin/stockfish", "rating": 2400, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2400 } },
+    { "name": "Stockfish (2600)", "cmd": "/usr/local/bin/stockfish", "rating": 2600, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2600 } },
+    { "name": "Stockfish (2800)", "cmd": "/usr/local/bin/stockfish", "rating": 2800, "proto": "uci", "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2800 } }
+  ]
+}

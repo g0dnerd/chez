@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "",
+        "file": "/home/paul/projects/chez/testing/results/20260622_224357.pgn",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 1,
-    "seed": 1183542987803568304,
+    "seed": 11817924938570758140,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -69,8 +69,8 @@
     "wait": 0,
     "autosaveinterval": 20,
     "games": 2,
-    "rounds": 20,
-    "concurrency": 4,
+    "rounds": 50,
+    "concurrency": 8,
     "force_concurrency": false,
     "recover": true,
     "noswap": false,
@@ -89,43 +89,19 @@
     },
     "engines": [
         {
-            "name": "nnue",
+            "name": "512",
             "dir": "",
-            "cmd": "./zig-out/bin/uci",
+            "cmd": "/home/paul/projects/chez/zig-out/bin/uci",
             "args": "",
             "restart": true,
             "options": [
                 [
-                    "EvalFile",
-                    "data/net_v6_wd0_lambda1.nnue"
-                ],
-                [
                     "Threads",
-                    "4"
-                ],
-                [
-                    "OwnBook",
-                    "false"
-                ],
-                [
-                    "NnueScale",
                     "1"
                 ],
                 [
-                    "RfpBase",
-                    "10"
-                ],
-                [
-                    "FutilityMargin1",
-                    "40"
-                ],
-                [
-                    "FutilityMargin2",
-                    "80"
-                ],
-                [
-                    "DeltaMargin",
-                    "25"
+                    "EvalFile",
+                    "data/net_v10_ft512_wd0.01.nnue"
                 ]
             ],
             "limit": {
@@ -142,19 +118,19 @@
             "variant": 0
         },
         {
-            "name": "hce",
+            "name": "256",
             "dir": "",
-            "cmd": "./zig-out/bin/uci",
+            "cmd": "/tmp/chez-v9/zig-out/bin/uci",
             "args": "",
             "restart": true,
             "options": [
                 [
                     "Threads",
-                    "4"
+                    "1"
                 ],
                 [
-                    "OwnBook",
-                    "false"
+                    "EvalFile",
+                    "data/net_v9_10k_40M_l90.nnue"
                 ]
             ],
             "limit": {
@@ -172,10 +148,10 @@
         }
     ],
     "stats": {
-        "nnue vs hce": {
-            "wins": 9,
-            "losses": 21,
-            "draws": 10,
+        "512 vs 256": {
+            "wins": 34,
+            "losses": 35,
+            "draws": 31,
             "penta_WW": 0,
             "penta_WD": 0,
             "penta_WL": 0,
