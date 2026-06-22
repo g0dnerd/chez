@@ -2,7 +2,7 @@
 // where the static eval and quiescence eval agree within a threshold.
 //
 // Usage:
-//   zig-out/bin/quiet-filter --input positions.fen [--threshold 100]
+//   zig-out/bin/quiet-filter --input_path positions.fen [--threshold 100]
 //
 // Quiet criterion: |evaluate(pos) - quiescenceEval(pos)| < threshold
 // Positions where captures/tactics change the eval significantly are discarded.
