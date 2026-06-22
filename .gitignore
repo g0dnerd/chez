@@ -17,3 +17,10 @@ testing/results/*.pgn
 
 # Local fleet host/cost config — not version-controlled (per-machine IPs)
 fleet.txt
+
+# Transient training/sweep run logs
+*.log
+sweep_summary.log
+
+# Editor/merge backup files
+*.orig

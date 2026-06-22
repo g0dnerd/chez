@@ -1,0 +1,57 @@
+H100-1-80G
+22.23 gCO2e/hour
+€2.8665/hour
+Billed per min
+1xGPU
+80 GB (1x 80 GB)
+24	240 GB	
+Block & Scratch
+
+L40S-2-48G
+33.15 gCO2e/hour
+€2.93983/hour
+Billed per min
+2xGPU
+96 GB (2x 48 GB)
+16	192 GB	
+
+L40S-1-48G
+20.54 gCO2e/hour
+€1.46992/hour
+Billed per min
+1xGPU
+48 GB (1x 48 GB)
+8	96 GB	
+
+L4-4-24G
+20.62 gCO2e/hour
+€3.15/hour
+Billed per min
+4xGPU
+96 GB (4x 24 GB)
+32	192 GB	Block	
+
+L4-2-24G
+11.66 gCO2e/hour
+€1.575/hour
+Billed per min
+2xGPU
+48 GB (2x 24 GB)
+16	96 GB	Block	
+Select
+
+L4-1-24G
+7.19 gCO2e/hour
+€0.7875/hour
+Billed per min
+1xGPU
+24 GB (1x 24 GB)
+8	48 GB	Block	
+Select
+
+RENDER-S
+14.44 gCO2e/hour
+€1.221/hour
+1xGPU
+16 GB (1x 16 GB)
+10	42 GB	
