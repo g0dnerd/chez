@@ -26,6 +26,7 @@ const Args = struct {
     checkpoint_interval: ?u32,
     loader_threads: ?usize,
     weight_decay: ?f32,
+    ft_weight_decay: ?f32,
     sigmoid_divisor: ?f32,
 };
 
@@ -59,6 +60,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const checkpoint_interval = args.checkpoint_interval orelse default_checkpoint_interval;
     const loader_threads = args.loader_threads orelse (std.Thread.getCpuCount() catch 4);
     const weight_decay = args.weight_decay orelse dense_weight_decay;
+    const ft_weight_decay = args.ft_weight_decay orelse 0;
     // Target calibration: target = sigmoid(score / sigmoid_divisor). Must match
     // the dataset's score scale (fit per dataset, like texel K). Default 400.
     const target_sigmoid_k: f32 = 1.0 / (args.sigmoid_divisor orelse 400.0);
@@ -77,6 +79,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("  lambda: {d:.2}\n", .{lambda});
     try stderr.print("  loader_threads: {d}\n", .{loader_threads});
     try stderr.print("  dense_weight_decay: {d:.4}\n", .{weight_decay});
+    try stderr.print("  ft_weight_decay: {d:.4}\n", .{ft_weight_decay});
     try stderr.print("  sigmoid_divisor: {d:.1}\n", .{args.sigmoid_divisor orelse 400.0});
     try stderr.flush();
 
@@ -105,7 +108,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Split optimizers: FT (no weight decay) and dense (with weight decay)
     const ft_params = params[0..2]; // ft.weight, ft.bias
     const dense_params = params[2..]; // fc1-fc2-output weights and biases
-    var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = 0 });
+    var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = ft_weight_decay });
     defer adam_ft.deinit();
     var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = weight_decay });
     defer adam_dense.deinit();
