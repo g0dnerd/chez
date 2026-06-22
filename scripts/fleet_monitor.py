@@ -214,7 +214,7 @@ def main():
 
                 out.append(
                     f"ETA     1M: {eta(1e6)}   2M: {eta(2e6)}   "
-                    f"5M: {eta(5e6)}   10M: {eta(1e7)}"
+                    f"5M: {eta(5e6)}   10M: {eta(1e7)}   20M: {eta(2e7)}   40M: {eta(4e7)}"
                 )
 
             sys.stdout.write("\n".join(out) + "\n")
