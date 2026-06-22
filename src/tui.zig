@@ -121,7 +121,7 @@ const NNEngine = struct {
     }
 };
 
-fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, time: ?u32, num_threads: usize, nn_mode: bool) !void {
+fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, time: ?u32, num_threads: usize, nn_mode: bool, network: ?*engine.nnue.Network) !void {
     try stdout.writeAll("\x1B[2J\x1B[1;1H"); // ANSI clear screen
     try stdout.writeAll(" === Chez Paul ===\n");
     if (nn_mode) {
@@ -132,10 +132,23 @@ fn writeHeader(stdout: *std.Io.Writer, state: *engine.State, depth: ?u8, time: ?
         try stdout.print(" Move {d} - Depth {d} - {d} Threads\n\n", .{ state.fullmove_clock, d, num_threads });
     }
     try stdout.print("{f}", .{state});
-
-    // const eval = engine.evaluation.evaluateTrace(state);
-    // try eval.dump(stdout);
+    try writeEval(stdout, state, network);
     try stdout.flush();
+}
+
+// Static evaluation readout from White's perspective ("+1.3" = White ahead 1.3
+// pawns). Uses the NNUE eval when a network is loaded, else the hand-crafted
+// eval. Both return centipawns from the side-to-move's view, so negate when it
+// is Black to move.
+fn writeEval(stdout: *std.Io.Writer, state: *engine.State, network: ?*engine.nnue.Network) !void {
+    const stm_cp: i32 = if (network) |net|
+        engine.nnue.evaluate(state, net)
+    else
+        engine.evaluation.evaluate(state);
+    const white_cp: i32 = if (state.to_move == engine.Colors.white) stm_cp else -stm_cp;
+    const pawns: f64 = @as(f64, @floatFromInt(white_cp)) / 100.0;
+    const sign: u8 = if (white_cp >= 0) '+' else '-';
+    try stdout.print(" Eval: {c}{d:.1}\n", .{ sign, @abs(pawns) });
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -223,7 +236,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var undo_pieces: [2]engine.piece.Piece = undefined;
 
     outer: while (true) {
-        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
+        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode, network);
 
         if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
             switch (res) {
@@ -315,7 +328,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         undo_pieces[0] = piece;
                         undo_moves[0] = user_move.*;
                         history.push(state.zobrist_hash);
-                        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
+                        try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode, network);
                         break;
                     } else {
                         try stdout.print(" Illegal move {s}! Try again.\n", .{move});
@@ -373,7 +386,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             history.push(state.zobrist_hash);
 
             try stdout.writeByte('\n');
-            try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode);
+            try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode, network);
 
             if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
                 switch (res) {
