@@ -46,7 +46,7 @@ pub noinline fn exportNnue(
     const net = try allocator.create(Network);
     defer allocator.destroy(net);
 
-    // FT weights: [40960, 256] f32 → [40960][256] i16, scale = 127
+    // FT weights: [40960, 512] f32 → [40960][512] i16, scale = 127
     {
         const n = nnue.num_features * nnue.ft_out;
         const buf = try allocator.alloc(f32, n);
@@ -59,7 +59,7 @@ pub noinline fn exportNnue(
         }
     }
 
-    // FT biases: [256] f32 → [256] i16, scale = 127
+    // FT biases: [512] f32 → [512] i16, scale = 127
     {
         const n = nnue.ft_out;
         var buf: [n]f32 = undefined;
@@ -69,7 +69,7 @@ pub noinline fn exportNnue(
         }
     }
 
-    // FC1 weights: [512, 32] f32 → [32][512] i8 (output-major), scale = 64
+    // FC1 weights: [1024, 32] f32 → [32][1024] i8 (output-major), scale = 64
     {
         const n = nnue.fc1_in * nnue.fc1_out;
         var buf: [n]f32 = undefined;

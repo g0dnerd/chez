@@ -26,8 +26,8 @@ pub const pieces_per_king = num_piece_colors * num_piece_types * num_piece_squar
 pub const num_features = num_king_squares * pieces_per_king; // 40960
 
 // Network layer dimensions
-pub const ft_out = 256;
-pub const fc1_in = ft_out * 2; // 512 (white ++ black accumulators)
+pub const ft_out = 512;
+pub const fc1_in = ft_out * 2; // 1024 (white ++ black accumulators)
 pub const fc1_out = 32;
 pub const fc2_in = fc1_out;
 pub const fc2_out = 32;
@@ -39,8 +39,8 @@ const ft_vec_len = std.simd.suggestVectorLength(i16) orelse 8;
 
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
-pub const format_version: u32 = 3;
-pub const arch_hash: u32 = 0x48_4B_50_31; // "HKP1"
+pub const format_version: u32 = 4;
+pub const arch_hash: u32 = 0x48_4B_50_32; // "HKP2" (HalfKP, FT width 512)
 pub const header_size = 16;
 
 // Per-section byte sizes (packed, no alignment padding)
@@ -745,6 +745,50 @@ test "network round trip" {
     try std.testing.expectEqual(@as(i32, -123), net.output_bias);
 }
 
+test "network write/load round trip" {
+    // Full serialize→deserialize round trip across every section at the current
+    // FT width. Catches layout/size drift after a width or format bump.
+    const allocator = std.testing.allocator;
+    const net = try createZeroNetwork(allocator);
+    defer net.deinit(allocator);
+
+    // Distinctive values spanning the first/last element of every section.
+    net.ft_biases[0] = 7;
+    net.ft_biases[ft_out - 1] = -9;
+    net.ft_weights[0][0] = 11;
+    net.ft_weights[num_features - 1][ft_out - 1] = -13;
+    net.fc1_weights[0][0] = 1;
+    net.fc1_weights[fc1_out - 1][fc1_in - 1] = -2;
+    net.fc1_biases[0] = 100;
+    net.fc2_weights[0][0] = 3;
+    net.fc2_biases[fc2_out - 1] = -50;
+    net.output_weights[0] = 21;
+    net.output_weights[fc2_out - 1] = -22;
+    net.output_bias = 12345;
+
+    const buf = try allocator.alloc(u8, expected_file_size);
+    defer allocator.free(buf);
+    var w = std.Io.Writer.fixed(buf);
+    try net.writeToWriter(&w);
+    try std.testing.expectEqual(expected_file_size, w.buffered().len);
+
+    const net2 = try Network.loadFromBytes(allocator, w.buffered());
+    defer net2.deinit(allocator);
+
+    try std.testing.expectEqual(@as(i16, 7), net2.ft_biases[0]);
+    try std.testing.expectEqual(@as(i16, -9), net2.ft_biases[ft_out - 1]);
+    try std.testing.expectEqual(@as(i16, 11), net2.ft_weights[0][0]);
+    try std.testing.expectEqual(@as(i16, -13), net2.ft_weights[num_features - 1][ft_out - 1]);
+    try std.testing.expectEqual(@as(i8, 1), net2.fc1_weights[0][0]);
+    try std.testing.expectEqual(@as(i8, -2), net2.fc1_weights[fc1_out - 1][fc1_in - 1]);
+    try std.testing.expectEqual(@as(i32, 100), net2.fc1_biases[0]);
+    try std.testing.expectEqual(@as(i8, 3), net2.fc2_weights[0][0]);
+    try std.testing.expectEqual(@as(i32, -50), net2.fc2_biases[fc2_out - 1]);
+    try std.testing.expectEqual(@as(i16, 21), net2.output_weights[0]);
+    try std.testing.expectEqual(@as(i16, -22), net2.output_weights[fc2_out - 1]);
+    try std.testing.expectEqual(@as(i32, 12345), net2.output_bias);
+}
+
 test "loadFromBytes rejects bad magic" {
     var buf: [expected_file_size]u8 = .{0} ** expected_file_size;
     @memcpy(buf[0..4], "NOPE");
@@ -772,8 +816,11 @@ test "loadFromBytes rejects short file" {
 }
 
 test "expected file size" {
+    // header 16 + ft_biases (512×2) + ft_weights (40960×512×2) + fc1_weights
+    // (1024×32) + fc1_biases (32×4) + fc2_weights (32×32) + fc2_biases (32×4)
+    // + output_weights (32×2) + output_bias (4)
     try std.testing.expectEqual(
-        @as(usize, 16 + 512 + 20_971_520 + 16_384 + 128 + 1_024 + 128 + 64 + 4),
+        @as(usize, 16 + 1_024 + 41_943_040 + 32_768 + 128 + 1_024 + 128 + 64 + 4),
         expected_file_size,
     );
 }

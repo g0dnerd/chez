@@ -40,7 +40,7 @@ pub const NnueModel = struct {
             allocator,
             ctx,
             nnue.num_features, // 40960
-            nnue.ft_out, // 256
+            nnue.ft_out, // 512
             nnue.max_active_features, // 30
             nnue.max_active_features, // expected_active for Kaiming
             42,
@@ -49,7 +49,7 @@ pub const NnueModel = struct {
         const crelu = ml.ClippedReLU.init(1.0);
 
         const dense = try ml.Sequential.init(allocator, &.{
-            Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc1_in, nnue.fc1_out, 123)), // 512→32
+            Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc1_in, nnue.fc1_out, 123)), // 1024→32
             Layer.clippedRelu(1.0),
             Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc2_in, nnue.fc2_out, 456)), // 32→32
             Layer.clippedRelu(1.0),
@@ -87,10 +87,10 @@ pub const NnueModel = struct {
         const stm_relu = try self.crelu.forward(stm_acc, graph);
         const opp_relu = try self.crelu.forward(opp_acc, graph);
 
-        // Concat: [batch, 256] ++ [batch, 256] → [batch, 512]
+        // Concat: [batch, 512] ++ [batch, 512] → [batch, 1024]
         const combined = try graph.concat(stm_relu, opp_relu);
 
-        // Dense: 512→32→32→1
+        // Dense: 1024→32→32→1
         return self.dense.forward(combined, graph);
     }
 
