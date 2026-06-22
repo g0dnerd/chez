@@ -299,10 +299,12 @@ noinline fn validateExport(
     const net = try nnue.Network.load(io, allocator, export_path);
     defer net.deinit(allocator);
 
-    // Weight statistics
+    // Weight statistics. Iterate by reference: `for (net.ft_weights)` would copy
+    // the whole [num_features][ft_out]i16 array (~42MB at ft_out=512) onto the
+    // stack and overflow it.
     var ft_nonzero: usize = 0;
     var ft_max_abs: u16 = 0;
-    for (net.ft_weights) |row| {
+    for (&net.ft_weights) |*row| {
         for (row) |w| {
             if (w != 0) ft_nonzero += 1;
             const abs: u16 = @abs(w);
