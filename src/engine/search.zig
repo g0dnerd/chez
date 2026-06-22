@@ -7,6 +7,9 @@ const nnue = @import("nnue.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
 
+// Max tapered phase (full non-pawn material), matching evaluation.zig.
+const max_phase = @import("score.zig").max_phase_mg;
+
 const Atomic = std.atomic.Value;
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
@@ -16,7 +19,16 @@ const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
 pub const SearchParams = struct {
-    nnue_scale: i32 = 1,
+    nnue_scale: i32 = 2,
+    // NNUE output scaling (applied only when a network is loaded). Both are
+    // percentages so they expose cleanly as integer UCI spin options.
+    // Material scaling: compress eval toward material_scale_min% at bare-kings,
+    // ramping to 100% at full non-pawn material (phase == max_phase_mg).
+    material_scale_min: i32 = 75,
+    // 50-move damping: eval is undamped until halfmove_clock reaches
+    // fifty_move_start, then ramps down to (100 - fifty_move_damp)% at clock 100.
+    fifty_move_start: i32 = 20,
+    fifty_move_damp: i32 = 50,
     rfp_base: i32 = 80,
     futility_margin_1: i32 = 300,
     futility_margin_2: i32 = 600,
@@ -484,7 +496,28 @@ const SharedSearchState = struct {
         // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
         // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
         // a Phase 6 concern.
-        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
+        if (self.network) |net| {
+            var v = nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
+
+            // Material scaling: shrink eval as non-pawn material disappears.
+            // phase uses the same weights as the tapered eval (N=B=1, R=2, Q=4).
+            const phase: i32 = @min(@as(i32, @intCast(state.pieceBitboard(piece.knight).popCount() +
+                state.pieceBitboard(piece.bishop).popCount() +
+                2 * state.pieceBitboard(piece.rook).popCount() +
+                4 * state.pieceBitboard(piece.queen).popCount())), max_phase);
+            const min = self.search_params.material_scale_min;
+            const material_factor = min + @divTrunc((100 - min) * phase, max_phase);
+            v = @divTrunc(v * material_factor, 100);
+
+            // 50-move damping: pull eval toward 0 as the halfmove clock climbs.
+            const start = self.search_params.fifty_move_start;
+            const hmc: i32 = @min(@as(i32, state.halfmove_clock), 100);
+            const over = @max(hmc - start, 0);
+            const fifty_factor = 100 - @divTrunc(over * self.search_params.fifty_move_damp, @max(1, 100 - start));
+            v = @divTrunc(v * fifty_factor, 100);
+
+            return v;
+        }
         return evaluation.evaluate(state);
     }
 };
