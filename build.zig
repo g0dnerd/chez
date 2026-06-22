@@ -106,6 +106,22 @@ pub fn build(b: *std.Build) !void {
     tune_step.dependOn(&run_tune.step);
     b.installArtifact(tune_exe);
 
+    const tune_search_exe = b.addExecutable(.{
+        .name = "tune-search",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tune_search.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "chez", .module = chez_mod }},
+        }),
+    });
+    tune_search_exe.root_module.addImport("kore", kore);
+    const tune_search_step = b.step("tune-search", "Run in-engine SPSA search-param tuner");
+    const run_tune_search = b.addRunArtifact(tune_search_exe);
+    if (b.args) |args| run_tune_search.addArgs(args);
+    tune_search_step.dependOn(&run_tune_search.step);
+    b.installArtifact(tune_search_exe);
+
     const nnue_inspect = b.addExecutable(.{
         .name = "nnue-inspect",
         .root_module = b.createModule(.{

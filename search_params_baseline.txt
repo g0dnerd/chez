@@ -1,0 +1,5 @@
+# Baseline SearchParams defaults — backup taken 2026-06-22, before applying
+# SPSA-tuned search params. nnue_scale was already set to 2.
+# To restore: paste these values back into the SearchParams struct in
+# src/engine/search.zig.
+.{ .nnue_scale = 2, .rfp_base = 80, .futility_margin_1 = 300, .futility_margin_2 = 600, .delta_margin = 200, .lmr_base = 75, .lmr_div = 120, .lmr_hist_div = 8000, .histprune_depth = 3, .histprune_margin = 2000, .iir_min_depth = 4 }

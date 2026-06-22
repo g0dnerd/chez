@@ -1,0 +1,1 @@
+.{ .nnue_scale = 2, .rfp_base = 51, .futility_margin_1 = 175, .futility_margin_2 = 641, .delta_margin = 183, .lmr_base = 112, .lmr_div = 73, .lmr_hist_div = 7842, .histprune_depth = 3, .histprune_margin = 2000, .iir_min_depth = 4 }
