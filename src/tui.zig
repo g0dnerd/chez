@@ -151,6 +151,24 @@ fn writeEval(stdout: *std.Io.Writer, state: *engine.State, network: ?*engine.nnu
     try stdout.print(" Eval: {c}{d:.1}\n", .{ sign, @abs(pawns) });
 }
 
+fn announceResult(stdout: *std.Io.Writer, res: engine.GameResult) !void {
+    switch (res) {
+        .checkmate => {
+            const winner = switch (res.checkmate) {
+                0 => "White",
+                1 => "Black",
+            };
+
+            try stdout.print("\n Checkmate! {s} wins!\n", .{winner});
+        },
+        .stalemate => try stdout.print("\n Stalemate! Draw.\n", .{}),
+        .fiftyMoveRule => try stdout.print("\n Draw by 50-move rule.\n", .{}),
+        .threefoldRepetition => try stdout.print("\n Draw by threefold repetition.\n", .{}),
+        .insufficientMaterial => try stdout.print("\n Draw by insufficient material.\n", .{}),
+    }
+    try stdout.flush();
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const arg_parser = try kore.args.declarative.Parser(Args);
 
@@ -329,6 +347,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         undo_moves[0] = user_move.*;
                         history.push(state.zobrist_hash);
                         try writeHeader(stdout, &state, depth, parsed_args.time, num_threads, nn_mode, network);
+                        // The human's move can itself end the game (completing a
+                        // threefold repetition, the 50-move rule, checkmate, etc.).
+                        // Check now so the result is reported on this move instead
+                        // of one ply late, after the engine has already replied.
+                        if (engine.search.isGameOverWithHistory(&state, &history)) |res| {
+                            try announceResult(stdout, res);
+                            break :outer;
+                        }
                         break;
                     } else {
                         try stdout.print(" Illegal move {s}! Try again.\n", .{move});

@@ -24,21 +24,21 @@ pub const SearchParams = struct {
     // percentages so they expose cleanly as integer UCI spin options.
     // Material scaling: compress eval toward material_scale_min% at bare-kings,
     // ramping to 100% at full non-pawn material (phase == max_phase_mg).
-    material_scale_min: i32 = 75,
+    material_scale_min: i32 = 74,
     // 50-move damping: eval is undamped until halfmove_clock reaches
     // fifty_move_start, then ramps down to (100 - fifty_move_damp)% at clock 100.
-    fifty_move_start: i32 = 20,
-    fifty_move_damp: i32 = 50,
-    rfp_base: i32 = 80,
-    futility_margin_1: i32 = 300,
-    futility_margin_2: i32 = 600,
-    delta_margin: i32 = 200,
+    fifty_move_start: i32 = 13,
+    fifty_move_damp: i32 = 51,
+    rfp_base: i32 = 40,
+    futility_margin_1: i32 = 86,
+    futility_margin_2: i32 = 528,
+    delta_margin: i32 = 159,
     // LMR reduction = lmr_base/100 + ln(d)*ln(i) / (lmr_div/100). Stored as
     // hundredths so they can be exposed as integer UCI spin options.
-    lmr_base: i32 = 75,
-    lmr_div: i32 = 120,
+    lmr_base: i32 = 91,
+    lmr_div: i32 = 56,
     // LMR history adjustment: reduction -= clamp(combined_history/lmr_hist_div, -2, 2).
-    lmr_hist_div: i32 = 8000,
+    lmr_hist_div: i32 = 10958,
     // History-based pruning: at depth <= histprune_depth, skip late quiet moves
     // whose combined history < -histprune_margin * depth.
     histprune_depth: i32 = 3,
@@ -2095,6 +2095,35 @@ test "repetition lookback stops at an irreversible move (real game)" {
     playMove(&state, &history, square.f3, square.g1); // 5. Ng1 (post-e4 pos, 2nd)
     // Only a twofold of the post-e4 position -> not a draw.
     try expect(isGameOverWithHistory(&state, &history) == null);
+}
+
+test "threefold over an entire real game is flagged on the exact ply (draw.pgn)" {
+    // Regression for a real TUI game (draw.pgn). The (Kh1, Qf2, black-to-move)
+    // position recurs after 57.d7, 59.Kh1 and 61.Kh1; the draw must be reported
+    // on 61.Kh1 (ply 121), looking back over the full 122-position history --
+    // not a ply early and not a ply late.
+    const moves = "e2e4 e7e6 d2d4 d7d5 b1d2 c7c5 e4d5 e6d5 g1f3 f8e7 d4c5 g8f6 f1d3 e7c5 e1g1 e8g8 d2b3 c5b6 f1e1 b8c6 c2c3 c8g4 c1f4 f8e8 b3d2 e8e1 d1e1 d8d7 e1f1 f6h5 f4e3 g4f3 d2f3 b6e3 f2e3 d7e7 a1e1 h5f6 f3d4 a8e8 f1f4 c6d4 f4d4 a7a6 a2a4 h7h5 h2h3 e7d6 e1f1 d6c6 f1f4 e8e6 a4a5 c6c7 b2b4 e6c6 c3c4 d5c4 d3c4 g8f8 c4d5 c6d6 e3e4 b7b5 f4f5 h5h4 f5f4 f8g8 f4f1 c7e7 d4c5 f6d5 e4d5 g7g6 c5d4 e7d8 f1d1 d8e7 d1d3 e7e1 g1h2 e1e7 d3c3 d6d8 c3d3 e7d6 h2h1 d8c8 d3d1 c8c2 d4h4 g8g7 h4d4 g7g8 d4e4 c2c4 e4e3 c4c2 e3b6 d6b4 d5d6 c2d2 d1d2 b4d2 g2g4 g8g7 b6c5 b5b4 c5e5 g7h7 e5e7 d2f2 d6d7 f2f1 h1h2 f1f2 h2h1 f2f1 h1h2 f1f2 h2h1";
+
+    var state = State.defaultPosition();
+    var history = PositionHistory{};
+    history.push(state.zobrist_hash);
+
+    var it = std.mem.tokenizeScalar(u8, moves, ' ');
+    var ply: usize = 0;
+    var first_draw_ply: ?usize = null;
+    while (it.next()) |tok| {
+        const from: square.Square = @intCast((tok[1] - '1') * 8 + (tok[0] - 'a'));
+        const to: square.Square = @intCast((tok[3] - '1') * 8 + (tok[2] - 'a'));
+        playMove(&state, &history, from, to);
+        ply += 1;
+        if (first_draw_ply == null) {
+            if (isGameOverWithHistory(&state, &history)) |res| {
+                if (res == .threefoldRepetition) first_draw_ply = ply;
+            }
+        }
+    }
+    try expectEqual(@as(u16, 8), state.halfmove_clock);
+    try expectEqual(@as(?usize, 121), first_draw_ply);
 }
 
 test "ReusableSearcher matches single-threaded searchParallel" {
