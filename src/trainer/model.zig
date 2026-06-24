@@ -34,7 +34,9 @@ pub const Batch = struct {
 
 pub const NnueModel = struct {
     ft: ml.SparseLinear,
-    crelu: ml.ClippedReLU,
+    // SCReLU on the feature-transformer output; the dense hidden layers keep
+    // plain ClippedReLU.
+    ft_act: ml.SquaredClippedReLU,
     dense: ml.Sequential,
     dummy: *Tensor,
     allocator: std.mem.Allocator,
@@ -50,7 +52,7 @@ pub const NnueModel = struct {
             42,
         );
 
-        const crelu = ml.ClippedReLU.init(1.0);
+        const ft_act = ml.SquaredClippedReLU.init(1.0);
 
         const dense = try ml.Sequential.init(allocator, &.{
             Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc1_in, nnue.fc1_out, 123)), // 1024→32
@@ -71,7 +73,7 @@ pub const NnueModel = struct {
 
         return .{
             .ft = ft,
-            .crelu = crelu,
+            .ft_act = ft_act,
             .dense = dense,
             .dummy = dummy,
             .allocator = allocator,
@@ -87,9 +89,9 @@ pub const NnueModel = struct {
         self.ft.setIndices(batch.opp_indices, batch.opp_num_active, batch.size);
         const opp_acc = try self.ft.forward(self.dummy, graph);
 
-        // ClippedReLU on each accumulator
-        const stm_relu = try self.crelu.forward(stm_acc, graph);
-        const opp_relu = try self.crelu.forward(opp_acc, graph);
+        // SCReLU on each accumulator (feature-transformer output)
+        const stm_relu = try self.ft_act.forward(stm_acc, graph);
+        const opp_relu = try self.ft_act.forward(opp_acc, graph);
 
         // Concat: [batch, 512] ++ [batch, 512] → [batch, 1024]
         const combined = try graph.concat(stm_relu, opp_relu);
@@ -129,7 +131,7 @@ pub const NnueModel = struct {
 
     pub fn deinit(self: *NnueModel) void {
         self.ft.deinit();
-        self.crelu.deinit();
+        self.ft_act.deinit();
         self.dense.deinit();
         self.dummy.deinit();
         self.allocator.destroy(self.dummy);

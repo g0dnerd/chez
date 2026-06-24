@@ -3,14 +3,19 @@
 // positions. Optionally diffs two nets side by side (e.g. a new net vs the
 // current champion).
 //
-//   zig build nnue-inspect -- --net data/net_v12_buckets.nnue
-//   zig build nnue-inspect -- --net data/net_v12_buckets.nnue --compare data/net_v11_80M_wd0.03.nnue
+//   zig build nnue-inspect -- --net data/net_v13_screlu.nnue
+//   zig build nnue-inspect -- --net data/net_v13_screlu.nnue --compare data/net_v11_80M_wd0.03.nnue
 //
 // Unlike the engine (which loads a single format on purpose), this diagnostic
-// tool accepts the current bucketed format AND the prior FT-512 single-head
-// format (v4/HKP2, e.g. the v11 nets) via loadAnyFormat below, so older nets
-// stay inspectable. Pre-FT512 (256-wide) nets are a different width and cannot
-// be loaded by this binary.
+// tool accepts the current format AND the prior FT-512 single-head format
+// (v4/HKP2, e.g. the v11 nets) via loadAnyFormat below, so older nets stay
+// inspectable. Pre-FT512 (256-wide) nets are a different width and cannot be
+// loaded by this binary.
+//
+// Caveat: eval-spread uses the engine forward pass, which is now SCReLU. Weight
+// stats and accumulator occupancy are accurate for any loadable net, but the
+// eval-spread numbers are only meaningful for current-format (SCReLU) nets — for
+// a v4/v11 (CReLU-trained) net they reflect SCReLU applied to CReLU weights.
 const builtin = @import("builtin");
 const std = @import("std");
 const kore = @import("kore");

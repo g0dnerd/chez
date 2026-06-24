@@ -42,8 +42,8 @@ const ft_vec_len = std.simd.suggestVectorLength(i16) orelse 8;
 
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
-pub const format_version: u32 = 5;
-pub const arch_hash: u32 = 0x48_4B_50_33; // "HKP3" (HalfKP, FT width 512, 8 output buckets)
+pub const format_version: u32 = 6;
+pub const arch_hash: u32 = 0x48_4B_50_34; // "HKP4" (HalfKP, FT width 512, 8 output buckets, SCReLU FT activation)
 pub const header_size = 16;
 
 // Per-section byte sizes (packed, no alignment padding)
@@ -344,9 +344,10 @@ pub fn activeFeatures(state: *const State, perspective: Color) FeatureList {
     return result;
 }
 
-// Quantized forward pass: accumulator → ClippedReLU → FC1 → FC2 → output.
+// Quantized forward pass: accumulator → SCReLU → FC1 → FC2 → output.
 // All arithmetic uses integer types to match the .nnue quantization scheme:
 //   - Feature transformer: i16 weights/biases, i16 accumulator
+//   - FT activation: SCReLU (squared clipped ReLU), output i8 at scale 127
 //   - Hidden layers: i8 weights, i32 biases, i8 activations (after CReLU)
 //   - Output: i8 weights, i32 bias, result in centipawns
 
@@ -595,9 +596,11 @@ fn evaluateRawFromAccumulator(state: *const State, net: *const Network, acc: *co
     const stm = state.to_move;
     const opp: Color = @intCast(~@as(u1, @intCast(stm)));
 
-    // ClippedReLU: clamp to [0, 127], truncate to i8.
-    const stm_relu = ops.clippedRelu_i16(ft_out, &acc.values[stm]);
-    const opp_relu = ops.clippedRelu_i16(ft_out, &acc.values[opp]);
+    // SCReLU on the feature-transformer output: a_i8 = round(clamp(acc,0,127)² / 127),
+    // staying at scale 127 so FC1 is unchanged (see squaredClippedRelu_i16). The
+    // hidden layers below keep plain shiftClippedRelu.
+    const stm_relu = ops.squaredClippedRelu_i16(ft_out, &acc.values[stm]);
+    const opp_relu = ops.squaredClippedRelu_i16(ft_out, &acc.values[opp]);
 
     // Concatenate perspectives: side-to-move first → [512]i8
     var concat: [fc1_in]i8 = undefined;
