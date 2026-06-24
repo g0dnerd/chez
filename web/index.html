@@ -3,47 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chez Paul</title>
+    <title>Chez Paul - a table for two</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="container">
-      <header>
-        <h1>Chez Paul</h1>
+    <div class="room">
+      <header class="masthead">
+        <p class="masthead__eyebrow">Maison d'échecs</p>
+        <h1 class="masthead__mark"><em>Chez</em> Paul</h1>
+        <p class="masthead__tag">A chess engine, home-cooked in Zig.</p>
       </header>
 
-      <main>
-        <div class="game-area">
-          <div class="board-container">
-            <div class="board" id="board"></div>
-            <div class="file-labels">
-              <span>a</span><span>b</span><span>c</span><span>d</span
-              ><span>e</span><span>f</span><span>g</span><span>h</span>
+      <main class="parlor">
+        <section class="table" aria-label="Chessboard">
+          <div class="table__mat">
+            <div class="board-frame">
+              <div class="ranks" aria-hidden="true">
+                <span>8</span><span>7</span><span>6</span><span>5</span
+                ><span>4</span><span>3</span><span>2</span><span>1</span>
+              </div>
+              <div class="board" id="board"></div>
+              <div class="files" aria-hidden="true">
+                <span>a</span><span>b</span><span>c</span><span>d</span
+                ><span>e</span><span>f</span><span>g</span><span>h</span>
+              </div>
             </div>
           </div>
-          <div class="rank-labels">
-            <span>8</span><span>7</span><span>6</span><span>5</span
-            ><span>4</span><span>3</span><span>2</span><span>1</span>
-          </div>
-        </div>
+        </section>
 
-        <aside class="info-panel">
-          <div class="status" id="status">Loading...</div>
+        <aside class="card">
+          <div class="card__head">
+            <h2 class="card__title">Table for two</h2>
+            <p class="card__sub">You vs. Chez</p>
+          </div>
 
-          <div class="game-info">
-            <div class="info-row">
-              <span class="label">Move:</span>
-              <span id="move-number">1</span>
+          <div class="clock">
+            <div class="clock__cell">
+              <span class="clock__key">Move</span>
+              <span class="clock__val" id="move-number">1</span>
             </div>
-            <div class="info-row">
-              <span class="label">Turn:</span>
-              <span id="turn">White</span>
+            <div class="clock__divider" aria-hidden="true"></div>
+            <div class="clock__cell">
+              <span class="clock__key">To move</span>
+              <span class="clock__val" id="turn">White</span>
             </div>
           </div>
+
+          <div class="status" id="status">Setting the table...</div>
 
           <div class="controls">
-            <div class="control-row">
-              <label for="depth">Engine Depth:</label>
+            <label class="field">
+              <span class="field__label">Engine depth</span>
               <select id="depth">
                 <option value="6">6</option>
                 <option value="7">7</option>
@@ -52,38 +68,46 @@
                 <option value="10">10</option>
                 <option value="11">11</option>
               </select>
-            </div>
-            <div class="control-row">
-              <label for="player-color">Play as:</label>
+            </label>
+            <label class="field">
+              <span class="field__label">Play as</span>
               <select id="player-color">
                 <option value="white" selected>White</option>
                 <option value="black">Black</option>
               </select>
-            </div>
-            <div class="control-row">
-              <button id="unmake-move" class="btn inactive">
-                Undo Last Move
+            </label>
+            <div class="buttons">
+              <button id="unmake-move" class="btn btn--ghost inactive">
+                Take back
+              </button>
+              <button id="new-game" class="btn btn--primary active">
+                New game
               </button>
             </div>
-            <button id="new-game" class="btn active">New Game</button>
           </div>
 
-          <div class="move-history">
-            <h3>Move History</h3>
-            <div id="history" class="history-list"></div>
-          </div>
+          <section class="scoresheet">
+            <h3 class="scoresheet__title">Scoresheet</h3>
+            <div id="history" class="scoresheet__list"></div>
+          </section>
         </aside>
       </main>
 
-      <div class="modal" id="promotion-modal">
-        <div class="modal-content">
-          <h3>Promote pawn to:</h3>
-          <div class="promotion-choices">
-            <button class="promo-btn" data-piece="4">&#9813;</button>
-            <button class="promo-btn" data-piece="3">&#9814;</button>
-            <button class="promo-btn" data-piece="2">&#9815;</button>
-            <button class="promo-btn" data-piece="1">&#9816;</button>
-          </div>
+      <footer class="colophon">
+        <span>Magic bitboards · NNUE eval · Lazy SMP</span>
+        <span class="colophon__dot" aria-hidden="true">·</span>
+        <span>Written in Zig</span>
+      </footer>
+    </div>
+
+    <div class="modal" id="promotion-modal">
+      <div class="modal-content">
+        <h3>Promote to</h3>
+        <div class="promotion-choices">
+          <button class="promo-btn" data-piece="4">&#9813;</button>
+          <button class="promo-btn" data-piece="3">&#9814;</button>
+          <button class="promo-btn" data-piece="2">&#9815;</button>
+          <button class="promo-btn" data-piece="1">&#9816;</button>
         </div>
       </div>
     </div>

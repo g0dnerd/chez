@@ -296,7 +296,7 @@ function makeMove(start, end, promo) {
   }
 
   if (isEngineTurn) {
-    setStatus("Engine thinking...");
+    setStatus("Chez is thinking...");
     document.getElementById("status").classList.add("thinking");
     setTimeout(engineMove, 50);
   }
@@ -438,13 +438,13 @@ function showGameResult(result) {
 
   switch (result) {
     case 1:
-      setStatus("White wins by checkmate!");
+      setStatus("Checkmate - White wins.");
       break;
     case 2:
-      setStatus("Black wins by checkmate!");
+      setStatus("Checkmate - Black wins.");
       break;
     case 3:
-      setStatus("Draw!");
+      setStatus("Draw.");
       break;
   }
 }
