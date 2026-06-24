@@ -6,6 +6,7 @@ const movegen = @import("movegen.zig");
 const nnue = @import("nnue.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
+const clock = @import("clock.zig");
 
 // Max tapered phase (full non-pawn material), matching evaluation.zig.
 const max_phase = @import("score.zig").max_phase_mg;
@@ -238,6 +239,28 @@ const TTWord = if (is_wasm) struct {
     }
 } else Atomic(u64);
 
+// wasm32 has no 64-bit atomics, but the wasm path is single-threaded, so a plain
+// counter with the same method surface (load/fetchAdd) is a safe stand-in.
+const AtomicCounter = if (is_wasm) struct {
+    const Self = @This();
+
+    raw: u64 = 0,
+
+    fn init(v: u64) Self {
+        return .{ .raw = v };
+    }
+
+    fn load(self: *const Self, _: std.builtin.AtomicOrder) u64 {
+        return self.raw;
+    }
+
+    fn fetchAdd(self: *Self, v: u64, _: std.builtin.AtomicOrder) u64 {
+        const old = self.raw;
+        self.raw += v;
+        return old;
+    }
+} else Atomic(u64);
+
 const PackedTTEntry = struct {
     key: TTWord = TTWord.init(0),
     data: TTWord = TTWord.init(0),
@@ -338,7 +361,7 @@ pub const TranspositionTable = struct {
     // Allocate 2^buckets_bits buckets (bucket_size entries each). Larger tables
     // cut re-search at high depth; self-play uses this to size up.
     pub fn initSized(alloc: std.mem.Allocator, buckets_bits: u6) !TranspositionTable {
-        const num_buckets: usize = @as(usize, 1) << buckets_bits;
+        const num_buckets: usize = @as(usize, 1) << @as(u5, @intCast(buckets_bits));
         const entries = try alloc.alloc(PackedTTEntry, num_buckets * bucket_size);
         @memset(entries, PackedTTEntry{});
         return .{ .entries = entries, .alloc = alloc, .bucket_mask = num_buckets - 1 };
@@ -461,14 +484,15 @@ pub const SearchOptions = struct {
 // Minimal shared state for Lazy SMP - threads run independently
 const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
-    node_count: Atomic(u64) = Atomic(u64).init(0),
+    node_count: AtomicCounter = AtomicCounter.init(0),
     // Move-ordering quality counters: total beta cutoffs and cutoffs on the
     // first move searched. first/total ≈ 85-92% indicates healthy ordering.
-    cutoffs: Atomic(u64) = Atomic(u64).init(0),
-    first_move_cutoffs: Atomic(u64) = Atomic(u64).init(0),
+    cutoffs: AtomicCounter = AtomicCounter.init(0),
+    first_move_cutoffs: AtomicCounter = AtomicCounter.init(0),
     max_depth: u8 = 0,
-    io: std.Io,
-    start_time: std.Io.Timestamp,
+    // Monotonic nanoseconds at search start, for elapsed-time measurement.
+    // See clock.nowNanos (0 on freestanding/wasm, which has no time control).
+    start_ns: i96 = 0,
     options: SearchOptions = .{},
     network: ?*const nnue.Network = null,
     search_params: SearchParams = .{},
@@ -533,7 +557,7 @@ fn checkTime(shared: *SharedSearchState) void {
     }
     if (shared.options.max_time_ms) |max_ms| {
         const elapsed: u64 = @intCast(@divTrunc(
-            shared.start_time.untilNow(shared.io, std.Io.Clock.awake).nanoseconds,
+            clock.nowNanos() - shared.start_ns,
             std.time.ns_per_ms,
         ));
         if (elapsed >= max_ms) {
@@ -1438,7 +1462,7 @@ fn workerThread(ctx: *ThreadContext) void {
                 if (ctx.shared.options.on_info) |cb| {
                     const nodes = ctx.shared.node_count.load(.monotonic);
                     const elapsed_ms: u64 = @intCast(@divTrunc(
-                        ctx.shared.start_time.untilNow(ctx.shared.io, std.Io.Clock.awake).nanoseconds,
+                        clock.nowNanos() - ctx.shared.start_ns,
                         std.time.ns_per_ms,
                     ));
                     var pv_buf: [32]Move = undefined;
@@ -1481,14 +1505,9 @@ pub fn searchParallel(
     defer std.heap.page_allocator.free(cont_tables);
     for (cont_tables) |*t| t.clear();
 
-    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
-    const io = threaded.io();
-    const clock = std.Io.Clock.awake;
-
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .io = io,
-        .start_time = clock.now(io),
+        .start_ns = clock.nowNanos(),
         .options = options,
         .network = network,
         .search_params = options.search_params,
@@ -1614,15 +1633,9 @@ pub const ReusableSearcher = struct {
         tbl.newSearch();
         self.cont_hist.clear();
 
-        // Single-threaded: no worker pool is ever spawned, so the cheap
-        // single-threaded Io is enough (it still provides the clock).
-        var threaded: std.Io.Threaded = .init_single_threaded;
-        const io = threaded.io();
-
         var shared = SharedSearchState{
             .max_depth = max_depth,
-            .io = io,
-            .start_time = std.Io.Clock.awake.now(io),
+            .start_ns = clock.nowNanos(),
             .options = options,
             .network = network,
             .search_params = options.search_params,
@@ -1684,8 +1697,9 @@ pub fn searchWithHistory(
     return searchParallel(state, max_depth, num_threads, history, tbl, .{}, network);
 }
 
-// Single-threaded search for testing and debugging
-pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
+// Single-threaded search for testing and debugging.
+// `network` is the NNUE net to eval with, or null for HCE (used by the wasm path).
+pub fn searchSingleThreaded(state: *const State, max_depth: u8, network: ?*const nnue.Network) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
@@ -1702,13 +1716,10 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var best_score: i32 = undefined;
     var best_depth: u8 = 0;
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const now = std.Io.Clock.awake.now(io);
-
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .start_time = now,
+        .start_ns = clock.nowNanos(),
+        .network = network,
     };
     shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
 
@@ -1767,13 +1778,9 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
 // Runs qsearch with a full window and no time constraints.
 pub fn quiescenceEval(state: *const State) i32 {
     var mutable_state = state.*;
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const now = std.Io.Clock.awake.now(io);
     var shared = SharedSearchState{
         .max_depth = 0,
-        .io = io,
-        .start_time = now,
+        .start_ns = clock.nowNanos(),
     };
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };

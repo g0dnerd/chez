@@ -231,6 +231,10 @@ pub fn build(b: *std.Build) !void {
             .optimize = .ReleaseSmall,
         }),
     });
+    // wasm uses only kore's CPU inference ops; a CPU-only kore instance drops the
+    // OpenCL/libc link that freestanding can't satisfy.
+    const kore_wasm = b.dependency("kore", .{ .no_gpu = true }).module("kore");
+    wasm.root_module.addImport("kore", kore_wasm);
     wasm.entry = .disabled;
     wasm.rdynamic = true;
 
@@ -239,6 +243,14 @@ pub fn build(b: *std.Build) !void {
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });
     wasm_step.dependOn(&wasm_install.step);
+
+    // Optionally stage a .nnue net next to the wasm so the browser engine evals
+    // with NNUE (web/app.js fetches "chez.nnue"). Opt-in to avoid copying ~42MB
+    // on every build, e.g. `zig build wasm -Dnnue_web=data/net_v13_screlu.nnue`.
+    if (b.option([]const u8, "nnue_web", "Path to a .nnue net to install as web/chez.nnue")) |net_path| {
+        const install_net = b.addInstallFileWithDir(b.path(net_path), .{ .custom = "web" }, "chez.nnue");
+        wasm_step.dependOn(&install_net.step);
+    }
 
     // HTTP server for web interface
     const server = b.addExecutable(.{

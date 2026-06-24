@@ -1,6 +1,7 @@
 // WASM interface for the Chez chess engine
 // Uses global state pattern - single game instance, no dynamic allocation needed
 
+const std = @import("std");
 const engine = @import("chez.zig").engine;
 
 // Global game state
@@ -9,6 +10,33 @@ var move_list: engine.movegen.MoveList = undefined;
 var undo_info: [2]?engine.State.UndoInfo = @splat(null);
 var last_moves: [2]?engine.Move = @splat(null);
 var last_pieces: [2]?engine.piece.Piece = @splat(null);
+
+// NNUE network, loaded from a JS-provided byte buffer (no filesystem on wasm).
+// Null until wasm_nnue_load succeeds; search falls back to HCE while null.
+const nnue_allocator = std.heap.page_allocator;
+var nnue_network: ?*engine.nnue.Network = null;
+
+// Reserve `len` bytes of wasm memory for JS to write the raw .nnue file into.
+// JS copies the fetched bytes here, then calls wasm_nnue_load(ptr, len).
+// Returns null on allocation failure.
+export fn wasm_nnue_alloc(len: usize) ?[*]u8 {
+    const buf = nnue_allocator.alloc(u8, len) catch return null;
+    return buf.ptr;
+}
+
+// Parse the .nnue bytes at (ptr, len) into the global network. loadFromBytes
+// copies everything it needs, so the input buffer is freed here. Returns true
+// on success; on failure the engine keeps using HCE.
+export fn wasm_nnue_load(ptr: [*]u8, len: usize) bool {
+    const bytes = ptr[0..len];
+    defer nnue_allocator.free(bytes);
+    if (nnue_network) |old| {
+        old.deinit(nnue_allocator);
+        nnue_network = null;
+    }
+    nnue_network = engine.nnue.Network.loadFromBytes(nnue_allocator, bytes) catch return false;
+    return true;
+}
 
 // Initialize a new game at starting position
 export fn wasm_init_default() void {
@@ -147,7 +175,7 @@ export fn wasm_unmake_move() i8 {
 // Returns packed int: (start << 16) | (end << 8) | promo
 // Returns 0 if no legal moves
 export fn wasm_get_best_move(depth: u8) u32 {
-    const result = engine.search.searchSingleThreaded(&game_state, depth) catch return 0;
+    const result = engine.search.searchSingleThreaded(&game_state, depth, nnue_network) catch return 0;
     if (result) |r| {
         const m = r.move;
         const promo: u8 = if (m.is_promotion) m.promotion_piece else 0;

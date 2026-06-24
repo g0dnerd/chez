@@ -20,6 +20,8 @@ async function init() {
     const result = await WebAssembly.instantiate(bytes, {});
     wasm = result.instance.exports;
 
+    await loadNnue();
+
     wasm.wasm_init_default();
     updateUI();
     setStatus("Your move");
@@ -36,6 +38,34 @@ async function init() {
   } catch (e) {
     console.error("Failed to load WASM:", e);
     setStatus("Failed to load engine");
+  }
+}
+
+// Fetch the NNUE net and hand it to the wasm engine. Non-fatal: if the net is
+// missing or fails to parse, the engine keeps evaluating with the hand-crafted
+// eval. wasm_nnue_alloc may grow wasm memory (detaching the old ArrayBuffer), so
+// the memory view is created only after the allocation, from the current buffer.
+async function loadNnue() {
+  try {
+    const response = await fetch("chez.nnue");
+    if (!response.ok) {
+      console.warn("No NNUE net found, using hand-crafted eval");
+      return;
+    }
+    const buf = new Uint8Array(await response.arrayBuffer());
+    const ptr = wasm.wasm_nnue_alloc(buf.length);
+    if (ptr === 0) {
+      console.warn("NNUE alloc failed, using hand-crafted eval");
+      return;
+    }
+    new Uint8Array(wasm.memory.buffer, ptr, buf.length).set(buf);
+    if (wasm.wasm_nnue_load(ptr, buf.length)) {
+      console.log("NNUE net loaded");
+    } else {
+      console.warn("NNUE load failed, using hand-crafted eval");
+    }
+  } catch (e) {
+    console.warn("NNUE load error, using hand-crafted eval:", e);
   }
 }
 
