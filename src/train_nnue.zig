@@ -178,6 +178,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             defer batch.release();
 
             const output = try model.forward(batch, &graph);
+            loss_fn.bucket = batch.bucket_indices;
             const loss = try loss_fn.forward(output, batch.targets, &graph);
 
             try graph.backward(output);
@@ -213,6 +214,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             defer batch.release();
 
             const output = try model.forward(batch, &graph);
+            loss_fn.bucket = batch.bucket_indices;
             const loss = try loss_fn.forward(output, batch.targets, &graph);
             graph.reset();
 

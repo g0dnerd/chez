@@ -64,6 +64,7 @@ pub const DataLoader = struct {
     stm_na_buf: []u32,
     opp_na_buf: []u32,
     target_buf: []f32,
+    bucket_buf: []u32,
 
     // Worker pool for parallel feature extraction (CPU is the training
     // bottleneck; the per-record loop is embarrassingly parallel).
@@ -115,6 +116,7 @@ pub const DataLoader = struct {
         const stm_na_buf = try allocator.alloc(u32, batch_size);
         const opp_na_buf = try allocator.alloc(u32, batch_size);
         const target_buf = try allocator.alloc(f32, batch_size);
+        const bucket_buf = try allocator.alloc(u32, batch_size);
 
         const resolved_threads = @max(1, num_threads);
         const prepare_threads = try allocator.alloc(std.Thread, resolved_threads);
@@ -146,6 +148,7 @@ pub const DataLoader = struct {
             .stm_na_buf = stm_na_buf,
             .opp_na_buf = opp_na_buf,
             .target_buf = target_buf,
+            .bucket_buf = bucket_buf,
             .num_threads = resolved_threads,
             .prepare_threads = prepare_threads,
             .prepare_ctxs = prepare_ctxs,
@@ -228,6 +231,7 @@ pub const DataLoader = struct {
             .opp_indices = try uploadU32(self.ctx, self.opp_idx_buf[0 .. bs * max_active]),
             .opp_num_active = try uploadU32(self.ctx, self.opp_na_buf[0..bs]),
             .targets = try Buffer.upload(self.ctx, self.target_buf[0..bs]),
+            .bucket_indices = try uploadU32(self.ctx, self.bucket_buf[0..bs]),
             .size = @intCast(bs),
         };
     }
@@ -249,6 +253,9 @@ pub const DataLoader = struct {
             };
             const stm = state.to_move;
             const opp: engine.Color = @intCast(~@as(u1, @intCast(stm)));
+
+            // Piece-count output bucket (must match inference in nnue.zig).
+            self.bucket_buf[b] = @intCast(nnue.outputBucket(&state));
 
             // Feature extraction
             const stm_features = nnue.activeFeatures(&state, stm);
@@ -297,6 +304,7 @@ pub const DataLoader = struct {
         self.allocator.free(self.stm_na_buf);
         self.allocator.free(self.opp_na_buf);
         self.allocator.free(self.target_buf);
+        self.allocator.free(self.bucket_buf);
         self.allocator.free(self.prepare_threads);
         self.allocator.free(self.prepare_ctxs);
     }

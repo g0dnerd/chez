@@ -17,6 +17,9 @@ pub const Batch = struct {
     opp_indices: Buffer,
     opp_num_active: Buffer,
     targets: Buffer,
+    // Per-sample piece-count output bucket index, used to select the output head
+    // during the bucketed MSE loss.
+    bucket_indices: Buffer,
     size: u32,
 
     pub fn release(self: *Batch) void {
@@ -25,6 +28,7 @@ pub const Batch = struct {
         self.opp_indices.release();
         self.opp_num_active.release();
         self.targets.release();
+        self.bucket_indices.release();
     }
 };
 
@@ -53,7 +57,7 @@ pub const NnueModel = struct {
             Layer.clippedRelu(1.0),
             Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc2_in, nnue.fc2_out, 456)), // 32→32
             Layer.clippedRelu(1.0),
-            Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc2_out, 1, 789)), // 32→1
+            Layer.linear(try ml.Linear.init(allocator, ctx, nnue.fc2_out, nnue.num_output_buckets, 789)), // 32→8 (one head per bucket)
         });
 
         // Dummy tensor for SparseLinear (ignores input)
@@ -90,7 +94,7 @@ pub const NnueModel = struct {
         // Concat: [batch, 512] ++ [batch, 512] → [batch, 1024]
         const combined = try graph.concat(stm_relu, opp_relu);
 
-        // Dense: 1024→32→32→1
+        // Dense: 1024→32→32→8 (one output per piece-count bucket)
         return self.dense.forward(combined, graph);
     }
 
