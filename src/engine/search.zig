@@ -219,9 +219,38 @@ const TranspositionEntry = struct {
 //          is_promotion:1, promotion_piece:3 = 43 bits)
 const builtin = @import("builtin");
 const is_wasm = builtin.target.cpu.arch == .wasm32;
+// The threaded wasm build (chez-mt.wasm) compiles with the atomics feature and
+// runs across Web Worker instances over one shared linear memory. The single-
+// thread build (chez.wasm) has no atomics feature and keeps the cheaper non-
+// atomic word.
+const wasm_threads = is_wasm and builtin.cpu.has(.wasm, .atomics);
 
 // For WASM, provide aliased methods to allow the "generic" type to function.
-const TTWord = if (is_wasm) struct {
+// wasm32 has no 64-bit atomics, so the threaded build splits each 64-bit TT word
+// into two atomic u32 halves. A reader can still observe a half from each of two
+// racing writers, but the lock-free XOR validation (key == hash ^ data) rejects
+// any such torn read exactly as it does for the native u64 races.
+const TTWord = if (wasm_threads) struct {
+    const Self = @This();
+
+    lo: Atomic(u32) = Atomic(u32).init(0),
+    hi: Atomic(u32) = Atomic(u32).init(0),
+
+    fn init(v: u64) Self {
+        return .{ .lo = Atomic(u32).init(@truncate(v)), .hi = Atomic(u32).init(@truncate(v >> 32)) };
+    }
+
+    fn load(self: *const Self, comptime order: std.builtin.AtomicOrder) u64 {
+        const l = self.lo.load(order);
+        const h = self.hi.load(order);
+        return (@as(u64, h) << 32) | @as(u64, l);
+    }
+
+    fn store(self: *Self, v: u64, comptime order: std.builtin.AtomicOrder) void {
+        self.lo.store(@truncate(v), order);
+        self.hi.store(@truncate(v >> 32), order);
+    }
+} else if (is_wasm) struct {
     const Self = @This();
 
     raw: u64 = 0,
@@ -1773,6 +1802,138 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8, network: ?*const
         return null;
     }
 }
+
+// Per-helper shadow-stack size for the wasm threaded build. Thread 0 reuses the
+// module's default linker stack; each helper worker gets a private region this
+// large carved out of the shared linear memory (its ThreadContext, including the
+// ~400 KB accumulator stack, lives on the heap, so only the search recursion
+// uses this).
+const wasm_worker_stack_size: usize = 4 * 1024 * 1024;
+
+// Shared-memory Lazy SMP for WebAssembly. std.Thread does not exist on
+// freestanding wasm, so the browser orchestrates: it instantiates this module in
+// N Web Workers over one shared WebAssembly.Memory. Module-level vars (and
+// anything they point at) live in that shared linear memory, so the TT, the
+// SharedSearchState and the per-thread contexts allocated here are visible to
+// every worker instance. Thread 0 runs on the page's main thread and is the one
+// whose result is reported; helper workers only warm the shared TT.
+pub const WasmSmp = struct {
+    alloc: std.mem.Allocator,
+    tbl: TranspositionTable,
+    shared: SharedSearchState,
+    contexts: []ThreadContext,
+    cont_tables: []evaluation.ContHistTable,
+    // One shadow-stack region per thread. Index 0 is empty (thread 0 uses the
+    // linker stack); indices 1..n-1 are the helper-worker stacks.
+    stacks: [][]u8,
+
+    pub fn begin(
+        alloc: std.mem.Allocator,
+        state: *const State,
+        max_depth: u8,
+        max_time_ms: u32,
+        num_threads: usize,
+        game_history: ?*const PositionHistory,
+        network: ?*const nnue.Network,
+    ) !*WasmSmp {
+        const n = @max(@min(num_threads, max_threads), 1);
+
+        const self = try alloc.create(WasmSmp);
+        self.alloc = alloc;
+
+        self.tbl = try TranspositionTable.init(alloc);
+        self.tbl.newSearch();
+
+        self.cont_tables = try alloc.alloc(evaluation.ContHistTable, n);
+        for (self.cont_tables) |*t| t.clear();
+
+        self.shared = SharedSearchState{
+            .max_depth = max_depth,
+            .start_ns = clock.nowNanos(),
+            .network = network,
+            // Iterative deepening runs to max_depth but stops on the clock; 0
+            // means no time limit (depth-bounded).
+            .options = .{ .max_time_ms = if (max_time_ms == 0) null else max_time_ms },
+        };
+        self.shared.lmr_table = computeLmrTable(self.shared.search_params.lmr_base, self.shared.search_params.lmr_div);
+
+        self.contexts = try alloc.alloc(ThreadContext, n);
+        for (self.contexts, 0..) |*ctx, i| {
+            var history = PositionHistory{};
+            if (game_history) |gh| {
+                for (0..gh.len) |j| history.push(gh.hashes[j]);
+            } else {
+                history.push(state.zobrist_hash);
+            }
+            ctx.* = ThreadContext{
+                .state = state.*,
+                .killers = KillerTable{},
+                .history = history,
+                .history_table = evaluation.HistoryTable{},
+                .countermoves = CountermoveTable{},
+                .cont_hist = &self.cont_tables[i],
+                .thread_id = i,
+                .tbl = &self.tbl,
+                .shared = &self.shared,
+                .acc_stack = undefined,
+            };
+            for (&ctx.acc_stack.accs) |*acc| acc.computed = .{ false, false };
+            ctx.acc_stack.debug_eval_count = 0;
+        }
+
+        self.stacks = try alloc.alloc([]u8, n);
+        for (self.stacks, 0..) |*s, i| {
+            // page_allocator returns page-aligned (64 KiB) memory, so the
+            // resulting stack top (base + size) is suitably aligned.
+            s.* = if (i == 0) &.{} else try alloc.alloc(u8, wasm_worker_stack_size);
+        }
+
+        return self;
+    }
+
+    // Absolute linear-memory address a helper worker must load into its
+    // __stack_pointer global (the stack grows down from the top of its region).
+    pub fn stackTop(self: *const WasmSmp, thread_id: usize) usize {
+        const s = self.stacks[thread_id];
+        return @intFromPtr(s.ptr) + s.len;
+    }
+
+    // Run full iterative deepening for one thread into the shared TT. Called on
+    // the main thread for thread 0 and from each Web Worker for the helpers.
+    pub fn runThread(self: *WasmSmp, thread_id: usize) void {
+        workerThread(&self.contexts[thread_id]);
+    }
+
+    pub fn stop(self: *WasmSmp) void {
+        self.shared.stop_flag.store(true, .release);
+    }
+
+    // Thread 0's result is the answer (helpers only warmed the TT). Reading
+    // contexts[0] avoids any cross-worker visibility question since thread 0 ran
+    // on the same (main) thread that calls this.
+    pub fn result(self: *const WasmSmp) ?SearchResult {
+        const ctx = &self.contexts[0];
+        const m = ctx.best_move orelse return null;
+        return .{
+            .move = m,
+            .score = ctx.best_score,
+            .depth = ctx.best_depth,
+            .nodes = self.shared.node_count.load(.monotonic),
+            .cutoffs = self.shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = self.shared.first_move_cutoffs.load(.monotonic),
+        };
+    }
+
+    pub fn deinit(self: *WasmSmp) void {
+        const alloc = self.alloc;
+        for (self.stacks) |s| if (s.len != 0) alloc.free(s);
+        alloc.free(self.stacks);
+        alloc.free(self.contexts);
+        alloc.free(self.cont_tables);
+        self.tbl.deinit();
+        alloc.destroy(self);
+    }
+};
 
 // Standalone quiescence evaluation for use outside of search (e.g. quiet filtering).
 // Runs qsearch with a full window and no time constraints.

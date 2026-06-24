@@ -256,9 +256,49 @@ pub fn build(b: *std.Build) !void {
     // Optionally stage a .nnue net next to the wasm so the browser engine evals
     // with NNUE (web/app.js fetches "chez.nnue"). Opt-in to avoid copying ~42MB
     // on every build, e.g. `zig build wasm -Dnnue_web=data/net_v13_screlu.nnue`.
-    if (b.option([]const u8, "nnue_web", "Path to a .nnue net to install as web/chez.nnue")) |net_path| {
+    const nnue_web = b.option([]const u8, "nnue_web", "Path to a .nnue net to install as web/chez.nnue");
+    if (nnue_web) |net_path| {
         const install_net = b.addInstallFileWithDir(b.path(net_path), .{ .custom = "web" }, "chez.nnue");
         wasm_step.dependOn(&install_net.step);
+    }
+
+    // Threaded WASM build (chez-mt.wasm): shared-memory Lazy SMP across Web
+    // Workers. Same root module as chez.wasm, but compiled with the wasm threads
+    // feature set and a shared, imported linear memory. JS instantiates this
+    // module in N workers over one WebAssembly.Memory; module-level vars live in
+    // that shared memory, so the TT and search state are shared automatically.
+    // __stack_pointer is exported so each worker can point at its own stack
+    // region (wasm globals are per-instance, but linear memory is shared).
+    const wasm_mt_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .cpu_features_add = std.Target.wasm.featureSet(&.{ .atomics, .bulk_memory }),
+    });
+    const wasm_mt = b.addExecutable(.{
+        .name = "chez-mt",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_mt_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    wasm_mt.root_module.addImport("kore", b.dependency("kore", .{ .no_gpu = true }).module("kore"));
+    wasm_mt.entry = .disabled;
+    wasm_mt.rdynamic = true;
+    wasm_mt.shared_memory = true;
+    wasm_mt.import_memory = true;
+    wasm_mt.max_memory = 2 * 1024 * 1024 * 1024; // 2 GiB ceiling (wasm32 max is 4 GiB)
+    wasm_mt.stack_size = 4 * 1024 * 1024; // thread 0's shadow stack
+    wasm_mt.root_module.export_symbol_names = &.{"__stack_pointer"};
+
+    const wasm_mt_step = b.step("wasm-mt", "Build threaded WASM module (chez-mt.wasm)");
+    const wasm_mt_install = b.addInstallArtifact(wasm_mt, .{
+        .dest_dir = .{ .override = .{ .custom = "web" } },
+    });
+    wasm_mt_step.dependOn(&wasm_mt_install.step);
+    if (nnue_web) |net_path| {
+        const install_net = b.addInstallFileWithDir(b.path(net_path), .{ .custom = "web" }, "chez.nnue");
+        wasm_mt_step.dependOn(&install_net.step);
     }
 
     // HTTP server for web interface

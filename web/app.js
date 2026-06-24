@@ -13,16 +13,42 @@ let moveHistory = [];
 let playerColor = "white";
 let pendingPromotion = null;
 
+// Threaded (shared-memory Lazy SMP) state. Only used when the page is
+// cross-origin isolated (SharedArrayBuffer available). Falls back to the
+// single-threaded chez.wasm otherwise.
+let useThreads = false;
+let wasmMemory = null; // the shared WebAssembly.Memory (threaded mode only)
+let helperWorkers = []; // instantiated helper instances (threaded mode only)
+let maxThreads = 1;
+let numThreads = 1;
+
+// The active linear memory object. The single-thread module exports its memory;
+// the threaded module imports the shared memory we create here.
+function wasmMem() {
+  return useThreads ? wasmMemory : wasm.memory;
+}
+
+// Host clock import for the engine's time control. Absolute (epoch-based) ms so
+// the value is comparable across Web Worker instances, which each have their own
+// performance.now() origin.
+function nowMs() {
+  return performance.timeOrigin + performance.now();
+}
+
 async function init() {
   try {
-    const response = await fetch("chez.wasm");
-    const bytes = await response.arrayBuffer();
-    const result = await WebAssembly.instantiate(bytes, {});
-    wasm = result.instance.exports;
+    useThreads = self.crossOriginIsolated === true;
+
+    if (useThreads) {
+      await initThreaded();
+    } else {
+      await initSingle();
+    }
 
     await loadNnue();
 
     wasm.wasm_init_default();
+    setupThreadControl();
     updateUI();
     setStatus("Your move");
 
@@ -39,6 +65,66 @@ async function init() {
     console.error("Failed to load WASM:", e);
     setStatus("Failed to load engine");
   }
+}
+
+// Single-threaded engine (no cross-origin isolation): the classic chez.wasm,
+// which defines and exports its own linear memory.
+async function initSingle() {
+  const response = await fetch("chez.wasm");
+  const bytes = await response.arrayBuffer();
+  const result = await WebAssembly.instantiate(bytes, {
+    env: { chez_now_ms: nowMs },
+  });
+  wasm = result.instance.exports;
+}
+
+// Threaded engine: chez-mt.wasm instantiated over one shared WebAssembly.Memory.
+// The main instance does I/O (net load) and runs thread 0; helper workers each
+// instantiate the same module over the same shared memory and run a helper
+// thread. Workers are created up front (over a small memory) and tolerate the
+// later growth the main thread triggers when loading the net and allocating the
+// search state — shared memory growth is observable across all instances.
+async function initThreaded() {
+  const response = await fetch("chez-mt.wasm");
+  const bytes = await response.arrayBuffer();
+  const module = await WebAssembly.compile(bytes);
+
+  // 16 MiB initial; 2 GiB ceiling (matches build.zig max_memory). Grows as the
+  // net (~42 MiB) and per-search tables are allocated.
+  wasmMemory = new WebAssembly.Memory({
+    initial: 256,
+    maximum: 32768,
+    shared: true,
+  });
+
+  const mainInstance = await WebAssembly.instantiate(module, {
+    env: { memory: wasmMemory, chez_now_ms: nowMs },
+  });
+  wasm = mainInstance.exports;
+
+  maxThreads = Math.min(navigator.hardwareConcurrency || 4, 16);
+  numThreads = maxThreads;
+
+  // Spawn the helper pool (threads 1..maxThreads-1) and wait until each has
+  // instantiated the module over the shared memory.
+  const readyPromises = [];
+  for (let i = 1; i < maxThreads; i++) {
+    const w = new Worker("worker.js");
+    helperWorkers.push(w);
+    readyPromises.push(
+      new Promise((resolve) => {
+        w.addEventListener(
+          "message",
+          (e) => {
+            if (e.data.type === "ready") resolve();
+          },
+          { once: true },
+        );
+      }),
+    );
+    w.postMessage({ cmd: "init", module, memory: wasmMemory });
+  }
+  await Promise.all(readyPromises);
 }
 
 // Fetch the NNUE net and hand it to the wasm engine. Non-fatal: if the net is
@@ -58,7 +144,7 @@ async function loadNnue() {
       console.warn("NNUE alloc failed, using hand-crafted eval");
       return;
     }
-    new Uint8Array(wasm.memory.buffer, ptr, buf.length).set(buf);
+    new Uint8Array(wasmMem().buffer, ptr, buf.length).set(buf);
     if (wasm.wasm_nnue_load(ptr, buf.length)) {
       console.log("NNUE net loaded");
     } else {
@@ -318,9 +404,78 @@ function completePromotion(piece) {
   }
 }
 
-function engineMove() {
-  const depth = parseInt(document.getElementById("depth").value);
-  const packed = wasm.wasm_get_best_move(depth);
+// Wire up the thread-count selector (threaded mode only). In single-thread mode
+// the control is hidden and numThreads stays 1.
+function setupThreadControl() {
+  const row = document.getElementById("threads-row");
+  if (!row) return;
+  if (!useThreads || maxThreads <= 1) {
+    row.style.display = "none";
+    return;
+  }
+  const select = document.getElementById("threads");
+  select.innerHTML = "";
+  for (let n = 1; n <= maxThreads; n++) {
+    const opt = document.createElement("option");
+    opt.value = String(n);
+    opt.textContent = String(n);
+    if (n === numThreads) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => {
+    numThreads = Math.max(1, Math.min(parseInt(select.value) || 1, maxThreads));
+  });
+}
+
+// Run a time-limited search and return the packed best move. Both the single-
+// and multi-threaded paths go through the SMP API (with 1 thread in single mode),
+// so iterative deepening stops correctly on the per-move clock.
+async function computeBestMove(timeMs) {
+  const threads = useThreads ? numThreads : 1;
+  const packed = await searchMT(timeMs, threads);
+  if (packed !== null) return packed;
+  // SMP setup failed (allocation); emergency fixed-depth search so play can go on.
+  return wasm.wasm_get_best_move(8);
+}
+
+// Shared-memory Lazy SMP search for timeMs milliseconds. Thread 0 runs on this
+// (main) thread; helper workers warm the shared TT. Returns the packed move, or
+// null if SMP setup failed (caller falls back to a fixed-depth search).
+async function searchMT(timeMs, threads) {
+  if (!wasm.wasm_smp_begin(timeMs, threads)) return null;
+
+  const helpers = Math.min(threads - 1, helperWorkers.length);
+  const donePromises = [];
+  for (let i = 1; i <= helpers; i++) {
+    const w = helperWorkers[i - 1];
+    const stackTop = wasm.wasm_smp_stack_top(i) >>> 0;
+    donePromises.push(
+      new Promise((resolve) => {
+        w.addEventListener(
+          "message",
+          (e) => {
+            if (e.data.type === "done") resolve();
+          },
+          { once: true },
+        );
+      }),
+    );
+    w.postMessage({ cmd: "run", threadId: i, stackTop });
+  }
+
+  // Thread 0 runs synchronously here (blocks the main thread for the search,
+  // same as the single-thread build). When it returns, signal the helpers to
+  // stop and wait for them to finish before reading/freeing the shared state.
+  wasm.wasm_smp_run_thread(0);
+  wasm.wasm_smp_stop();
+  await Promise.all(donePromises);
+
+  return wasm.wasm_smp_finish() >>> 0;
+}
+
+async function engineMove() {
+  const timeMs = parseInt(document.getElementById("movetime").value);
+  const packed = await computeBestMove(timeMs);
 
   if (packed === 0) {
     // No legal moves
