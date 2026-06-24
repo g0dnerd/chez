@@ -97,13 +97,18 @@ fn flat(comptime T: type, ptr: anytype, n: usize) []const T {
 }
 
 // Inspector-only loader. The engine's Network.loadFromBytes is intentionally
-// single-format (current bucketed v5/HKP3). This tool additionally reads the
-// prior FT-512 single-head format (v4/HKP2 — the v11 champion nets) by parsing
-// it into the current Network struct and broadcasting the one output head across
-// all buckets (faithful, since v11 used one head for every position). The FT and
-// FC sections are byte-identical between v4 and v5 (same widths); only the output
-// section differs. This duplication is deliberate and lives only here.
+// single-format (current bucketed v6/HKP4). This tool additionally reads two
+// older formats:
+//   - v5/HKP3: byte-identical layout to v6 (the v5→v6 change only swapped the FT
+//     activation CReLU→SCReLU, an inference-time difference); we reuse the engine
+//     loader by patching the version/arch header into a copy.
+//   - v4/HKP2 (the v11 champion nets): prior FT-512 single-head format, parsed
+//     into the current Network struct by broadcasting the one output head across
+//     all buckets (faithful, since v11 used one head for every position). The FT
+//     and FC sections are byte-identical to v5/v6 (same widths); only the output
+//     section differs. This duplication is deliberate and lives only here.
 const v4_arch_hash: u32 = 0x48_4B_50_32; // "HKP2"
+const v5_arch_hash: u32 = 0x48_4B_50_33; // "HKP3"
 
 fn loadAnyFormat(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !*nnue.Network {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
@@ -127,8 +132,24 @@ fn loadAnyFormat(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !*n
 
     const ver = std.mem.readInt(u32, data[4..8], .little);
     if (ver == nnue.format_version) return nnue.Network.loadFromBytes(allocator, data);
+    if (ver == 5) return loadV5Net(allocator, data);
     if (ver == 4) return loadV4Net(allocator, data);
     return error.UnsupportedVersion;
+}
+
+// Parse a v5/HKP3 net. Its on-disk layout is byte-identical to the current
+// v6/HKP4 format, so we patch the version/arch header bytes into a copy and reuse
+// the engine loader rather than duplicating the section parse here.
+fn loadV5Net(allocator: std.mem.Allocator, data: []const u8) !*nnue.Network {
+    const arch = std.mem.readInt(u32, data[8..12], .little);
+    if (arch != v5_arch_hash) return error.ArchitectureMismatch;
+
+    const buf = try allocator.alloc(u8, data.len);
+    defer allocator.free(buf);
+    @memcpy(buf, data);
+    std.mem.writeInt(u32, buf[4..8], nnue.format_version, .little);
+    std.mem.writeInt(u32, buf[8..12], nnue.arch_hash, .little);
+    return nnue.Network.loadFromBytes(allocator, buf);
 }
 
 // Parse a v4/HKP2 (FT-512, single output head) net into the current Network.

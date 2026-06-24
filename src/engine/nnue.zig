@@ -284,7 +284,9 @@ pub const Network = struct {
 // the training-side bucket in trainer/dataloader.zig.
 pub fn outputBucket(state: *const State) usize {
     const piece_count = state.colors[Colors.white].bitOr(Bitboard, state.colors[Colors.black]).popCount();
-    return @min(@as(usize, (piece_count - 1) / 4), num_output_buckets - 1);
+    // Saturating sub: a kingless/empty (illegal) board has piece_count 0; map it to
+    // bucket 0 rather than underflowing the unsigned subtraction (panics in safe builds).
+    return @min(@as(usize, (piece_count -| 1) / 4), num_output_buckets - 1);
 }
 
 // Feature extraction
