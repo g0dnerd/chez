@@ -244,6 +244,15 @@ pub fn build(b: *std.Build) !void {
     });
     wasm_step.dependOn(&wasm_install.step);
 
+    // Stage the static frontend (html/css/js/svg) next to the wasm so the
+    // server, which serves from zig-out/web, has everything it needs.
+    const install_web = b.addInstallDirectory(.{
+        .source_dir = b.path("web"),
+        .install_dir = .{ .custom = "web" },
+        .install_subdir = "",
+    });
+    wasm_step.dependOn(&install_web.step);
+
     // Optionally stage a .nnue net next to the wasm so the browser engine evals
     // with NNUE (web/app.js fetches "chez.nnue"). Opt-in to avoid copying ~42MB
     // on every build, e.g. `zig build wasm -Dnnue_web=data/net_v13_screlu.nnue`.

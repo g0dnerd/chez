@@ -426,8 +426,8 @@ function addMoveToHistory(moveStr, color) {
 function updateHistoryDisplay() {
   const div = document.getElementById("history");
   const content = moveHistory
-    .map((m) => `${m.num}. ${m.white} ${m.black}`)
-    .join("<br>");
+    .map((m) => `<div class="ply">${m.num}. ${m.white} ${m.black}</div>`)
+    .join("");
   div.innerHTML = `<div class="history-content">${content}</div>`;
   div.scrollTop = div.scrollHeight;
 }
