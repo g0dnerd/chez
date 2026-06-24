@@ -33,7 +33,7 @@ pub const fc2_in = fc1_out;
 pub const fc2_out = 32;
 
 // Piece-count output buckets: bucket = clamp((popcount(all_pieces) - 1) / 4, 0, 7).
-pub const num_output_buckets = 8;
+pub const num_output_buckets = 1;
 
 pub const max_active_features = 30;
 
@@ -42,8 +42,8 @@ const ft_vec_len = std.simd.suggestVectorLength(i16) orelse 8;
 
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
-pub const format_version: u32 = 6;
-pub const arch_hash: u32 = 0x48_4B_50_34; // "HKP4" (HalfKP, FT width 512, 8 output buckets, SCReLU FT activation)
+pub const format_version: u32 = 7;
+pub const arch_hash: u32 = 0x48_4B_53_31; // "HKS1" (HalfKP, FT width 512, single output head, SCReLU FT activation)
 pub const header_size = 16;
 
 // Per-section byte sizes (packed, no alignment padding)
@@ -758,9 +758,8 @@ test "network write/load round trip" {
     net.fc2_weights[0][0] = 3;
     net.fc2_biases[fc2_out - 1] = -50;
     net.output_weights[0][0] = 21;
-    net.output_weights[num_output_buckets - 1][fc2_out - 1] = -22;
+    net.output_weights[0][fc2_out - 1] = -22;
     net.output_bias[0] = 12345;
-    net.output_bias[num_output_buckets - 1] = -6789;
 
     const buf = try allocator.alloc(u8, expected_file_size);
     defer allocator.free(buf);
@@ -781,9 +780,8 @@ test "network write/load round trip" {
     try std.testing.expectEqual(@as(i8, 3), net2.fc2_weights[0][0]);
     try std.testing.expectEqual(@as(i32, -50), net2.fc2_biases[fc2_out - 1]);
     try std.testing.expectEqual(@as(i16, 21), net2.output_weights[0][0]);
-    try std.testing.expectEqual(@as(i16, -22), net2.output_weights[num_output_buckets - 1][fc2_out - 1]);
+    try std.testing.expectEqual(@as(i16, -22), net2.output_weights[0][fc2_out - 1]);
     try std.testing.expectEqual(@as(i32, 12345), net2.output_bias[0]);
-    try std.testing.expectEqual(@as(i32, -6789), net2.output_bias[num_output_buckets - 1]);
 }
 
 test "loadFromBytes rejects bad magic" {
@@ -815,9 +813,9 @@ test "loadFromBytes rejects short file" {
 test "expected file size" {
     // header 16 + ft_biases (512×2) + ft_weights (40960×512×2) + fc1_weights
     // (1024×32) + fc1_biases (32×4) + fc2_weights (32×32) + fc2_biases (32×4)
-    // + output_weights (8×32×2) + output_bias (8×4)
+    // + output_weights (1×32×2) + output_bias (1×4)  — single head
     try std.testing.expectEqual(
-        @as(usize, 16 + 1_024 + 41_943_040 + 32_768 + 128 + 1_024 + 128 + 512 + 32),
+        @as(usize, 16 + 1_024 + 41_943_040 + 32_768 + 128 + 1_024 + 128 + 64 + 4),
         expected_file_size,
     );
 }
@@ -856,14 +854,14 @@ test "evaluate zero network returns zero" {
 
 test "evaluate output bias only" {
     // With all weights zero, only the output bias contributes.
-    // Result = output_bias ÷ (127 × 64). The start position has 32 pieces →
-    // bucket (32-1)/4 = 7, so the bias of head 7 is the one that contributes.
+    // Result = output_bias ÷ (127 × 64). Single output head, so every position
+    // selects bucket 0.
     const allocator = std.testing.allocator;
     const net = try createZeroNetwork(allocator);
     defer net.deinit(allocator);
 
     const start_bucket = outputBucket(&State.defaultPosition());
-    try std.testing.expectEqual(@as(usize, 7), start_bucket);
+    try std.testing.expectEqual(@as(usize, 0), start_bucket);
 
     net.output_bias[start_bucket] = 127 * 64; // Should produce exactly 1 centipawn
     try std.testing.expectEqual(@as(i32, 1), evaluate(&State.defaultPosition(), net));
@@ -873,26 +871,6 @@ test "evaluate output bias only" {
 
     net.output_bias[start_bucket] = 127 * 64 * 100; // 100 centipawns
     try std.testing.expectEqual(@as(i32, 100), evaluate(&State.defaultPosition(), net));
-}
-
-test "evaluate selects output head by piece-count bucket" {
-    // With all weights zero, eval = output_bias[bucket] ÷ (127×64). Two positions
-    // in different buckets must read different heads.
-    const allocator = std.testing.allocator;
-    const net = try createZeroNetwork(allocator);
-    defer net.deinit(allocator);
-
-    net.output_bias[0] = 127 * 64 * 7; // low-piece head → 7 cp
-    net.output_bias[num_output_buckets - 1] = 127 * 64 * 33; // full-board head → 33 cp
-
-    // Start position: 32 pieces → bucket 7.
-    try std.testing.expectEqual(@as(usize, num_output_buckets - 1), outputBucket(&State.defaultPosition()));
-    try std.testing.expectEqual(@as(i32, 33), evaluate(&State.defaultPosition(), net));
-
-    // K+P vs K: 3 pieces → bucket 0.
-    const endgame = try State.fromFen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1");
-    try std.testing.expectEqual(@as(usize, 0), outputBucket(&endgame));
-    try std.testing.expectEqual(@as(i32, 7), evaluate(&endgame, net));
 }
 
 test "evaluate symmetric position gives same magnitude for both sides" {
