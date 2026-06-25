@@ -262,6 +262,10 @@ body {
   gap: 22px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
   animation: settle 0.7s 0.08s cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Cap the card at the board's height so it never grows past it. This
+     gives the flex:1 scoresheet a definite bound to scroll inside,
+     instead of the card (and page) stretching with every move. */
+  max-height: calc(var(--board) + var(--coord) + var(--mat) * 2);
 }
 
 .card__head {
@@ -468,8 +472,9 @@ select:focus-visible {
   flex: 1;
   display: flex;
   flex-direction: column;
+  /* min-height:0 lets this shrink so the inner list scrolls rather than
+     pushing the card taller; flex:1 still fills the space beside the board. */
   min-height: 0;
-  min-height: 140px;
 }
 
 .scoresheet__list {
@@ -624,6 +629,9 @@ select:focus-visible {
   .card {
     width: 100%;
     max-width: calc(var(--board) + var(--coord) + var(--mat) * 2);
+    /* Board is stacked above the card here, so don't cap to its height;
+       the scoresheet is bounded by its own max-height below. */
+    max-height: none;
   }
 
   .scoresheet {
