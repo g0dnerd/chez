@@ -172,6 +172,28 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    // Temp (v14-selfplay-v11labeler branch): build ONLY selfplay, so the
+    // format-v4 nnue.zig (which lacks num_output_buckets/outputBucket) doesn't
+    // have to satisfy the trainer/inspector binaries.
+    const selfplay_only_step = b.step("selfplay-only", "Build only the selfplay binary");
+    selfplay_only_step.dependOn(&b.addInstallArtifact(selfplay, .{}).step);
+
+    // Temp (v14-selfplay-v11labeler branch): pilot dataset stats tool.
+    const dataset_stats = b.addExecutable(.{
+        .name = "dataset-stats",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dataset_stats.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "chez", .module = chez_mod },
+                .{ .name = "kore", .module = kore },
+            },
+        }),
+    });
+    const dataset_stats_step = b.step("dataset-stats", "Build the pilot dataset-stats tool");
+    dataset_stats_step.dependOn(&b.addInstallArtifact(dataset_stats, .{}).step);
+
     const train_nnue = b.addExecutable(.{
         .name = "train_nnue",
         .root_module = b.createModule(.{

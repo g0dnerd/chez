@@ -45,6 +45,7 @@ identity=""
 port=""
 remote_dir='~/chez-selfplay'
 eval_file=""
+openings_file=""
 bin=./zig-out/bin/selfplay
 do_build=1
 detach=1
@@ -63,6 +64,7 @@ Usage: $0 --host USER@HOST [options] [-- shard_selfplay.sh options]
   --port N            ssh port
   --remote-dir DIR    remote working directory (default $remote_dir)
   --eval PATH         local .nnue to upload and play with
+  --openings PATH     local opening book (FEN/line) to upload and play from
   --bin PATH          local selfplay binary (default $bin)
   --no-build          skip the local 'zig build' step
   --remote-build      build on the remote from an existing checkout instead of
@@ -90,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --port) port=$2; shift 2;;
     --remote-dir) remote_dir=$2; shift 2;;
     --eval) eval_file=$2; shift 2;;
+    --openings) openings_file=$2; shift 2;;
     --bin) bin=$2; shift 2;;
     --no-build) do_build=0; shift;;
     --remote-build) remote_build=1; shift;;
@@ -105,6 +108,7 @@ done
 
 [[ -n "$host" ]] || { echo "error: --host is required" >&2; usage; }
 [[ -z "$eval_file" || -f "$eval_file" ]] || die "eval file not found: $eval_file"
+[[ -z "$openings_file" || -f "$openings_file" ]] || die "openings file not found: $openings_file"
 [[ "$remote_build" -eq 0 || -n "$repo" ]] || die "--remote-build requires --repo PATH"
 
 # A loopback host means this machine: run directly, no ssh/scp.
@@ -197,8 +201,12 @@ ssh "$host" "mkdir -p $remote_dir"
 if [[ "$remote_build" -eq 1 ]]; then
   repo=$(resolve_remote "$repo")
   ssh "$host" "test -d $repo" || die "remote repo not found: $host:$repo"
-  echo ">> building on remote: $host:$repo (zig build $build_args)" >&2
-  if ! ssh "$host" "cd $repo && zig build $build_args"; then
+  # Build only the selfplay binary. The v14 net-isolation branch reverts
+  # nnue.zig to format-v4/HKP2 (to label with the v11 net), which drops the
+  # output-bucket API that the trainer/inspector targets use -- so a full
+  # `zig build` fails on those. The `selfplay-only` step builds just selfplay.
+  echo ">> building on remote: $host:$repo (zig build selfplay-only $build_args)" >&2
+  if ! ssh "$host" "cd $repo && zig build selfplay-only $build_args"; then
     die "remote build failed in $repo. Is zig on the remote PATH, and are the \
 build args ($build_args) correct?"
   fi
@@ -223,6 +231,13 @@ if [[ -n "$eval_file" ]]; then
   remote_eval="$remote_dir/$(basename "$eval_file")"
 fi
 
+remote_openings=""
+if [[ -n "$openings_file" ]]; then
+  echo ">> uploading opening book ($openings_file)" >&2
+  scp "$openings_file" "$host:$remote_dir/$(basename "$openings_file")"
+  remote_openings="$remote_dir/$(basename "$openings_file")"
+fi
+
 # Probe: run zero games. This loads the binary (catching a glibc mismatch on
 # uploaded binaries up front) and prints the core count we'll be working with.
 echo ">> probing remote (binary + core count)" >&2
@@ -242,6 +257,7 @@ echo ">> remote has $remote_cores core(s)" >&2
 # Build the remote command line for shard_selfplay.sh.
 run_args=(--bin "$remote_bin")
 [[ -n "$remote_eval" ]] && run_args+=(--eval "$remote_eval")
+[[ -n "$remote_openings" ]] && run_args+=(--openings "$remote_openings")
 run_args+=("${passthrough[@]}")
 
 # Quote each arg so the remote shell sees them intact.
