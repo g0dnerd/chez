@@ -113,26 +113,21 @@ pub noinline fn exportNnue(
         }
     }
 
-    // Output weights: [32, 8] f32 (input-major) → [8][32] i16 (bucket-major), scale = 64
+    // Output weights: [32] f32 → [32] i16, scale = 64
     {
-        const n = nnue.fc2_out * nnue.num_output_buckets;
+        const n = nnue.fc2_out;
         var buf: [n]f32 = undefined;
         try params[6].storage.gpu.buffer.download(ctx, &buf);
-        for (0..nnue.fc2_out) |i| {
-            for (0..nnue.num_output_buckets) |bucket| {
-                net.output_weights[bucket][i] = quantizeI16(buf[i * nnue.num_output_buckets + bucket], 64.0);
-            }
+        for (0..n) |i| {
+            net.output_weights[i] = quantizeI16(buf[i], 64.0);
         }
     }
 
-    // Output bias: [8] f32 → [8] i32, scale = 127*64
+    // Output bias: [1] f32 → i32, scale = 127*64
     {
-        const n = nnue.num_output_buckets;
-        var buf: [n]f32 = undefined;
+        var buf: [1]f32 = undefined;
         try params[7].storage.gpu.buffer.download(ctx, &buf);
-        for (0..n) |bucket| {
-            net.output_bias[bucket] = quantizeI32(buf[bucket], 127.0 * 64.0);
-        }
+        net.output_bias = quantizeI32(buf[0], 127.0 * 64.0);
     }
 
     // Write to file

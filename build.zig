@@ -206,6 +206,8 @@ pub fn build(b: *std.Build) !void {
             },
         }),
     });
+    const train_nnue_step = b.step("train_nnue", "Build the NNUE trainer binary");
+    train_nnue_step.dependOn(&b.addInstallArtifact(train_nnue, .{}).step);
 
     const test_step = b.step("test", "Run unit tests");
     const test_filters: []const []const u8 = b.option(
