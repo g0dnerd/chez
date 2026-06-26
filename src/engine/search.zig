@@ -47,6 +47,9 @@ pub const SearchParams = struct {
     // Internal Iterative Reductions: with no TT move at depth >= iir_min_depth,
     // search one ply shallower.
     iir_min_depth: i32 = 4,
+    // Syzygy WDL probing: probe tablebases only at interior nodes with depth >=
+    // syzygy_probe_depth (no effect unless tables are loaded). See engine.tablebase.
+    syzygy_probe_depth: i32 = 1,
 };
 
 // Precompute the LMR reduction table [depth][move_index] from the log formula.
@@ -74,6 +77,8 @@ fn computeLmrTable(lmr_base: i32, lmr_div: i32) [64][64]u8 {
 const checkmate_score: i32 = 100000;
 const max_ply: usize = 64;
 const mate_score_threshold: i32 = checkmate_score - max_ply;
+// Syzygy WDL win/loss band: above any normal eval, below mate scores, within i16.
+const tb_win_value: i32 = 28000;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
 const beta_init: i32 = std.math.maxInt(i32);
 const max_threads: usize = 16;
@@ -821,6 +826,23 @@ fn negamax(
     }
 
     const to_move = state.to_move;
+
+    // Syzygy WDL probe at interior nodes. Trust the verdict only at halfmove_clock
+    // == 0 (Stockfish-style): WDL is 50-move-correct only when the counter is reset,
+    // so cursed/blessed collapse to draw cleanly. Piece-count and castling gates live
+    // in probeWdl. Return without a TT store -- the i16 TT clamp would corrupt the
+    // tb_win band; caching it is a deferred optimization.
+    if (ply > 0 and engine.tablebase.available() and state.halfmove_clock == 0 and
+        @as(i32, depth) >= search_ctx.shared.search_params.syzygy_probe_depth)
+    {
+        if (engine.tablebase.probeWdl(state)) |wdl| {
+            return switch (wdl) {
+                .win => tb_win_value - @as(i32, @intCast(ply)),
+                .loss => -(tb_win_value - @as(i32, @intCast(ply))),
+                .draw => 0,
+            };
+        }
+    }
 
     // At depth 0, drop into quiescence search immediately.
     // Quiescence handles checkmate detection when in check.

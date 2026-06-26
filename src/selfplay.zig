@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const engine = @import("chez").engine;
+const fathom = @import("fathom.zig");
 const kore = @import("kore");
 pub const serde = @import("selfplay/serde.zig");
 
@@ -22,6 +23,10 @@ const default_score_filter: i32 = 10000;
 const default_adjudication_threshold: i32 = 2500;
 const default_adjudication_count: u16 = 4;
 const sample_interval: u16 = 4;
+// Syzygy WDL label magnitude (centipawns). Large enough to saturate the training
+// sigmoid for decisive endgames; draws are labeled 0. Recorded via shouldRecordTb,
+// which bypasses score_filter so TB-perfect decisive labels are always kept.
+const tb_label_cp: i32 = 20000;
 
 // Buckets for the recorded-position ply histogram (ply measured from each game's
 // root, i.e. the book position or startpos). Game length is capped at
@@ -157,6 +162,16 @@ const SelfplayGame = struct {
         return true;
     }
 
+    // Record gate for TB-labeled endgame positions. Drops shouldRecord's
+    // score_filter (decisive endgames must be kept) and sample_interval (immediate
+    // adjudication means at most one TB record per game -- no within-game
+    // correlation to thin). Keeps skip_plies and the in-check gate.
+    fn shouldRecordTb(self: *const Self) bool {
+        if (self.ply < skip_plies) return false;
+        if (self.state.in_check != null) return false;
+        return true;
+    }
+
     fn bufferPosition(self: *Self, score: i32) !void {
         if (self.num_records >= max_game_records) return;
         var record = &self.records[self.num_records];
@@ -187,9 +202,31 @@ const SelfplayGame = struct {
         const best_move = search_res.move;
         const score = search_res.score;
 
-        // Label with the backed-up search score (NNUE-driven when a net is loaded),
-        // a stronger target than a static eval of the same position.
-        if (self.shouldRecord(score)) {
+        // Syzygy WDL: when the position is in TB range, prefer the exact endgame
+        // verdict over the search score. Record it (bypassing score_filter so
+        // decisive endgames are kept) and adjudicate the game immediately on the
+        // exact result -- shorter games + a TB-correct per-game WDL byte.
+        // probeWdl returns null when no tables are loaded, so the else branch keeps
+        // the existing search-score labeling behavior unchanged.
+        if (engine.tablebase.probeWdl(&self.state)) |wdl| {
+            if (self.shouldRecordTb()) {
+                const tb_score: i32 = switch (wdl) {
+                    .win => tb_label_cp,
+                    .loss => -tb_label_cp,
+                    .draw => 0,
+                };
+                try self.bufferPosition(tb_score);
+            }
+            // WDL is from the side to move; map to white's perspective exactly like
+            // the eval-based adjudication below.
+            return switch (wdl) {
+                .win => if (self.state.to_move == engine.Colors.white) .white_wins else .black_wins,
+                .loss => if (self.state.to_move == engine.Colors.white) .black_wins else .white_wins,
+                .draw => .draw,
+            };
+        } else if (self.shouldRecord(score)) {
+            // Label with the backed-up search score (NNUE-driven when a net is
+            // loaded), a stronger target than a static eval of the same position.
             try self.bufferPosition(score);
         }
 
@@ -346,6 +383,7 @@ const Args = struct {
     adjudication_count: ?u16,
     openings: ?[]const u8,
     random_plies: ?u16,
+    syzygy: ?[]const u8,
 };
 
 // Load a balanced opening book: one FEN per line (blank lines and unparseable
@@ -461,6 +499,27 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
     try stderr.flush();
+
+    // Initialize Syzygy tablebases before spawning workers (tb_init is not
+    // thread-safe; probes afterward are concurrent-safe). When loaded, endgame
+    // positions get TB-perfect WDL labels + adjudication; otherwise probing is a
+    // no-op and selfplay behaves exactly as before.
+    if (parsed_args.syzygy) |syzygy_path| {
+        if (std.heap.page_allocator.dupeZ(u8, syzygy_path)) |path_z| {
+            defer std.heap.page_allocator.free(path_z);
+            if (fathom.init(path_z.ptr)) {
+                engine.tablebase.raw_probe_fn = &fathom.probeRaw;
+                engine.tablebase.largest = fathom.largest;
+                try stderr.print("Syzygy: loaded up to {d}-man tables from {s}\n", .{ fathom.largest, syzygy_path });
+            } else {
+                try stderr.print("Warning: no Syzygy tables found at {s} (probing disabled)\n", .{syzygy_path});
+            }
+            try stderr.flush();
+        } else |err| {
+            try stderr.print("Warning: could not allocate Syzygy path: {}\n", .{err});
+            try stderr.flush();
+        }
+    }
 
     const actual_threads = @min(num_threads, max_threads);
     const games_per_worker = num_games / actual_threads;

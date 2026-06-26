@@ -1,5 +1,6 @@
 const std = @import("std");
 const chez = @import("chez.zig");
+const fathom = @import("fathom.zig");
 const engine = chez.engine;
 const nnue = engine.nnue;
 const search = engine.search;
@@ -197,6 +198,8 @@ pub fn main() !void {
             stdout.writeAll("option name HistPruneDepth type spin default 3 min 0 max 8\n") catch {};
             stdout.writeAll("option name HistPruneMargin type spin default 2000 min 200 max 12000\n") catch {};
             stdout.writeAll("option name IirMinDepth type spin default 4 min 2 max 12\n") catch {};
+            stdout.writeAll("option name SyzygyPath type string default <empty>\n") catch {};
+            stdout.writeAll("option name SyzygyProbeDepth type spin default 1 min 1 max 10\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -265,6 +268,31 @@ pub fn main() !void {
                 search_params.histprune_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_margin;
             } else if (std.mem.eql(u8, opt_name, "IirMinDepth")) {
                 search_params.iir_min_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.iir_min_depth;
+            } else if (std.mem.eql(u8, opt_name, "SyzygyPath")) {
+                if (opt_val.len > 0) {
+                    // tb_init is not thread-safe: stop any running search first.
+                    if (search_thread) |t| {
+                        stop_flag.store(true, .release);
+                        t.join();
+                        search_thread = null;
+                    }
+                    if (std.heap.page_allocator.dupeZ(u8, opt_val)) |path_z| {
+                        defer std.heap.page_allocator.free(path_z);
+                        const loaded = fathom.init(path_z.ptr);
+                        engine.tablebase.raw_probe_fn = if (loaded) &fathom.probeRaw else null;
+                        engine.tablebase.largest = if (loaded) fathom.largest else 0;
+                        try stdout_mutex.lock(io);
+                        if (loaded) {
+                            stdout.print("info string Syzygy: loaded up to {d}-man tables from '{s}'\n", .{ fathom.largest, opt_val }) catch {};
+                        } else {
+                            stdout.print("info string Syzygy: no tables found at '{s}' (probing disabled)\n", .{opt_val}) catch {};
+                        }
+                        stdout.flush() catch {};
+                        stdout_mutex.unlock(io);
+                    } else |_| {}
+                }
+            } else if (std.mem.eql(u8, opt_name, "SyzygyProbeDepth")) {
+                search_params.syzygy_probe_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.syzygy_probe_depth;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
