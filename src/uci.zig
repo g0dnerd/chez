@@ -60,38 +60,61 @@ const InfoCtx = struct {
     io: std.Io,
 };
 
-fn infoCallback(
-    ctx_ptr: ?*anyopaque,
-    depth: u8,
-    score: i32,
-    nodes: u64,
-    time_ms: u64,
-    pv: []const Move,
-) void {
+fn infoCallback(ctx_ptr: ?*anyopaque, report: search.InfoReport) void {
+    const ctx: *InfoCtx = @ptrCast(@alignCast(ctx_ptr.?));
+
+    const nps = report.nodes * 1000 / @max(report.time_ms, 1);
+
+    // Format the whole line into a local buffer first, then emit it with a
+    // single writeAll. A mid-line writer error can then never leave a partial
+    // 'info ...' line in the shared stdout buffer for the next callback to
+    // concatenate onto. 512 bytes comfortably holds the fixed fields plus a
+    // 32-move PV.
+    var line_buf: [512]u8 = undefined;
+    var lw = std.Io.Writer.fixed(&line_buf);
+    const w = &lw;
+
+    w.print("info depth {d} seldepth {d}", .{ report.depth, report.seldepth }) catch {};
+
+    if (report.score >= mate_score_threshold) {
+        const plies = checkmate_score - report.score;
+        w.print(" score mate {d}", .{@divTrunc(plies + 1, 2)}) catch {};
+    } else if (report.score <= -mate_score_threshold) {
+        const plies = checkmate_score + report.score;
+        w.print(" score mate -{d}", .{@divTrunc(plies + 1, 2)}) catch {};
+    } else {
+        w.print(" score cp {d}", .{report.score}) catch {};
+    }
+
+    switch (report.bound) {
+        .exact => {},
+        .lower => w.writeAll(" lowerbound") catch {},
+        .upper => w.writeAll(" upperbound") catch {},
+    }
+
+    w.print(" nodes {d} nps {d} hashfull {d} tbhits {d} time {d}", .{
+        report.nodes, nps, report.hashfull, report.tbhits, report.time_ms,
+    }) catch {};
+
+    if (report.pv.len > 0) {
+        w.writeAll(" pv") catch {};
+        for (report.pv) |m| {
+            w.print(" {f}", .{m}) catch {};
+        }
+    }
+    w.writeByte('\n') catch {};
+
+    ctx.mutex.lock(ctx.io) catch unreachable;
+    defer ctx.mutex.unlock(ctx.io);
+    ctx.writer.writeAll(w.buffered()) catch return;
+    ctx.writer.flush() catch return;
+}
+
+fn currmoveCallback(ctx_ptr: ?*anyopaque, depth: u8, move: Move, move_number: u32) void {
     const ctx: *InfoCtx = @ptrCast(@alignCast(ctx_ptr.?));
     ctx.mutex.lock(ctx.io) catch unreachable;
     defer ctx.mutex.unlock(ctx.io);
-
-    if (score >= mate_score_threshold) {
-        const plies = checkmate_score - score;
-        const full_moves = @divTrunc(plies + 1, 2);
-        ctx.writer.print("info depth {d} score mate {d} nodes {d} time {d}", .{ depth, full_moves, nodes, time_ms }) catch return;
-    } else if (score <= -mate_score_threshold) {
-        const plies = checkmate_score + score;
-        const full_moves = @divTrunc(plies + 1, 2);
-        ctx.writer.print("info depth {d} score mate -{d} nodes {d} time {d}", .{ depth, full_moves, nodes, time_ms }) catch return;
-    } else {
-        ctx.writer.print("info depth {d} score cp {d} nodes {d} time {d}", .{ depth, score, nodes, time_ms }) catch return;
-    }
-
-    if (pv.len > 0) {
-        ctx.writer.writeAll(" pv") catch return;
-        for (pv) |m| {
-            ctx.writer.writeByte(' ') catch return;
-            ctx.writer.print("{f}", .{m}) catch return;
-        }
-    }
-    ctx.writer.writeByte('\n') catch return;
+    ctx.writer.print("info depth {d} currmove {f} currmovenumber {d}\n", .{ depth, move, move_number }) catch return;
     ctx.writer.flush() catch return;
 }
 
@@ -394,6 +417,10 @@ pub fn main() !void {
                     .on_info = .{
                         .context = &info_ctx,
                         .func = infoCallback,
+                    },
+                    .on_currmove = .{
+                        .context = &info_ctx,
+                        .func = currmoveCallback,
                     },
                     .search_params = search_params,
                 },
