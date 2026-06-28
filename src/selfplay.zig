@@ -27,6 +27,11 @@ const sample_interval: u16 = 4;
 // sigmoid for decisive endgames; draws are labeled 0. Recorded via shouldRecordTb,
 // which bypasses score_filter so TB-perfect decisive labels are always kept.
 const tb_label_cp: i32 = 20000;
+// Once a position enters Syzygy range, moves are played with this tiny node budget:
+// the TB verdict (not the search) labels every position, so play strength is
+// irrelevant -- we only need cheap legal progress to walk the endgame tail out and
+// sample it, instead of truncating the game at first TB contact.
+const tb_playout_node_cap: u64 = 200;
 
 // Buckets for the recorded-position ply histogram (ply measured from each game's
 // root, i.e. the book position or startpos). Game length is capped at
@@ -89,6 +94,10 @@ const SelfplayGame = struct {
     adjudication_consecutive: u16,
     adjudication_winning_side: engine.Color,
     draw_consecutive: u16,
+    // TB-perfect game outcome, captured at first tablebase contact. Once set it
+    // overrides the played-out result for the whole game's WDL byte (the cheap
+    // in-TB playout may stumble into a 50-move draw in a position TB knows is won).
+    tb_outcome: ?GameOutcome,
 
     fn init(rng: std.Random, depth: u8, max_nodes: ?u64, cfg: RecordCfg, ttable: *engine.search.TranspositionTable, searcher: *engine.search.ReusableSearcher, network: ?*const nnue.Network, book: []const engine.State, random_plies: u16) Self {
         return .{
@@ -110,6 +119,7 @@ const SelfplayGame = struct {
             .adjudication_consecutive = 0,
             .adjudication_winning_side = engine.Colors.white,
             .draw_consecutive = 0,
+            .tb_outcome = null,
         };
     }
 
@@ -123,6 +133,7 @@ const SelfplayGame = struct {
         self.num_records = 0;
         self.adjudication_consecutive = 0;
         self.draw_consecutive = 0;
+        self.tb_outcome = null;
         self.ttable.newSearch();
     }
 
@@ -162,13 +173,14 @@ const SelfplayGame = struct {
         return true;
     }
 
-    // Record gate for TB-labeled endgame positions. Drops shouldRecord's
-    // score_filter (decisive endgames must be kept) and sample_interval (immediate
-    // adjudication means at most one TB record per game -- no within-game
-    // correlation to thin). Keeps skip_plies and the in-check gate.
+    // Record gate for TB-labeled endgame positions. Drops shouldRecord's score_filter
+    // (decisive endgames must be kept) but keeps sample_interval: we now play the
+    // endgame out in TB range, so consecutive plies are correlated and need thinning
+    // just like the eval path. Keeps skip_plies and the in-check gate.
     fn shouldRecordTb(self: *const Self) bool {
         if (self.ply < skip_plies) return false;
         if (self.state.in_check != null) return false;
+        if (self.ply % sample_interval != 0) return false;
         return true;
     }
 
@@ -190,25 +202,41 @@ const SelfplayGame = struct {
             return gameResultToOutcome(res);
         }
 
+        // Probe Syzygy before searching: in TB range we play with a tiny node budget
+        // (the TB verdict, not the search, labels positions), so walking the endgame
+        // out to sample its tail is nearly free.
+        const tb_wdl = engine.tablebase.probeWdl(&self.state);
+        const node_cap: ?u64 = if (tb_wdl != null) tb_playout_node_cap else self.max_nodes;
+
         const search_res = self.searcher.search(
             &self.state,
             self.depth,
             &self.history,
             self.ttable,
-            .{ .max_nodes = self.max_nodes },
+            .{ .max_nodes = node_cap },
             self.network,
         ) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
 
-        // Syzygy WDL: when the position is in TB range, prefer the exact endgame
-        // verdict over the search score. Record it (bypassing score_filter so
-        // decisive endgames are kept) and adjudicate the game immediately on the
-        // exact result -- shorter games + a TB-correct per-game WDL byte.
-        // probeWdl returns null when no tables are loaded, so the else branch keeps
-        // the existing search-score labeling behavior unchanged.
-        if (engine.tablebase.probeWdl(&self.state)) |wdl| {
+        // Syzygy WDL: in TB range the exact endgame verdict labels every sampled
+        // position (bypassing score_filter so decisive endgames are kept). Rather than
+        // record one position and adjudicate immediately, we keep playing the endgame
+        // out with the tiny node budget above, so the sub-7-man tail is actually
+        // sampled -- the v15 goal. The verdict is captured once and overrides the whole
+        // game's WDL byte in playGame, so a weak cheap-playout drifting into a 50-move
+        // draw can't mislabel a won endgame. probeWdl is null when no tables are loaded,
+        // so the else branch keeps the existing search-score labeling unchanged.
+        if (tb_wdl) |wdl| {
+            if (self.tb_outcome == null) {
+                // WDL is from the side to move; map to white's perspective.
+                self.tb_outcome = switch (wdl) {
+                    .win => if (self.state.to_move == engine.Colors.white) .white_wins else .black_wins,
+                    .loss => if (self.state.to_move == engine.Colors.white) .black_wins else .white_wins,
+                    .draw => .draw,
+                };
+            }
             if (self.shouldRecordTb()) {
                 const tb_score: i32 = switch (wdl) {
                     .win => tb_label_cp,
@@ -217,43 +245,41 @@ const SelfplayGame = struct {
                 };
                 try self.bufferPosition(tb_score);
             }
-            // WDL is from the side to move; map to white's perspective exactly like
-            // the eval-based adjudication below.
-            return switch (wdl) {
-                .win => if (self.state.to_move == engine.Colors.white) .white_wins else .black_wins,
-                .loss => if (self.state.to_move == engine.Colors.white) .black_wins else .white_wins,
-                .draw => .draw,
-            };
-        } else if (self.shouldRecord(score)) {
-            // Label with the backed-up search score (NNUE-driven when a net is
-            // loaded), a stronger target than a static eval of the same position.
-            try self.bufferPosition(score);
-        }
+            // No eval-based adjudication in TB range (the result is already known); end
+            // only when the record buffer is full, since further play samples nothing.
+            if (self.num_records >= max_game_records) return self.tb_outcome;
+        } else {
+            if (self.shouldRecord(score)) {
+                // Label with the backed-up search score (NNUE-driven when a net is
+                // loaded), a stronger target than a static eval of the same position.
+                try self.bufferPosition(score);
+            }
 
-        const abs_score = @as(i32, @intCast(@abs(score)));
-        if (abs_score > self.cfg.adjudication_threshold) {
-            const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
-            if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
-                self.adjudication_consecutive += 1;
+            const abs_score = @as(i32, @intCast(@abs(score)));
+            if (abs_score > self.cfg.adjudication_threshold) {
+                const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
+                if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
+                    self.adjudication_consecutive += 1;
+                } else {
+                    self.adjudication_consecutive = 1;
+                    self.adjudication_winning_side = winning_side;
+                }
+                if (self.adjudication_consecutive >= self.cfg.adjudication_count) {
+                    return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
+                }
             } else {
-                self.adjudication_consecutive = 1;
-                self.adjudication_winning_side = winning_side;
+                self.adjudication_consecutive = 0;
             }
-            if (self.adjudication_consecutive >= self.cfg.adjudication_count) {
-                return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
-            }
-        } else {
-            self.adjudication_consecutive = 0;
-        }
 
-        // Draw adjudication: a long run of near-zero evals past the opening.
-        if (self.ply >= draw_adjudication_min_ply and abs_score <= draw_adjudication_threshold) {
-            self.draw_consecutive += 1;
-            if (self.draw_consecutive >= draw_adjudication_count) {
-                return .draw;
+            // Draw adjudication: a long run of near-zero evals past the opening.
+            if (self.ply >= draw_adjudication_min_ply and abs_score <= draw_adjudication_threshold) {
+                self.draw_consecutive += 1;
+                if (self.draw_consecutive >= draw_adjudication_count) {
+                    return .draw;
+                }
+            } else {
+                self.draw_consecutive = 0;
             }
-        } else {
-            self.draw_consecutive = 0;
         }
 
         _ = self.state.makeMove(best_move, self.state.to_move, self.state.mailbox[best_move.start].?);
@@ -281,10 +307,12 @@ const SelfplayGame = struct {
         // Search phase
         while (self.ply < max_game_plies) {
             if (try self.makeMoveAtDepth()) |outcome| {
-                return .{ .outcome = outcome, .positions = self.num_records };
+                // Once a game touches the tablebase, the TB verdict is the ground-truth
+                // label for the whole game, regardless of how the cheap playout ended.
+                return .{ .outcome = self.tb_outcome orelse outcome, .positions = self.num_records };
             }
         }
-        return .{ .outcome = .draw, .positions = self.num_records };
+        return .{ .outcome = self.tb_outcome orelse .draw, .positions = self.num_records };
     }
 
     // Write all buffered records to the output writer.
