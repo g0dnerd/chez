@@ -240,6 +240,13 @@ const WorkerCtx = struct {
     network: *const nnue.Network,
     plus_halfpoints: *std.atomic.Value(u64),
     games_played: *std.atomic.Value(u64),
+    // Live progress: only worker 0 (which runs on the main thread, so it owns the
+    // stderr writer) prints. `total_games` and `iter`/`iters` label the line.
+    verbose: bool,
+    stderr: ?*std.Io.Writer,
+    iter: usize,
+    iters: usize,
+    total_games: u64,
 };
 
 fn workerLoop(ctx: *WorkerCtx) void {
@@ -273,20 +280,32 @@ fn workerLoop(ctx: *WorkerCtx) void {
         .draw_consec = 0,
     };
 
-    var local_half: u64 = 0;
-    var local_games: u64 = 0;
+    // Flush each completed pair into the shared counters so the iteration's
+    // progress is visible mid-step (workers used to accumulate locally and add
+    // once at the end, leaving long fixed-time steps looking frozen).
     var done: usize = 0;
+    var last_print: u64 = 0;
+    const print_step: u64 = @max(@as(u64, 2), ctx.total_games / 10);
     while (done < ctx.pairs) {
         const op = buildOpening(rng.random()) orelse continue;
         // Paired games: same opening, theta+ plays both colors to cancel bias.
-        local_half += plusHalf(game.play(op, true), true);
-        local_half += plusHalf(game.play(op, false), false);
-        local_games += 2;
+        var pair_half: u64 = 0;
+        pair_half += plusHalf(game.play(op, true), true);
+        pair_half += plusHalf(game.play(op, false), false);
+        _ = ctx.plus_halfpoints.fetchAdd(pair_half, .monotonic);
+        const g = ctx.games_played.fetchAdd(2, .monotonic) + 2;
         done += 1;
-    }
 
-    _ = ctx.plus_halfpoints.fetchAdd(local_half, .monotonic);
-    _ = ctx.games_played.fetchAdd(local_games, .monotonic);
+        if (ctx.verbose and (g - last_print >= print_step or g >= ctx.total_games)) {
+            last_print = g;
+            if (ctx.stderr) |w| {
+                const h = ctx.plus_halfpoints.load(.monotonic);
+                const y = @as(f64, @floatFromInt(h)) / (2.0 * @as(f64, @floatFromInt(g)));
+                w.print("    [{d}/{d}] {d}/{d} games, theta+ {d:.3}\n", .{ ctx.iter, ctx.iters, g, ctx.total_games, y }) catch {};
+                w.flush() catch {};
+            }
+        }
+    }
 }
 
 const IterResult = struct { half: u64, games: u64 };
@@ -301,9 +320,13 @@ fn runIteration(
     nodes: ?u64,
     time_ms: ?u64,
     depth: u8,
+    stderr: ?*std.Io.Writer,
+    iter: usize,
+    iters: usize,
 ) IterResult {
     var plus_half = std.atomic.Value(u64).init(0);
     var games = std.atomic.Value(u64).init(0);
+    const total_games: u64 = @as(u64, total_pairs) * 2;
 
     const per = total_pairs / num_threads;
     const rem = total_pairs % num_threads;
@@ -321,6 +344,12 @@ fn runIteration(
             .network = network,
             .plus_halfpoints = &plus_half,
             .games_played = &games,
+            // Worker 0 runs on the main thread, so only it may touch stderr.
+            .verbose = (i == 0),
+            .stderr = if (i == 0) stderr else null,
+            .iter = iter,
+            .iters = iters,
+            .total_games = total_games,
         };
     }
 
@@ -494,6 +523,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             nodes,
             move_time_ms,
             depth,
+            stderr,
+            k,
+            iterations,
         );
         if (r.games == 0) continue;
 
