@@ -272,6 +272,7 @@ def run_match(
     pgn_out=None,
     eval_file="/home/paul/projects/chez/data/net.nnue",
     chez_options=None,
+    syzygy_path=None,
 ):
     """Run a match against one opponent. Returns W/D/L dict."""
     opp_name = opponent["name"]
@@ -288,6 +289,8 @@ def run_match(
     ]
     if not hce:
         chez_args.append(f"option.EvalFile={eval_file}")
+    if syzygy_path:
+        chez_args.append(f"option.SyzygyPath={syzygy_path}")
     for opt in (chez_options or []):
         chez_args.append(f"option.{opt}")
     chez_args.append("proto=uci")
@@ -501,6 +504,11 @@ def parse_args():
     p.add_argument("--engine", default=None, help="Path to pre-built Chez binary")
     p.add_argument("--eval", default=None, help="EvalFile (.nnue) for the tested Chez engine")
     p.add_argument(
+        "--syzygy",
+        default=None,
+        help="SyzygyPath (tablebase directory) for the tested Chez engine",
+    )
+    p.add_argument(
         "--chez-option",
         action="append",
         default=None,
@@ -591,6 +599,13 @@ def main():
     _hce = str(eval_file).lower() in ("none", "hce", "")
     print(f"  EvalFile: {'HCE (no NNUE)' if _hce else eval_file}")
 
+    # SyzygyPath for the tested engine: --syzygy overrides config "syzygy_path"
+    syzygy_path = args.syzygy or config.get("syzygy_path")
+    if syzygy_path and not Path(syzygy_path).is_absolute():
+        syzygy_path = str(SCRIPT_DIR / syzygy_path)
+    if syzygy_path:
+        print(f"  SyzygyPath: {syzygy_path}")
+
     # Run matches sequentially against each opponent
     match_results = []
     for i, opp in enumerate(opponents, 1):
@@ -607,6 +622,7 @@ def main():
             pgn_out,
             eval_file=eval_file,
             chez_options=args.chez_option,
+            syzygy_path=syzygy_path,
         )
         match_results.append({"name": opp["name"], "rating": opp["rating"], **result})
 
