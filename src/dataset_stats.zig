@@ -1,4 +1,4 @@
-// Temp (v14-selfplay-v11labeler branch): pilot-validation stats over a selfplay
+// Temp: pilot-validation stats over a selfplay
 // .bin dataset. Decodes each 35-byte record with the real serde decoder and
 // reports WDL balance, score distribution, and a piece-count histogram (used as
 // a late-game-tail proxy, since the record format doesn't store game ply).

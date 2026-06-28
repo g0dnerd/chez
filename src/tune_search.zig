@@ -38,9 +38,9 @@ const tt_buckets_bits: u6 = 18; // tiny TT; node-capped searches never need more
 const win_adj_threshold: i32 = 2500;
 const win_adj_count: u16 = 4;
 // Scaled-score band for "drawish" (note eval is nnue_scale'd, so this is ~half
-// in native cp). Bumped 10->30 so balanced games adjudicate near draw_adj_min_ply
-// instead of grinding to the 200-ply cap -- cuts avg game length (and tuning wall
-// time) substantially with negligible label impact (these are already ~0-eval).
+// in native cp). Balanced games adjudicate near draw_adj_min_ply instead of
+// grinding to the 200-ply cap -- cuts avg game length (and tuning wall time)
+// substantially with negligible label impact (these are already ~0-eval).
 const draw_adj_threshold: i32 = 30;
 const draw_adj_count: u16 = 8;
 const draw_adj_min_ply: u16 = 80;

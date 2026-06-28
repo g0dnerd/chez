@@ -523,8 +523,7 @@ const SharedSearchState = struct {
         // NNUE returns centipawns (pawn ≈ 100). HCE uses an internal scale
         // (pawn endgame ≈ 208). Pruning margins in this file (futility_margins,
         // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
-        // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
-        // a Phase 6 concern.
+        // NNUE up by 2 to keep them approximately calibrated.
         if (self.network) |net| {
             var v = nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
 
@@ -590,9 +589,8 @@ const StackEntry = struct {
 };
 
 // "improving": is the side-to-move's static eval better than two plies ago?
-// Later phases prune less when improving. Per the plan: false in check (current
-// node has no eval) or at ply < 2; optimistic-true when only the grandparent
-// eval is missing.
+// Later phases prune less when improving. False in check (current node has no
+// eval) or at ply < 2; optimistic-true when only the grandparent eval is missing.
 fn isImproving(stack: []const StackEntry, ply: usize) bool {
     if (ply < 2) return false;
     const cur = stack[ply].static_eval;
