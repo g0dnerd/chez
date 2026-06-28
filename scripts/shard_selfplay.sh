@@ -28,6 +28,7 @@ nodes=200000
 eval_file=""
 openings=""             # balanced opening book (FEN per line); empty => startpos
 random_plies=""         # random plies on top of the book root; empty => binary default
+syzygy=""               # syzygy WDL tablebase dir (abs path); empty => no TB probing
 # NB: data-quality filters (keep decisive positions, adjudicate only clearly-won
 # games) are binary defaults in selfplay.zig now (score_filter 10000,
 # adjudication 2500cp) -- no need to set them here.
@@ -48,6 +49,7 @@ Usage: $0 [options]
   --eval PATH         .nnue network to play with
   --openings PATH     balanced opening book, FEN per line (default: startpos)
   --random_plies N    random plies on top of each book root (default: binary default)
+  --syzygy PATH       syzygy WDL tablebase dir, absolute path (default: no TB)
   --out PATH          concatenated output file (default $out)
   --bin PATH          selfplay binary (default $bin)
   --numa on|off|auto  NUMA pinning, one shard per node (default $numa)
@@ -66,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --eval) eval_file=$2; shift 2;;
     --openings) openings=$2; shift 2;;
     --random_plies) random_plies=$2; shift 2;;
+    --syzygy) syzygy=$2; shift 2;;
     --out) out=$2; shift 2;;
     --bin) bin=$2; shift 2;;
     --numa) numa=$2; shift 2;;
@@ -131,6 +134,7 @@ echo "Sharding: $shards process(es), $threads thread(s) each, depth $depth, $gam
 [[ "$nodes" -gt 0 ]] && echo "  node cap: $nodes" >&2
 [[ -n "$eval_file" ]] && echo "  eval: $eval_file" >&2
 [[ -n "$openings" ]] && echo "  openings: $openings" >&2
+[[ -n "$syzygy" ]] && echo "  syzygy: $syzygy" >&2
 [[ "$pin" -eq 1 ]] && echo "  NUMA pinning: one shard per node ($node_count nodes)" >&2
 
 start=$(date +%s)
@@ -147,6 +151,7 @@ for (( i=0; i<shards; i++ )); do
   [[ -n "$eval_file" ]] && args+=(--eval "$eval_file")
   [[ -n "$openings" ]] && args+=(--openings "$openings")
   [[ -n "$random_plies" ]] && args+=(--random_plies "$random_plies")
+  [[ -n "$syzygy" ]] && args+=(--syzygy "$syzygy")
 
   if [[ "$pin" -eq 1 ]]; then
     numactl --cpunodebind="$i" --membind="$i" "$bin" "${args[@]}" >"$f" 2>"$tmpdir/shard_$i.log" &
