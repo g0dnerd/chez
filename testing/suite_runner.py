@@ -39,10 +39,17 @@ DEFAULT_THREADS = 1
 class UCIEngine:
     """Manages a UCI chess engine subprocess."""
 
-    def __init__(self, path: str, threads: int = 1, evalfile: str | None = None):
+    def __init__(
+        self,
+        path: str,
+        threads: int = 1,
+        evalfile: str | None = None,
+        syzygy: str | None = None,
+    ):
         self.path = str(Path(path).resolve())
         self.threads = threads
         self.evalfile = str(Path(evalfile).resolve()) if evalfile else None
+        self.syzygy = str(Path(syzygy).resolve()) if syzygy else None
         self.name = Path(path).name
 
     def start(self):
@@ -68,12 +75,19 @@ class UCIEngine:
         self._send("setoption name OwnBook value false")
         if self.evalfile:
             self._send(f"setoption name EvalFile value {self.evalfile}")
+        if self.syzygy:
+            self._send(f"setoption name SyzygyPath value {self.syzygy}")
         self._send("isready")
         lines = self._read_until("readyok")
         if self.evalfile and any("failed to load EvalFile" in l for l in lines):
             raise RuntimeError(
                 f"Engine failed to load EvalFile '{self.evalfile}' "
                 "(it fell back to HCE)"
+            )
+        if self.syzygy and any("no tables found" in l for l in lines):
+            raise RuntimeError(
+                f"Engine found no Syzygy tables at '{self.syzygy}' "
+                "(probing disabled)"
             )
 
     def _send(self, cmd: str):
@@ -583,6 +597,11 @@ Examples:
         help="NNUE net to load via UCI EvalFile (default: engine HCE)",
     )
     parser.add_argument(
+        "--syzygy",
+        default=None,
+        help="Syzygy tablebase directory to load via UCI SyzygyPath",
+    )
+    parser.add_argument(
         "--category",
         default=None,
         help="Override category name for all positions",
@@ -632,7 +651,10 @@ Examples:
     start_time = time.time()
 
     with UCIEngine(
-        args.engine, threads=args.threads, evalfile=args.evalfile
+        args.engine,
+        threads=args.threads,
+        evalfile=args.evalfile,
+        syzygy=args.syzygy,
     ) as engine:
         engine_name = engine.name
         results = run_suite(
