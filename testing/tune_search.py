@@ -28,9 +28,7 @@ import sys
 from pathlib import Path
 
 # Phase-C search constants (focused HCE tune). Defaults match the engine's
-# current SearchParams; min/max match the UCI option ranges. The old eval/margin
-# params (NnueScale, RfpBase, FutilityMargin1/2, DeltaMargin) are in git history
-# -- restore them here for a broader tune.
+# current SearchParams; min/max match the UCI option ranges.
 PARAMS = [
     {"name": "LmrBase", "default": 75, "min": 0, "max": 300, "c_scale": 10},
     {"name": "LmrDiv", "default": 120, "min": 50, "max": 500, "c_scale": 12},

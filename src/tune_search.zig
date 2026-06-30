@@ -3,10 +3,17 @@
 // Unlike `tune` (a Texel/MSE eval-param tuner), search params (RFP/futility/
 // delta/LMR) have no effect on a static eval, so they can only be tuned against
 // a game-playing objective. This binary perturbs SearchParams as theta +/- c*D,
-// plays theta+ DIRECTLY against theta- in fast fixed-node self-play games with
-// the same net, and SPSA-steps theta toward the winner (fishtest-style).
+// plays theta+ DIRECTLY against theta- in fast self-play games with the same
+// net (fixed node cap, or a fixed per-move time cap), and SPSA-steps theta
+// toward the winner (fishtest-style).
 //
 //   zig build tune-search -- --net data/net.nnue --nodes 5000 \
+//       --games_per_step 100 --iterations 300 --threads 8
+//
+// Fixed-time tuning (optimizes time-to-result; favors harder pruning at the
+// costly NNUE eval). --move_time_ms sets a per-move wall-clock cap; pass it
+// instead of --nodes for pure time, or alongside --nodes to cap both:
+//   zig build tune-search -- --net data/net.nnue --move_time_ms 50 \
 //       --games_per_step 100 --iterations 300 --threads 8
 //
 // Output is a paste-able SearchParams literal. SPSA self-play only proves a
@@ -30,7 +37,11 @@ const max_game_plies: u16 = 200;
 const tt_buckets_bits: u6 = 18; // tiny TT; node-capped searches never need more
 const win_adj_threshold: i32 = 2500;
 const win_adj_count: u16 = 4;
-const draw_adj_threshold: i32 = 10;
+// Scaled-score band for "drawish" (note eval is nnue_scale'd, so this is ~half
+// in native cp). Balanced games adjudicate near draw_adj_min_ply instead of
+// grinding to the 200-ply cap -- cuts avg game length (and tuning wall time)
+// substantially with negligible label impact (these are already ~0-eval).
+const draw_adj_threshold: i32 = 30;
 const draw_adj_count: u16 = 8;
 const draw_adj_min_ply: u16 = 80;
 const max_threads: usize = 256;
@@ -47,8 +58,8 @@ const default_alpha: f64 = 0.602;
 const default_gamma: f64 = 0.101;
 
 // High-impact continuous search params. theta is normalized to [0,1] over
-// [min,max]; coarse/low-signal params (histprune_*, iir, nnue_scale) are frozen
-// at their SearchParams{} defaults.
+// [min,max]; coarse/low-signal params (histprune_*, iir) are frozen at their
+// SearchParams{} defaults.
 const ParamSpec = struct { name: []const u8, min: f64, max: f64, default: f64 };
 const tuned = [_]ParamSpec{
     .{ .name = "rfp_base", .min = 20, .max = 200, .default = 80 },
@@ -63,6 +74,11 @@ const tuned = [_]ParamSpec{
     .{ .name = "material_scale_min", .min = 50, .max = 100, .default = 75 },
     .{ .name = "fifty_move_start", .min = 0, .max = 60, .default = 20 },
     .{ .name = "fifty_move_damp", .min = 0, .max = 90, .default = 50 },
+    // NNUE eval scale: the ×N applied to native NNUE centipawns before the
+    // HCE-calibrated pruning margins above are compared against it. Tunable so
+    // SPSA can retire the legacy ×2 hack -- letting it settle at 1 makes the
+    // engine prune in native NNUE centipawns and re-tunes the margins to match.
+    .{ .name = "nnue_scale", .min = 1, .max = 4, .default = 2 },
 };
 const N = tuned.len;
 
@@ -74,7 +90,7 @@ fn denorm(t: f64, spec: ParamSpec) i32 {
 }
 
 // Build a full SearchParams from a normalized theta. Frozen fields keep their
-// SearchParams{} defaults (which now include nnue_scale = 2).
+// SearchParams{} defaults.
 fn buildParams(theta: [N]f64) SearchParams {
     var p = SearchParams{};
     p.rfp_base = denorm(theta[0], tuned[0]);
@@ -87,6 +103,7 @@ fn buildParams(theta: [N]f64) SearchParams {
     p.material_scale_min = denorm(theta[7], tuned[7]);
     p.fifty_move_start = denorm(theta[8], tuned[8]);
     p.fifty_move_damp = denorm(theta[9], tuned[9]);
+    p.nnue_scale = denorm(theta[10], tuned[10]);
     return p;
 }
 
@@ -142,6 +159,7 @@ const TunerGame = struct {
     tt_minus: *TranspositionTable,
     network: *const nnue.Network,
     nodes: ?u64,
+    time_ms: ?u64,
     depth: u8,
 
     state: engine.State,
@@ -176,7 +194,7 @@ const TunerGame = struct {
                 self.depth,
                 &self.history,
                 tt,
-                .{ .max_nodes = self.nodes, .search_params = params },
+                .{ .max_nodes = self.nodes, .max_time_ms = self.time_ms, .search_params = params },
                 self.network,
             ) orelse return .draw;
 
@@ -220,11 +238,19 @@ const WorkerCtx = struct {
     params_plus: SearchParams,
     params_minus: SearchParams,
     nodes: ?u64,
+    time_ms: ?u64,
     depth: u8,
     seed: u64,
     network: *const nnue.Network,
     plus_halfpoints: *std.atomic.Value(u64),
     games_played: *std.atomic.Value(u64),
+    // Live progress: only worker 0 (which runs on the main thread, so it owns the
+    // stderr writer) prints. `total_games` and `iter`/`iters` label the line.
+    verbose: bool,
+    stderr: ?*std.Io.Writer,
+    iter: usize,
+    iters: usize,
+    total_games: u64,
 };
 
 fn workerLoop(ctx: *WorkerCtx) void {
@@ -248,6 +274,7 @@ fn workerLoop(ctx: *WorkerCtx) void {
         .tt_minus = &tt_minus,
         .network = ctx.network,
         .nodes = ctx.nodes,
+        .time_ms = ctx.time_ms,
         .depth = ctx.depth,
         .state = undefined,
         .history = undefined,
@@ -257,20 +284,32 @@ fn workerLoop(ctx: *WorkerCtx) void {
         .draw_consec = 0,
     };
 
-    var local_half: u64 = 0;
-    var local_games: u64 = 0;
+    // Flush each completed pair into the shared counters so the iteration's
+    // progress is visible mid-step (workers used to accumulate locally and add
+    // once at the end, leaving long fixed-time steps looking frozen).
     var done: usize = 0;
+    var last_print: u64 = 0;
+    const print_step: u64 = @max(@as(u64, 2), ctx.total_games / 10);
     while (done < ctx.pairs) {
         const op = buildOpening(rng.random()) orelse continue;
         // Paired games: same opening, theta+ plays both colors to cancel bias.
-        local_half += plusHalf(game.play(op, true), true);
-        local_half += plusHalf(game.play(op, false), false);
-        local_games += 2;
+        var pair_half: u64 = 0;
+        pair_half += plusHalf(game.play(op, true), true);
+        pair_half += plusHalf(game.play(op, false), false);
+        _ = ctx.plus_halfpoints.fetchAdd(pair_half, .monotonic);
+        const g = ctx.games_played.fetchAdd(2, .monotonic) + 2;
         done += 1;
-    }
 
-    _ = ctx.plus_halfpoints.fetchAdd(local_half, .monotonic);
-    _ = ctx.games_played.fetchAdd(local_games, .monotonic);
+        if (ctx.verbose and (g - last_print >= print_step or g >= ctx.total_games)) {
+            last_print = g;
+            if (ctx.stderr) |w| {
+                const h = ctx.plus_halfpoints.load(.monotonic);
+                const y = @as(f64, @floatFromInt(h)) / (2.0 * @as(f64, @floatFromInt(g)));
+                w.print("    [{d}/{d}] {d}/{d} games, theta+ {d:.3}\n", .{ ctx.iter, ctx.iters, g, ctx.total_games, y }) catch {};
+                w.flush() catch {};
+            }
+        }
+    }
 }
 
 const IterResult = struct { half: u64, games: u64 };
@@ -283,10 +322,15 @@ fn runIteration(
     base_seed: u64,
     network: *const nnue.Network,
     nodes: ?u64,
+    time_ms: ?u64,
     depth: u8,
+    stderr: ?*std.Io.Writer,
+    iter: usize,
+    iters: usize,
 ) IterResult {
     var plus_half = std.atomic.Value(u64).init(0);
     var games = std.atomic.Value(u64).init(0);
+    const total_games: u64 = @as(u64, total_pairs) * 2;
 
     const per = total_pairs / num_threads;
     const rem = total_pairs % num_threads;
@@ -298,11 +342,18 @@ fn runIteration(
             .params_plus = params_plus,
             .params_minus = params_minus,
             .nodes = nodes,
+            .time_ms = time_ms,
             .depth = depth,
             .seed = base_seed +% (@as(u64, i) *% 0x9E3779B97F4A7C15),
             .network = network,
             .plus_halfpoints = &plus_half,
             .games_played = &games,
+            // Worker 0 runs on the main thread, so only it may touch stderr.
+            .verbose = (i == 0),
+            .stderr = if (i == 0) stderr else null,
+            .iter = iter,
+            .iters = iters,
+            .total_games = total_games,
         };
     }
 
@@ -324,9 +375,10 @@ fn runIteration(
 
 fn formatParams(w: *std.Io.Writer, theta: [N]f64) !void {
     try w.print(
-        \\.{{ .nnue_scale = 2, .rfp_base = {d}, .futility_margin_1 = {d}, .futility_margin_2 = {d}, .delta_margin = {d}, .lmr_base = {d}, .lmr_div = {d}, .lmr_hist_div = {d}, .material_scale_min = {d}, .fifty_move_start = {d}, .fifty_move_damp = {d}, .histprune_depth = 3, .histprune_margin = 2000, .iir_min_depth = 4 }}
+        \\.{{ .nnue_scale = {d}, .rfp_base = {d}, .futility_margin_1 = {d}, .futility_margin_2 = {d}, .delta_margin = {d}, .lmr_base = {d}, .lmr_div = {d}, .lmr_hist_div = {d}, .material_scale_min = {d}, .fifty_move_start = {d}, .fifty_move_damp = {d}, .histprune_depth = 3, .histprune_margin = 2000, .iir_min_depth = 4 }}
         \\
     , .{
+        denorm(theta[10], tuned[10]),
         denorm(theta[0], tuned[0]),
         denorm(theta[1], tuned[1]),
         denorm(theta[2], tuned[2]),
@@ -353,6 +405,7 @@ fn writeOutput(io: std.Io, path: []const u8, theta: [N]f64) !void {
 const Args = struct {
     net: ?[]const u8,
     nodes: ?u64,
+    move_time_ms: ?u64,
     depth: ?u8,
     games_per_step: ?usize,
     iterations: ?usize,
@@ -395,7 +448,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     defer network.deinit(std.heap.page_allocator);
 
-    const nodes: ?u64 = parsed_args.nodes orelse default_nodes;
+    // Time budget per move (fixed-time tuning). When set, the games run under a
+    // wall-clock cap so SPSA optimizes time-to-result -- it will favor harder
+    // pruning, since each saved node saves real time at the costly NNUE eval. The
+    // node cap only applies if explicitly passed too (both caps then bind, search
+    // stops at whichever hits first); otherwise pure-time. The default node cap is
+    // applied only in node mode.
+    const move_time_ms: ?u64 = parsed_args.move_time_ms;
+    const nodes: ?u64 = if (move_time_ms != null)
+        parsed_args.nodes
+    else
+        parsed_args.nodes orelse default_nodes;
     const depth = parsed_args.depth orelse default_depth;
     const pairs = parsed_args.games_per_step orelse default_pairs;
     const iterations = parsed_args.iterations orelse default_iterations;
@@ -416,9 +479,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.Io.random(io, std.mem.asBytes(&seed));
     }
 
-    try stderr.print("SPSA search-param tuner: net {s}, nodes {?d}, {d} pairs/step ({d} games), {d} iters, {d} threads\n", .{
-        net_path, nodes, pairs, pairs * 2, iterations, num_threads,
+    try stderr.print("SPSA search-param tuner: net {s}, nodes {?d}, move_time_ms {?d}, {d} pairs/step ({d} games), {d} iters, {d} threads\n", .{
+        net_path, nodes, move_time_ms, pairs, pairs * 2, iterations, num_threads,
     });
+    if (move_time_ms != null) {
+        try stderr.print("NOTE: fixed-time mode -- games are wall-clock bound, so results are\n", .{});
+        try stderr.print("      nondeterministic and noisier; prefer threads <= physical cores to\n", .{});
+        try stderr.print("      keep per-move timing fair (theta+/theta- alternate on one core/game).\n", .{});
+    }
     try stderr.print("Tuning {d} params: ", .{N});
     for (tuned) |spec| try stderr.print("{s} ", .{spec.name});
     try stderr.print("\nSPSA: a={d:.4} c={d:.4} alpha={d:.3} gamma={d:.3} A={d:.1} seed={d}\n", .{ a, c, alpha, gamma, big_a, seed });
@@ -457,7 +525,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
             mrng.int(u64),
             network,
             nodes,
+            move_time_ms,
             depth,
+            stderr,
+            k,
+            iterations,
         );
         if (r.games == 0) continue;
 

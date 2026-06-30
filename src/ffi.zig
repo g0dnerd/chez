@@ -113,7 +113,6 @@ export fn chez_legal_moves(state: *const State, c_moves: *CMoveList) void {
     moves.toCMoves(c_moves);
 }
 
-// Apply a move to the state.
 export fn chez_make_move(state: *State, c_move: *const CMove) void {
     const move: Move = .initCMove(c_move);
     _ = state.makeMove(move, state.to_move, state.mailbox[move.start].?);

@@ -45,9 +45,9 @@ const RecordCfg = struct {
     adjudication_count: u16 = default_adjudication_count,
 };
 // Draw adjudication: balanced eval for many consecutive plies past the opening.
-// Relaxed for v14: trigger deeper (min_ply 120) and require a longer dead-equal
-// run (16 plies) so long maneuvering/endgame phases get recorded instead of being
-// cut as draws -- and fewer winnable-but-near-0 positions are mislabeled draws.
+// Trigger deeper (min_ply 120) and require a longer dead-equal run (16 plies) so
+// long maneuvering/endgame phases get recorded instead of being cut as draws --
+// and fewer winnable-but-near-0 positions are mislabeled draws.
 const draw_adjudication_threshold: i32 = 10;
 const draw_adjudication_count: u16 = 16;
 const draw_adjudication_min_ply: u16 = 120;

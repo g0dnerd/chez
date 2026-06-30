@@ -315,8 +315,7 @@ pub fn pawnMoves(state: *const State, s: Square, c: Color) u64 {
 }
 
 pub fn sliderMoves(state: *const State, s: Square, p: Piece) u64 {
-    // Pass all_pieces directly - magicTableIndex applies the entry's mask internally,
-    // so pre-masking in a separate blockersFromState was redundant.
+    // Pass all_pieces directly - magicTableIndex applies the entry's mask internally.
     const all = state.all_pieces;
 
     return blk: switch (p) {

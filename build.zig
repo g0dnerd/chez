@@ -177,13 +177,13 @@ pub fn build(b: *std.Build) !void {
     });
     addFathom(b, selfplay.root_module);
 
-    // Temp (v14-selfplay-v11labeler branch): build ONLY selfplay, so the
+    // Temp: build ONLY selfplay, so the
     // format-v4 nnue.zig (which lacks num_output_buckets/outputBucket) doesn't
     // have to satisfy the trainer/inspector binaries.
     const selfplay_only_step = b.step("selfplay-only", "Build only the selfplay binary");
     selfplay_only_step.dependOn(&b.addInstallArtifact(selfplay, .{}).step);
 
-    // Temp (v14-selfplay-v11labeler branch): pilot dataset stats tool.
+    // Temp: pilot dataset stats tool.
     const dataset_stats = b.addExecutable(.{
         .name = "dataset-stats",
         .root_module = b.createModule(.{
