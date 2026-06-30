@@ -271,20 +271,30 @@ def run_match(
     openings=None,
     pgn_out=None,
     eval_file="/home/paul/projects/chez/data/net.nnue",
+    chez_options=None,
 ):
     """Run a match against one opponent. Returns W/D/L dict."""
     opp_name = opponent["name"]
     opp_cmd = opponent["cmd"]
     opp_proto = opponent.get("proto", "uci")
 
-    cmd = [
-        fastchess,
+    # "none"/"hce" sentinel: omit EvalFile so the engine falls back to HCE (no NNUE).
+    hce = eval_file is None or str(eval_file).lower() in ("none", "hce", "")
+    chez_args = [
         "-engine",
         "name=Chez",
         f"cmd={chez_binary}",
         f"option.Threads={threads}",
-        f"option.EvalFile={eval_file}",
-        "proto=uci",
+    ]
+    if not hce:
+        chez_args.append(f"option.EvalFile={eval_file}")
+    for opt in (chez_options or []):
+        chez_args.append(f"option.{opt}")
+    chez_args.append("proto=uci")
+
+    cmd = [
+        fastchess,
+        *chez_args,
         "-engine",
         f"name={opp_name}",
         f"cmd={opp_cmd}",
@@ -489,6 +499,14 @@ def parse_args():
         help="Generate template config file",
     )
     p.add_argument("--engine", default=None, help="Path to pre-built Chez binary")
+    p.add_argument("--eval", default=None, help="EvalFile (.nnue) for the tested Chez engine")
+    p.add_argument(
+        "--chez-option",
+        action="append",
+        default=None,
+        metavar="KEY=VAL",
+        help="Extra UCI option for the tested Chez engine (repeatable), e.g. --chez-option NnueScale=2",
+    )
     p.add_argument("--commit", default=None, help="Git ref to build Chez from")
     p.add_argument("--tc", default=None, help="Override time control")
     p.add_argument(
@@ -568,6 +586,11 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pgn_out = RESULTS_DIR / f"gauntlet_{timestamp}.pgn"
 
+    # EvalFile for the tested engine: --eval overrides config "eval_file", else the run_match default
+    eval_file = args.eval or config.get("eval_file") or "/home/paul/projects/chez/data/net.nnue"
+    _hce = str(eval_file).lower() in ("none", "hce", "")
+    print(f"  EvalFile: {'HCE (no NNUE)' if _hce else eval_file}")
+
     # Run matches sequentially against each opponent
     match_results = []
     for i, opp in enumerate(opponents, 1):
@@ -582,6 +605,8 @@ def main():
             concurrency,
             openings,
             pgn_out,
+            eval_file=eval_file,
+            chez_options=args.chez_option,
         )
         match_results.append({"name": opp["name"], "rating": opp["rating"], **result})
 

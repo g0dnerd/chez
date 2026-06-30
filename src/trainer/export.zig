@@ -46,7 +46,7 @@ pub noinline fn exportNnue(
     const net = try allocator.create(Network);
     defer allocator.destroy(net);
 
-    // FT weights: [40960, 256] f32 → [40960][256] i16, scale = 127
+    // FT weights: [40960, 512] f32 → [40960][512] i16, scale = 127
     {
         const n = nnue.num_features * nnue.ft_out;
         const buf = try allocator.alloc(f32, n);
@@ -59,7 +59,7 @@ pub noinline fn exportNnue(
         }
     }
 
-    // FT biases: [256] f32 → [256] i16, scale = 127
+    // FT biases: [512] f32 → [512] i16, scale = 127
     {
         const n = nnue.ft_out;
         var buf: [n]f32 = undefined;
@@ -69,7 +69,7 @@ pub noinline fn exportNnue(
         }
     }
 
-    // FC1 weights: [512, 32] f32 → [32][512] i8 (output-major), scale = 64
+    // FC1 weights: [1024, 32] f32 → [32][1024] i8 (output-major), scale = 64
     {
         const n = nnue.fc1_in * nnue.fc1_out;
         var buf: [n]f32 = undefined;
@@ -113,21 +113,26 @@ pub noinline fn exportNnue(
         }
     }
 
-    // Output weights: [32] f32 → [32] i16, scale = 64
+    // Output weights: [32, 8] f32 (input-major) → [8][32] i16 (bucket-major), scale = 64
     {
-        const n = nnue.fc2_out;
+        const n = nnue.fc2_out * nnue.num_output_buckets;
         var buf: [n]f32 = undefined;
         try params[6].storage.gpu.buffer.download(ctx, &buf);
-        for (0..n) |i| {
-            net.output_weights[i] = quantizeI16(buf[i], 64.0);
+        for (0..nnue.fc2_out) |i| {
+            for (0..nnue.num_output_buckets) |bucket| {
+                net.output_weights[bucket][i] = quantizeI16(buf[i * nnue.num_output_buckets + bucket], 64.0);
+            }
         }
     }
 
-    // Output bias: [1] f32 → i32, scale = 127*64
+    // Output bias: [8] f32 → [8] i32, scale = 127*64
     {
-        var buf: [1]f32 = undefined;
+        const n = nnue.num_output_buckets;
+        var buf: [n]f32 = undefined;
         try params[7].storage.gpu.buffer.download(ctx, &buf);
-        net.output_bias = quantizeI32(buf[0], 127.0 * 64.0);
+        for (0..n) |bucket| {
+            net.output_bias[bucket] = quantizeI32(buf[bucket], 127.0 * 64.0);
+        }
     }
 
     // Write to file

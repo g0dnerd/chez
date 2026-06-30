@@ -1,0 +1,189 @@
+Vultr: Intel E3-1270
+4 / 8 @ 3.8 GHz
+32 GB Memory
+2 x 240 GB SSD
+5 TB
+10 Gbps
+$0.164/hour
+
+Vultr: Intel E-2286G
+6 / 12 @ 4.0 GHz
+32 GB Memory
+2 x 960 GB SSD
+5 TB
+10 Gbps
+$0.253/hour
+
+Vultr: Intel E-2386G
+6 / 12 @ 3.5 GHz
+128 GB Memory
+2 x 960 GB SSD
+3 TB
+10 Gbps
+$0.334/hour
+
+Vultr: AMD EPYC 4245P
+6 / 12 @ 3.8 GHz
+32 GB Memory
+2 x 960 GB NVMe
+10 TB
+25 Gbps
+$0.41/hour
+
+Vultr: Intel E-2388G
+8 / 16 @ 3.2 GHz
+128 GB Memory
+2 x 1.92 TB NVMe
+10 TB
+10 Gbps
+$0.479/hour
+
+Vultr: Intel E-2288G
+8 / 16 @ 3.7 GHz
+128 GB Memory
+2 x 1.92 TB NVMe
+10 TB
+10 Gbps
+$0.479/hour
+
+Vultr: AMD EPYC 4345P
+8 / 16 @ 3.9 GHz
+64 GB Memory
+2 x 1.945 TB NVMe
+10 TB
+25 Gbps
+$0.55/hour
+
+Vultr: AMD EPYC 4345P
+8 / 16 @ 3.9 GHz
+123.423828125 GB Memory
+2 x 1.945 TB NVMe
+10 TB
+25 Gbps
+$0.55/hour
+
+Vultr: AMD EPYC 7443P
+24 / 48 @ 2.9 GHz
+256 GB Memory
+2 x 480 GB SSD
+2 x 1.92 TB NVMe
+10 TB
+25 Gbps
+$0.993/hour
+
+Vultr: AMD EPYC 9254
+24 / 48 @ 2.9 GHz
+384 GB Memory
+2 x 480 GB SSD
+2 x 1.92 TB NVMe
+10 TB
+25 Gbps
+$1.13/hour
+
+Vultr: AMD EPYC 9255
+24 / 48 @ 3.2 GHz
+384 GB Memory
+2 x 480 GB NVMe
+2 x 1.92 TB NVMe
+10 TB
+25 Gbps
+$0.73/hour
+
+Vultr: AMD EPYC 9354P
+32 / 64 @ 3.3 GHz
+768 GB Memory
+2 x 480 GB SSD
+4 x 6.4 TB NVMe
+10 TB
+25 Gbps
+$1.986/hour
+
+latitude: rs4.metal.xlarge
+AMD 9554P
+64 Cores @ 3.1 GHz
+1536 GB
+2 x 480 GB + 4 x 8 TB
+2 x 100 Gbps
+$10.88/hr
+
+latitude: m4.metal.xlarge
+AMD 9455P
+48 Cores @ 3.15 GHz
+768 GB
+2 x 480 GB + 2 x 3.8 TB
+2 x 10 Gbps
+$9.52/hr
+
+latitude: rs4.metal.large
+AMD 9354P
+32 Cores @ 3.25 GHz
+768 GB
+2 x 480 GB + 2 x 8 TB
+2 x 100 Gbps
+$6.44/hr
+
+latitude: f4.metal.large
+AMD 9275F
+24 Cores @ 4.1 GHz
+768 GB
+2 x 480 GB + 2 x 3.8 TB
+2 x 100 Gbps
+$5.24/hr
+
+latitude: m4.metal.large
+AMD 9254
+24 Cores @ 2.9 GHz
+384 GB
+2 x 480 GB + 2 x 3.8 TB
+2 x 10 Gbps
+$4.06/hr
+
+latitude: f4.metal.medium
+AMD 4564P
+16 Cores @ 4.5 GHz
+128 GB
+2 x 480 + 2 x 1.9 TB
+2 x 10 Gbps
+$1.52/hr
+
+latitude: f4.metal.small
+AMD 4484PX
+12 Cores @ 4.4 GHz
+96 GB
+2 x 960 GB
+2 x 10 Gbps
+$1.10/hr
+
+latitude: m4.metal.medium
+AMD 9124
+16 Cores @ 3 GHz
+128 GB
+2 x 480 GB + 2 x 1.9 TB
+2 x 10 Gbps
+$1.24/hr
+
+latitude: m4.metal.small
+AMD 4244P
+6 Cores @ 3.8 GHz
+64 GB
+2 x 960 GB
+2 x 10 Gbps
+$0.82/hr
+
+GCP: c3d-standard-8
+AMD Genoa
+8 vCPU
+32 GB
+$0.40/hr
+
+GCP: c3d-standard-16
+AMD Genoa
+16 vCPU
+64 GB
+$0.80/hr
+
+GCP: c3-standard-22
+Intel Sapphire Rapids
+22 vCPU
+88 GB
+$1.22/hr

@@ -1,0 +1,24 @@
+{
+  "_comment": "Matched-TC (2+1) repro of the 2026-03-19 baseline gauntlet. Same opponents (SF UCI_Elo 2400/2600) so HEAD-HCE numbers are directly comparable to gauntlet_20260319_201445.json (baseline beat SF_2400 28-2, ~even SF_2600).",
+  "time_control": "2+1",
+  "rounds_per_opponent": 30,
+  "concurrency": 4,
+  "threads": 2,
+  "rating_list": "Stockfish UCI_Elo (approx, SF scale)",
+  "opponents": [
+    {
+      "name": "SF_2400",
+      "cmd": "/usr/local/bin/stockfish",
+      "rating": 2400,
+      "proto": "uci",
+      "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2400 }
+    },
+    {
+      "name": "SF_2600",
+      "cmd": "/usr/local/bin/stockfish",
+      "rating": 2600,
+      "proto": "uci",
+      "options": { "UCI_LimitStrength": "true", "UCI_Elo": 2600 }
+    }
+  ]
+}

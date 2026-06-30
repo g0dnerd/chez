@@ -1,0 +1,5 @@
+localhost 0.0 repo=~/projects/chez
+root@51.159.203.223 ~/.ssh/cloud 0.247
+root@51.159.203.219 ~/.ssh/cloud 0.247
+root@51.158.36.133 ~/.ssh/cloud 0.438
+root@51.158.37.6 ~/.ssh/cloud 0.438

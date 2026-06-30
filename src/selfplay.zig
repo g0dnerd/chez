@@ -15,10 +15,20 @@ const default_threads: usize = 4;
 const max_threads: usize = 256;
 const random_plies: u16 = 8;
 const skip_plies: u16 = 16;
-const score_filter: i32 = 3000;
+// Defaults restore pre-"speedup" data quality: keep decisive positions
+// (high score_filter) and adjudicate only clearly-won games (high threshold).
+// Aggressive values compress the eval-label range and weaken the trained net.
+const default_score_filter: i32 = 10000;
+const default_adjudication_threshold: i32 = 2500;
+const default_adjudication_count: u16 = 4;
 const sample_interval: u16 = 4;
-const adjudication_threshold: i32 = 1000;
-const adjudication_count: u16 = 4;
+
+// Tunable data-quality knobs, overridable via CLI.
+const RecordCfg = struct {
+    score_filter: i32 = default_score_filter,
+    adjudication_threshold: i32 = default_adjudication_threshold,
+    adjudication_count: u16 = default_adjudication_count,
+};
 // Draw adjudication: balanced eval for many consecutive plies past the opening.
 const draw_adjudication_threshold: i32 = 10;
 const draw_adjudication_count: u16 = 8;
@@ -47,9 +57,11 @@ const SelfplayGame = struct {
     rng: std.Random,
     history: engine.search.PositionHistory,
     ttable: *engine.search.TranspositionTable,
+    searcher: *engine.search.ReusableSearcher,
     network: ?*const nnue.Network,
     depth: u8,
     max_nodes: ?u64,
+    cfg: RecordCfg,
     ply: u16,
     records: [max_game_records]TrainingRecord,
     num_records: usize,
@@ -57,15 +69,17 @@ const SelfplayGame = struct {
     adjudication_winning_side: engine.Color,
     draw_consecutive: u16,
 
-    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, ttable: *engine.search.TranspositionTable, network: ?*const nnue.Network) Self {
+    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, cfg: RecordCfg, ttable: *engine.search.TranspositionTable, searcher: *engine.search.ReusableSearcher, network: ?*const nnue.Network) Self {
         return .{
             .state = .defaultPosition(),
             .rng = rng,
             .history = .{},
             .ttable = ttable,
+            .searcher = searcher,
             .network = network,
             .depth = depth,
             .max_nodes = max_nodes,
+            .cfg = cfg,
             .ply = 0,
             .records = undefined,
             .num_records = 0,
@@ -116,7 +130,7 @@ const SelfplayGame = struct {
     fn shouldRecord(self: *const Self, score: i32) bool {
         if (self.ply < skip_plies) return false;
         if (self.state.in_check != null) return false;
-        if (score > score_filter or score < -score_filter) return false;
+        if (score > self.cfg.score_filter or score < -self.cfg.score_filter) return false;
         if (self.ply % sample_interval != 0) return false;
         return true;
     }
@@ -138,15 +152,14 @@ const SelfplayGame = struct {
             return gameResultToOutcome(res);
         }
 
-        const search_res = (try engine.search.searchParallel(
+        const search_res = self.searcher.search(
             &self.state,
             self.depth,
-            1,
             &self.history,
             self.ttable,
             .{ .max_nodes = self.max_nodes },
             self.network,
-        )) orelse return error.SearchFailed;
+        ) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
@@ -158,7 +171,7 @@ const SelfplayGame = struct {
         }
 
         const abs_score = @as(i32, @intCast(@abs(score)));
-        if (abs_score > adjudication_threshold) {
+        if (abs_score > self.cfg.adjudication_threshold) {
             const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
             if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
                 self.adjudication_consecutive += 1;
@@ -166,7 +179,7 @@ const SelfplayGame = struct {
                 self.adjudication_consecutive = 1;
                 self.adjudication_winning_side = winning_side;
             }
-            if (self.adjudication_consecutive >= adjudication_count) {
+            if (self.adjudication_consecutive >= self.cfg.adjudication_count) {
                 return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
             }
         } else {
@@ -232,6 +245,7 @@ const WorkerCtx = struct {
     games_per_worker: usize,
     depth: u8,
     max_nodes: ?u64,
+    cfg: RecordCfg,
     seed: u64,
     writer: *std.Io.Writer,
     write_mutex: *std.Io.Mutex,
@@ -247,8 +261,13 @@ fn workerLoop(ctx: *WorkerCtx) void {
     var ttable = engine.search.TranspositionTable.initSized(std.heap.page_allocator, tt_buckets_bits) catch return;
     defer ttable.deinit();
 
+    // One reusable searcher per worker: its 2.25 MB continuation-history table and
+    // LMR table are allocated/computed once here, not per move.
+    var searcher = engine.search.ReusableSearcher.init(std.heap.page_allocator, .{}) catch return;
+    defer searcher.deinit();
+
     var rng = std.Random.Pcg.init(ctx.seed);
-    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, &ttable, ctx.network);
+    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, ctx.cfg, &ttable, &searcher, ctx.network);
 
     for (0..ctx.games_per_worker) |_| {
         const result = game.playGame() catch continue;
@@ -283,6 +302,9 @@ const Args = struct {
     num_games: ?usize,
     num_threads: ?usize,
     eval: ?[]const u8,
+    score_filter: ?i32,
+    adjudication_threshold: ?i32,
+    adjudication_count: ?u16,
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -298,6 +320,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const max_nodes = parsed_args.nodes;
     const num_games = parsed_args.num_games orelse default_games;
     const num_threads = parsed_args.num_threads orelse default_threads;
+    const cfg = RecordCfg{
+        .score_filter = parsed_args.score_filter orelse default_score_filter,
+        .adjudication_threshold = parsed_args.adjudication_threshold orelse default_adjudication_threshold,
+        .adjudication_count = parsed_args.adjudication_count orelse default_adjudication_count,
+    };
 
     var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .empty });
     const io = threaded.io();
@@ -328,6 +355,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (max_nodes) |n| try stderr.print(", node cap {d}", .{n});
     if (network != null) try stderr.print(", NNUE eval", .{});
     try stderr.print("\n", .{});
+    try stderr.print("Filters: score_filter {d}, adjudication {d}cp x{d} plies\n", .{
+        cfg.score_filter, cfg.adjudication_threshold, cfg.adjudication_count,
+    });
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
     try stderr.flush();
 
@@ -351,6 +381,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .games_per_worker = games_per_worker + @as(usize, if (i < remainder) 1 else 0),
             .depth = depth,
             .max_nodes = max_nodes,
+            .cfg = cfg,
             .seed = base_seed +% i,
             .writer = stdout,
             .write_mutex = &write_mutex,

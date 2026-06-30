@@ -39,9 +39,10 @@ DEFAULT_THREADS = 1
 class UCIEngine:
     """Manages a UCI chess engine subprocess."""
 
-    def __init__(self, path: str, threads: int = 1):
+    def __init__(self, path: str, threads: int = 1, evalfile: str | None = None):
         self.path = str(Path(path).resolve())
         self.threads = threads
+        self.evalfile = str(Path(evalfile).resolve()) if evalfile else None
         self.name = Path(path).name
 
     def start(self):
@@ -65,8 +66,15 @@ class UCIEngine:
                 self.name = line[len("id name ") :]
         self._send(f"setoption name Threads value {self.threads}")
         self._send("setoption name OwnBook value false")
+        if self.evalfile:
+            self._send(f"setoption name EvalFile value {self.evalfile}")
         self._send("isready")
-        self._read_until("readyok")
+        lines = self._read_until("readyok")
+        if self.evalfile and any("failed to load EvalFile" in l for l in lines):
+            raise RuntimeError(
+                f"Engine failed to load EvalFile '{self.evalfile}' "
+                "(it fell back to HCE)"
+            )
 
     def _send(self, cmd: str):
         assert self.process is not None
@@ -570,6 +578,11 @@ Examples:
         help=f"Engine threads (default: {DEFAULT_THREADS})",
     )
     parser.add_argument(
+        "--evalfile",
+        default=None,
+        help="NNUE net to load via UCI EvalFile (default: engine HCE)",
+    )
+    parser.add_argument(
         "--category",
         default=None,
         help="Override category name for all positions",
@@ -618,7 +631,9 @@ Examples:
     print(f"Running at {mode} {budget}, {args.threads} thread(s)...")
     start_time = time.time()
 
-    with UCIEngine(args.engine, threads=args.threads) as engine:
+    with UCIEngine(
+        args.engine, threads=args.threads, evalfile=args.evalfile
+    ) as engine:
         engine_name = engine.name
         results = run_suite(
             engine,

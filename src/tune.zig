@@ -4,23 +4,23 @@
 //   zig build tune -- [options]
 //
 //   --dataset <path>          Quiet-labeled EPD file (required)
-//   --output <path>           Output params.zig path [src/engine/params.zig]
-//   --max-positions <n>       Position count limit [5000000]
+//   --output_path <path>      Output params.zig path [src/engine/params.zig]
+//   --max_positions <n>       Position count limit [5000000]
 //   --threads <n>             Worker threads [8]
 //   --iterations <n>          SPSA iterations [500000]
-//   --batch-size <n>          Positions per SPSA step [16384]
+//   --batch_size <n>          Positions per SPSA step [16384]
 //   --a <f>                   SPSA step-size numerator [10.0]
-//   --big-a <f>               SPSA stability constant [100.0]
+//   --big_a <f>               SPSA stability constant [100.0]
 //   --alpha <f>               Step-size decay exponent [0.602]
 //   --c <f>                   Perturbation size [1.0]
 //   --gamma <f>               Perturbation decay exponent [0.101]
 //   --k <f>                   Skip K-tuning, use this K directly
-//   --k-only                  Tune K, print result, exit
-//   --checkpoint-interval <n> Write params every N iters [1000]
-//   --calibrate-n <n>         Calibration iterations before SPSA [50]
-//   --skip-calibrate          Skip the calibration output pass
-//   --skip-k-tune             Skip K-tuning (use K=1.0 unless --k supplied)
-//   --no-early-stop           Disable early stopping (run all iterations)
+//   --k_only                  Tune K, print result, exit
+//   --checkpoint_interval <n> Write params every N iters [1000]
+//   --calibrate_n <n>         Calibration iterations before SPSA [50]
+//   --skip_calibrate          Skip the calibration output pass
+//   --skip_k_tune             Skip K-tuning (use K=1.0 unless --k supplied)
+//   --no_early_stop           Disable early stopping (run all iterations)
 
 const std = @import("std");
 const kore = @import("kore");
@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
 
     if (args.k_only) |_| {
-        std.debug.print("tune: --k-only done. K = {d:.4}\n", .{k});
+        std.debug.print("tune: --k_only done. K = {d:.4}\n", .{k});
         return;
     }
 
@@ -246,7 +246,7 @@ fn runCalibration(
         \\  avg |g_hat|    = {d:.6}
         \\  current a      = {d:.1}  ->  avg step = {d:.5}   (a_1 * avg_g_hat, where a_1 = a/(A+1)^alpha)
         \\  suggested a    = {d:.1}  for avg step = {d:.1}
-        \\  (auto-applied unless --a is set; use --skip-calibrate to suppress)
+        \\  (auto-applied unless --a is set; use --skip_calibrate to suppress)
         \\
     , .{ avg_abs_g_hat, cfg.a, current_avg_step, suggested_a, desired_step });
 

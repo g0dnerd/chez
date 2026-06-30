@@ -146,13 +146,13 @@ scripts/
 ```bash
 # Generate dataset
 uv run python scripts/extract_positions.py data/pgn/*.pgn > data/candidates.fen
-zig-out/bin/quiet-filter --input data/candidates.fen > data/quiet.fen
+zig-out/bin/quiet-filter --input_path data/candidates.fen > data/quiet.fen
 uv run python scripts/label_positions.py --input data/quiet.fen --output data/dataset.epd
 
 # Run tuner
 zig build tune -- --dataset data/dataset.epd
-zig build tune -- --dataset data/dataset.epd --k-only          # just tune K
-zig build tune -- --dataset data/dataset.epd --skip-calibrate   # skip a calibration
+zig build tune -- --dataset data/dataset.epd --k_only          # just tune K
+zig build tune -- --dataset data/dataset.epd --skip_calibrate   # skip a calibration
 ```
 
 Output is written to `src/engine/params.zig` by default (atomic write + zig fmt).

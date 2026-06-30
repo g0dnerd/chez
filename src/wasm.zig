@@ -1,6 +1,7 @@
 // WASM interface for the Chez chess engine
 // Uses global state pattern - single game instance, no dynamic allocation needed
 
+const std = @import("std");
 const engine = @import("chez.zig").engine;
 
 // Global game state
@@ -9,6 +10,33 @@ var move_list: engine.movegen.MoveList = undefined;
 var undo_info: [2]?engine.State.UndoInfo = @splat(null);
 var last_moves: [2]?engine.Move = @splat(null);
 var last_pieces: [2]?engine.piece.Piece = @splat(null);
+
+// NNUE network, loaded from a JS-provided byte buffer (no filesystem on wasm).
+// Null until wasm_nnue_load succeeds; search falls back to HCE while null.
+const nnue_allocator = std.heap.page_allocator;
+var nnue_network: ?*engine.nnue.Network = null;
+
+// Reserve `len` bytes of wasm memory for JS to write the raw .nnue file into.
+// JS copies the fetched bytes here, then calls wasm_nnue_load(ptr, len).
+// Returns null on allocation failure.
+export fn wasm_nnue_alloc(len: usize) ?[*]u8 {
+    const buf = nnue_allocator.alloc(u8, len) catch return null;
+    return buf.ptr;
+}
+
+// Parse the .nnue bytes at (ptr, len) into the global network. loadFromBytes
+// copies everything it needs, so the input buffer is freed here. Returns true
+// on success; on failure the engine keeps using HCE.
+export fn wasm_nnue_load(ptr: [*]u8, len: usize) bool {
+    const bytes = ptr[0..len];
+    defer nnue_allocator.free(bytes);
+    if (nnue_network) |old| {
+        old.deinit(nnue_allocator);
+        nnue_network = null;
+    }
+    nnue_network = engine.nnue.Network.loadFromBytes(nnue_allocator, bytes) catch return false;
+    return true;
+}
 
 // Initialize a new game at starting position
 export fn wasm_init_default() void {
@@ -147,13 +175,75 @@ export fn wasm_unmake_move() i8 {
 // Returns packed int: (start << 16) | (end << 8) | promo
 // Returns 0 if no legal moves
 export fn wasm_get_best_move(depth: u8) u32 {
-    const result = engine.search.searchSingleThreaded(&game_state, depth) catch return 0;
+    const result = engine.search.searchSingleThreaded(&game_state, depth, nnue_network) catch return 0;
     if (result) |r| {
         const m = r.move;
         const promo: u8 = if (m.is_promotion) m.promotion_piece else 0;
         return (@as(u32, m.start) << 16) | (@as(u32, m.end) << 8) | @as(u32, promo);
     }
     return 0;
+}
+
+// Shared-memory Lazy SMP (chez-mt.wasm). JS owns the orchestration: it
+// instantiates this module in N Web Workers over one shared WebAssembly.Memory,
+// then drives one search via the calls below. wasm_smp_begin/_finish run on the
+// page's main thread (thread 0); each helper worker sets its __stack_pointer to
+// wasm_smp_stack_top(id) and calls wasm_smp_run_thread(id).
+var smp: ?*engine.search.WasmSmp = null;
+
+// Iterative deepening runs to this depth cap but stops on the per-move clock
+// well before reaching it (matches search.max_ply).
+const wasm_search_max_depth: u8 = 64;
+
+// Allocate the shared TT, per-thread contexts and helper shadow stacks for one
+// parallel search over the current position, thinking for time_ms milliseconds.
+// Returns false on allocation failure (JS then falls back to wasm_get_best_move).
+export fn wasm_smp_begin(time_ms: u32, num_threads: u8) bool {
+    if (smp) |old| {
+        old.deinit();
+        smp = null;
+    }
+    smp = engine.search.WasmSmp.begin(
+        nnue_allocator,
+        &game_state,
+        wasm_search_max_depth,
+        time_ms,
+        num_threads,
+        null,
+        nnue_network,
+    ) catch return false;
+    return true;
+}
+
+// Top-of-stack address for helper worker `thread_id` (1..num_threads-1).
+export fn wasm_smp_stack_top(thread_id: u8) usize {
+    const s = smp orelse return 0;
+    return s.stackTop(thread_id);
+}
+
+// Run thread `thread_id`'s full iterative deepening into the shared TT.
+export fn wasm_smp_run_thread(thread_id: u8) void {
+    const s = smp orelse return;
+    s.runThread(thread_id);
+}
+
+// Signal all threads to stop (called by the main thread once thread 0 returns).
+export fn wasm_smp_stop() void {
+    if (smp) |s| s.stop();
+}
+
+// Collect thread 0's best move, free the search state, and return the packed
+// move (0 if none).
+export fn wasm_smp_finish() u32 {
+    const s = smp orelse return 0;
+    defer {
+        s.deinit();
+        smp = null;
+    }
+    const r = s.result() orelse return 0;
+    const m = r.move;
+    const promo: u8 = if (m.is_promotion) m.promotion_piece else 0;
+    return (@as(u32, m.start) << 16) | (@as(u32, m.end) << 8) | @as(u32, promo);
 }
 
 // Get fullmove clock (move number)

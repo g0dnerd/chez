@@ -235,7 +235,13 @@ pub fn main() !void {
             } else if (std.mem.eql(u8, opt_name, "EvalFile")) {
                 if (opt_val.len > 0) {
                     if (network) |n| n.deinit(std.heap.page_allocator);
-                    network = nnue.Network.load(io, std.heap.page_allocator, opt_val) catch null;
+                    network = nnue.Network.load(io, std.heap.page_allocator, opt_val) catch |err| blk: {
+                        try stdout_mutex.lock(io);
+                        stdout.print("info string failed to load EvalFile '{s}': {s} (falling back to HCE)\n", .{ opt_val, @errorName(err) }) catch {};
+                        stdout.flush() catch {};
+                        stdout_mutex.unlock(io);
+                        break :blk null;
+                    };
                 }
             } else if (std.mem.eql(u8, opt_name, "NnueScale")) {
                 search_params.nnue_scale = std.fmt.parseInt(i32, opt_val, 10) catch search_params.nnue_scale;

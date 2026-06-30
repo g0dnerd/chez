@@ -1,27 +1,19 @@
 {
-  "_comment": "Opponent ratings: https://www.computerchess.org.uk/ccrl/",
+  "_comment": "Captures Chez at its strongest vs capped Stockfish. threads=4 (Lazy SMP) because strength is hugely thread-sensitive (baseline measured 0.56@1t -> 0.89@2t vs SF_2400); 4t x conc3 = 15/16 cores, clean timing. Ladder shifted up + SF_2400 dropped: at >=2 threads baseline already beat SF_2400 +24-2 (saturated, ~uninformative, +/-249 Elo); informative cells are where Chez scores 30-70%. rounds=100 (200 games/opp) -> ~+/-50 Elo CI. Balanced 8moves book for representative absolute Elo + lower variance. SF kept at Threads=1: with UCI_LimitStrength its skill is fixed by UCI_Elo regardless of threads. SF UCI_Elo caps at 3190; if Chez sweeps 3190, swap the top rung for fixed-NODES full-strength SF (UCI_LimitStrength=false, e.g. nodes=200000).",
   "time_control": "2+1",
-  "rounds_per_opponent": 30,
-  "concurrency": 6,
-  "threads": 2,
-  "rating_list": "CCRL Blitz",
+  "rounds_per_opponent": 100,
+  "concurrency": 3,
+  "threads": 4,
+  "rating_list": "Stockfish UCI_Elo (SF scale, reads high vs CCRL)",
+  "opening_book": "books/8moves_v3.pgn",
   "opponents": [
-    {
-      "name": "Stockfish (2400)",
-      "cmd": "stockfish",
-      "rating": 2400,
-      "proto": "uci",
-      "options": {
-        "UCI_LimitStrength": "true",
-        "UCI_Elo": "2400"
-      }
-    },
     {
       "name": "Stockfish (2600)",
       "cmd": "stockfish",
       "rating": 2600,
       "proto": "uci",
       "options": {
+        "Threads": "1",
         "UCI_LimitStrength": "true",
         "UCI_Elo": "2600"
       }
@@ -32,8 +24,31 @@
       "rating": 2800,
       "proto": "uci",
       "options": {
+        "Threads": "1",
         "UCI_LimitStrength": "true",
         "UCI_Elo": "2800"
+      }
+    },
+    {
+      "name": "Stockfish (3000)",
+      "cmd": "stockfish",
+      "rating": 3000,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "3000"
+      }
+    },
+    {
+      "name": "Stockfish (3190)",
+      "cmd": "stockfish",
+      "rating": 3190,
+      "proto": "uci",
+      "options": {
+        "Threads": "1",
+        "UCI_LimitStrength": "true",
+        "UCI_Elo": "3190"
       }
     }
   ]

@@ -6,6 +6,10 @@ const movegen = @import("movegen.zig");
 const nnue = @import("nnue.zig");
 const piece = @import("piece.zig");
 const square = @import("square.zig");
+const clock = @import("clock.zig");
+
+// Max tapered phase (full non-pawn material), matching evaluation.zig.
+const max_phase = @import("score.zig").max_phase_mg;
 
 const Atomic = std.atomic.Value;
 const expectEqual = std.testing.expectEqual;
@@ -16,7 +20,16 @@ const MoveList = movegen.MoveList;
 const evaluation = engine.evaluation;
 
 pub const SearchParams = struct {
-    nnue_scale: i32 = 1,
+    nnue_scale: i32 = 2,
+    // NNUE output scaling (applied only when a network is loaded). Both are
+    // percentages so they expose cleanly as integer UCI spin options.
+    // Material scaling: compress eval toward material_scale_min% at bare-kings,
+    // ramping to 100% at full non-pawn material (phase == max_phase_mg).
+    material_scale_min: i32 = 75,
+    // 50-move damping: eval is undamped until halfmove_clock reaches
+    // fifty_move_start, then ramps down to (100 - fifty_move_damp)% at clock 100.
+    fifty_move_start: i32 = 20,
+    fifty_move_damp: i32 = 50,
     rfp_base: i32 = 80,
     futility_margin_1: i32 = 300,
     futility_margin_2: i32 = 600,
@@ -206,9 +219,38 @@ const TranspositionEntry = struct {
 //          is_promotion:1, promotion_piece:3 = 43 bits)
 const builtin = @import("builtin");
 const is_wasm = builtin.target.cpu.arch == .wasm32;
+// The threaded wasm build (chez-mt.wasm) compiles with the atomics feature and
+// runs across Web Worker instances over one shared linear memory. The single-
+// thread build (chez.wasm) has no atomics feature and keeps the cheaper non-
+// atomic word.
+const wasm_threads = is_wasm and builtin.cpu.has(.wasm, .atomics);
 
 // For WASM, provide aliased methods to allow the "generic" type to function.
-const TTWord = if (is_wasm) struct {
+// wasm32 has no 64-bit atomics, so the threaded build splits each 64-bit TT word
+// into two atomic u32 halves. A reader can still observe a half from each of two
+// racing writers, but the lock-free XOR validation (key == hash ^ data) rejects
+// any such torn read exactly as it does for the native u64 races.
+const TTWord = if (wasm_threads) struct {
+    const Self = @This();
+
+    lo: Atomic(u32) = Atomic(u32).init(0),
+    hi: Atomic(u32) = Atomic(u32).init(0),
+
+    fn init(v: u64) Self {
+        return .{ .lo = Atomic(u32).init(@truncate(v)), .hi = Atomic(u32).init(@truncate(v >> 32)) };
+    }
+
+    fn load(self: *const Self, comptime order: std.builtin.AtomicOrder) u64 {
+        const l = self.lo.load(order);
+        const h = self.hi.load(order);
+        return (@as(u64, h) << 32) | @as(u64, l);
+    }
+
+    fn store(self: *Self, v: u64, comptime order: std.builtin.AtomicOrder) void {
+        self.lo.store(@truncate(v), order);
+        self.hi.store(@truncate(v >> 32), order);
+    }
+} else if (is_wasm) struct {
     const Self = @This();
 
     raw: u64 = 0,
@@ -223,6 +265,28 @@ const TTWord = if (is_wasm) struct {
 
     fn store(self: *Self, v: u64, _: std.builtin.AtomicOrder) void {
         self.raw = v;
+    }
+} else Atomic(u64);
+
+// wasm32 has no 64-bit atomics, but the wasm path is single-threaded, so a plain
+// counter with the same method surface (load/fetchAdd) is a safe stand-in.
+const AtomicCounter = if (is_wasm) struct {
+    const Self = @This();
+
+    raw: u64 = 0,
+
+    fn init(v: u64) Self {
+        return .{ .raw = v };
+    }
+
+    fn load(self: *const Self, _: std.builtin.AtomicOrder) u64 {
+        return self.raw;
+    }
+
+    fn fetchAdd(self: *Self, v: u64, _: std.builtin.AtomicOrder) u64 {
+        const old = self.raw;
+        self.raw += v;
+        return old;
     }
 } else Atomic(u64);
 
@@ -326,7 +390,7 @@ pub const TranspositionTable = struct {
     // Allocate 2^buckets_bits buckets (bucket_size entries each). Larger tables
     // cut re-search at high depth; self-play uses this to size up.
     pub fn initSized(alloc: std.mem.Allocator, buckets_bits: u6) !TranspositionTable {
-        const num_buckets: usize = @as(usize, 1) << buckets_bits;
+        const num_buckets: usize = @as(usize, 1) << @as(u5, @intCast(buckets_bits));
         const entries = try alloc.alloc(PackedTTEntry, num_buckets * bucket_size);
         @memset(entries, PackedTTEntry{});
         return .{ .entries = entries, .alloc = alloc, .bucket_mask = num_buckets - 1 };
@@ -338,6 +402,15 @@ pub const TranspositionTable = struct {
 
     pub fn deinit(self: *TranspositionTable) void {
         self.alloc.free(self.entries);
+    }
+
+    // Prefetch the bucket cache line for an upcoming probe. The probe's load is
+    // almost pure memory-latency stall (TT spills L2/L3), so issuing this as
+    // soon as the hash is known — ahead of the intervening repetition/material
+    // checks — hides part of the miss. No semantic effect.
+    fn prefetch(self: *const TranspositionTable, hash: u64) void {
+        const base: usize = @intCast((hash & self.bucket_mask) * bucket_size);
+        @prefetch(&self.entries[base], .{ .rw = .read, .locality = 3, .cache = .data });
     }
 
     fn probe(self: *TranspositionTable, hash: u64) ?TranspositionEntry {
@@ -440,14 +513,15 @@ pub const SearchOptions = struct {
 // Minimal shared state for Lazy SMP - threads run independently
 const SharedSearchState = struct {
     stop_flag: Atomic(bool) = Atomic(bool).init(false),
-    node_count: Atomic(u64) = Atomic(u64).init(0),
+    node_count: AtomicCounter = AtomicCounter.init(0),
     // Move-ordering quality counters: total beta cutoffs and cutoffs on the
     // first move searched. first/total ≈ 85-92% indicates healthy ordering.
-    cutoffs: Atomic(u64) = Atomic(u64).init(0),
-    first_move_cutoffs: Atomic(u64) = Atomic(u64).init(0),
+    cutoffs: AtomicCounter = AtomicCounter.init(0),
+    first_move_cutoffs: AtomicCounter = AtomicCounter.init(0),
     max_depth: u8 = 0,
-    io: std.Io,
-    start_time: std.Io.Timestamp,
+    // Monotonic nanoseconds at search start, for elapsed-time measurement.
+    // See clock.nowNanos (0 on freestanding/wasm, which has no time control).
+    start_ns: i96 = 0,
     options: SearchOptions = .{},
     network: ?*const nnue.Network = null,
     search_params: SearchParams = .{},
@@ -475,7 +549,28 @@ const SharedSearchState = struct {
         // delta_margin, 80*depth in RFP) are tuned for the HCE scale, so scale
         // NNUE up by 2 to keep them approximately calibrated. Fine-tuning is
         // a Phase 6 concern.
-        if (self.network) |net| return nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
+        if (self.network) |net| {
+            var v = nnue.evaluateLazy(state, net, acc_stack, ply) * self.search_params.nnue_scale;
+
+            // Material scaling: shrink eval as non-pawn material disappears.
+            // phase uses the same weights as the tapered eval (N=B=1, R=2, Q=4).
+            const phase: i32 = @min(@as(i32, @intCast(state.pieceBitboard(piece.knight).popCount() +
+                state.pieceBitboard(piece.bishop).popCount() +
+                2 * state.pieceBitboard(piece.rook).popCount() +
+                4 * state.pieceBitboard(piece.queen).popCount())), max_phase);
+            const min = self.search_params.material_scale_min;
+            const material_factor = min + @divTrunc((100 - min) * phase, max_phase);
+            v = @divTrunc(v * material_factor, 100);
+
+            // 50-move damping: pull eval toward 0 as the halfmove clock climbs.
+            const start = self.search_params.fifty_move_start;
+            const hmc: i32 = @min(@as(i32, state.halfmove_clock), 100);
+            const over = @max(hmc - start, 0);
+            const fifty_factor = 100 - @divTrunc(over * self.search_params.fifty_move_damp, @max(1, 100 - start));
+            v = @divTrunc(v * fifty_factor, 100);
+
+            return v;
+        }
         return evaluation.evaluate(state);
     }
 };
@@ -491,7 +586,7 @@ fn checkTime(shared: *SharedSearchState) void {
     }
     if (shared.options.max_time_ms) |max_ms| {
         const elapsed: u64 = @intCast(@divTrunc(
-            shared.start_time.untilNow(shared.io, std.Io.Clock.awake).nanoseconds,
+            clock.nowNanos() - shared.start_ns,
             std.time.ns_per_ms,
         ));
         if (elapsed >= max_ms) {
@@ -636,8 +731,12 @@ fn quiescence(
         const m = captures.pickNext(i);
         const p = state.mailbox[m.start].?;
 
-        // Delta pruning: skip captures that can't possibly improve alpha
+        // SEE + delta pruning: skip captures that can't help. Not reached when
+        // in check (that path is handled above and searches all evasions).
         if (state.mailbox[m.end]) |captured_piece| {
+            // SEE pruning: drop captures that lose material outright.
+            if (seeLoses(state, m, 0)) continue;
+            // Delta pruning: skip captures that can't possibly improve alpha.
             var gain = evaluation.piece_values_mg[captured_piece];
             if (m.is_promotion) {
                 gain += evaluation.piece_values_mg[m.promotion_piece] - evaluation.piece_values_mg[piece.pawn];
@@ -668,7 +767,24 @@ fn quiescence(
 }
 
 // Late Move Pruning thresholds: at depth d, prune quiet moves after this many moves
-const lmp_thresholds = [4]u8{ 5, 6, 9, 14 };
+const lmp_thresholds = [4]u8{ 4, 5, 7, 11 };
+
+// SEE pruning of losing captures in the main search at shallow depth: at
+// depth <= see_prune_depth, skip non-first captures that lose more than
+// see_prune_margin SEE units (pawn ~= 126). Tunable for screening.
+const see_prune_depth: i32 = 3;
+const see_prune_margin: i32 = 0;
+
+// True when capturing move `m` loses material per static exchange evaluation:
+// its SEE is below `threshold`. Only a higher-value attacker can lose (victim
+// >= attacker => SEE >= 0), so the exchange is evaluated only there. Caller
+// guarantees `m` captures a piece sitting on m.end.
+fn seeLoses(state: *const State, m: Move, threshold: i32) bool {
+    const attacker = state.mailbox[m.start].?;
+    const victim = state.mailbox[m.end].?;
+    return evaluation.piece_values_mg[attacker] > evaluation.piece_values_mg[victim] and
+        movegen.staticExchangeEvaluation(state, m) < threshold;
+}
 
 const SearchContext = struct {
     tt: *TranspositionTable,
@@ -698,6 +814,9 @@ fn negamax(
     // Mutable so Internal Iterative Reductions can lower it after the TT probe.
     var depth = depth_param;
     const hash = state.zobrist_hash;
+    // Kick off the TT bucket fetch now; the repetition/material checks below
+    // run while the line travels from L3/memory, hiding part of the probe miss.
+    search_ctx.tt.prefetch(hash);
     var alpha = alpha_initial;
     var best_move: ?Move = null;
 
@@ -887,6 +1006,16 @@ fn negamax(
         const should_histprune = @as(i32, depth) <= search_ctx.shared.search_params.histprune_depth and
             !in_check and i > 0 and !is_capture and !is_promotion and !is_killer and
             combined_hist < -search_ctx.shared.search_params.histprune_margin * @as(i32, depth);
+
+        // SEE pruning: at shallow depth, skip captures that lose material badly.
+        // Evaluated on the pre-move state, so we prune before makeMove and skip
+        // the accumulator update entirely. Unlike the quiet-move prunes below, a
+        // losing capture is dropped even when it would give check.
+        if (@as(i32, depth) <= see_prune_depth and is_capture and i > 0 and
+            !in_check and !is_promotion and seeLoses(state, m, -see_prune_margin))
+        {
+            continue;
+        }
 
         const undo = state.makeMove(m, to_move, p);
         if (search_ctx.shared.network) |net| {
@@ -1362,7 +1491,7 @@ fn workerThread(ctx: *ThreadContext) void {
                 if (ctx.shared.options.on_info) |cb| {
                     const nodes = ctx.shared.node_count.load(.monotonic);
                     const elapsed_ms: u64 = @intCast(@divTrunc(
-                        ctx.shared.start_time.untilNow(ctx.shared.io, std.Io.Clock.awake).nanoseconds,
+                        clock.nowNanos() - ctx.shared.start_ns,
                         std.time.ns_per_ms,
                     ));
                     var pv_buf: [32]Move = undefined;
@@ -1405,14 +1534,9 @@ pub fn searchParallel(
     defer std.heap.page_allocator.free(cont_tables);
     for (cont_tables) |*t| t.clear();
 
-    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
-    const io = threaded.io();
-    const clock = std.Io.Clock.awake;
-
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .io = io,
-        .start_time = clock.now(io),
+        .start_ns = clock.nowNanos(),
         .options = options,
         .network = network,
         .search_params = options.search_params,
@@ -1500,6 +1624,91 @@ pub fn searchParallel(
     }
 }
 
+// Reusable single-threaded searcher for high-throughput callers (self-play) that
+// run one search per move across millions of moves. searchParallel allocates and
+// zeroes a 2.25 MB continuation-history table and recomputes the 64x64 LMR table
+// (thousands of @log calls) on every call; here both are owned once and reused,
+// so the per-move fixed cost drops to clearing already-resident memory. Search
+// behavior is identical to searchParallel(state, depth, 1, ...).
+pub const ReusableSearcher = struct {
+    cont_hist: *evaluation.ContHistTable,
+    lmr_table: [64][64]u8,
+    alloc: std.mem.Allocator,
+
+    // search_params must match the options.search_params later passed to search()
+    // so the precomputed LMR table stays consistent (self-play uses defaults).
+    pub fn init(alloc: std.mem.Allocator, search_params: SearchParams) !ReusableSearcher {
+        const cont = try alloc.create(evaluation.ContHistTable);
+        return .{
+            .cont_hist = cont,
+            .lmr_table = computeLmrTable(search_params.lmr_base, search_params.lmr_div),
+            .alloc = alloc,
+        };
+    }
+
+    pub fn deinit(self: *ReusableSearcher) void {
+        self.alloc.destroy(self.cont_hist);
+    }
+
+    pub fn search(
+        self: *ReusableSearcher,
+        state: *const State,
+        max_depth: u8,
+        game_history: ?*const PositionHistory,
+        tbl: *TranspositionTable,
+        options: SearchOptions,
+        network: ?*const nnue.Network,
+    ) ?SearchResult {
+        tbl.newSearch();
+        self.cont_hist.clear();
+
+        var shared = SharedSearchState{
+            .max_depth = max_depth,
+            .start_ns = clock.nowNanos(),
+            .options = options,
+            .network = network,
+            .search_params = options.search_params,
+            .lmr_table = self.lmr_table,
+        };
+
+        var history = PositionHistory{};
+        if (game_history) |gh| {
+            for (0..gh.len) |j| history.push(gh.hashes[j]);
+        } else {
+            history.push(state.zobrist_hash);
+        }
+
+        var ctx = ThreadContext{
+            .state = state.*,
+            .killers = KillerTable{},
+            .history = history,
+            .history_table = evaluation.HistoryTable{},
+            .countermoves = CountermoveTable{},
+            .cont_hist = self.cont_hist,
+            .thread_id = 0,
+            .tbl = tbl,
+            .shared = &shared,
+            .acc_stack = undefined,
+        };
+        for (&ctx.acc_stack.accs) |*acc| acc.computed = .{ false, false };
+        ctx.acc_stack.debug_eval_count = 0;
+
+        workerThread(&ctx);
+
+        if (ctx.best_move) |m| {
+            return .{
+                .move = m,
+                .score = ctx.best_score,
+                .depth = ctx.best_depth,
+                .nodes = shared.node_count.load(.monotonic),
+                .cutoffs = shared.cutoffs.load(.monotonic),
+                .first_move_cutoffs = shared.first_move_cutoffs.load(.monotonic),
+            };
+        }
+        return null;
+    }
+};
+
 pub fn search(state: *const State, max_depth: u8) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     return searchParallel(state, max_depth, default_threads, null, &tbl, .{}, null);
@@ -1517,8 +1726,9 @@ pub fn searchWithHistory(
     return searchParallel(state, max_depth, num_threads, history, tbl, .{}, network);
 }
 
-// Single-threaded search for testing and debugging
-pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
+// Single-threaded search for testing and debugging.
+// `network` is the NNUE net to eval with, or null for HCE (used by the wasm path).
+pub fn searchSingleThreaded(state: *const State, max_depth: u8, network: ?*const nnue.Network) !?SearchResult {
     var tbl = try TranspositionTable.init(std.heap.page_allocator);
     defer tbl.deinit();
 
@@ -1535,13 +1745,10 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     var best_score: i32 = undefined;
     var best_depth: u8 = 0;
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const now = std.Io.Clock.awake.now(io);
-
     var shared = SharedSearchState{
         .max_depth = max_depth,
-        .start_time = now,
+        .start_ns = clock.nowNanos(),
+        .network = network,
     };
     shared.lmr_table = computeLmrTable(shared.search_params.lmr_base, shared.search_params.lmr_div);
 
@@ -1596,17 +1803,145 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8) !?SearchResult {
     }
 }
 
+// Per-helper shadow-stack size for the wasm threaded build. Thread 0 reuses the
+// module's default linker stack; each helper worker gets a private region this
+// large carved out of the shared linear memory (its ThreadContext, including the
+// ~400 KB accumulator stack, lives on the heap, so only the search recursion
+// uses this).
+const wasm_worker_stack_size: usize = 4 * 1024 * 1024;
+
+// Shared-memory Lazy SMP for WebAssembly. std.Thread does not exist on
+// freestanding wasm, so the browser orchestrates: it instantiates this module in
+// N Web Workers over one shared WebAssembly.Memory. Module-level vars (and
+// anything they point at) live in that shared linear memory, so the TT, the
+// SharedSearchState and the per-thread contexts allocated here are visible to
+// every worker instance. Thread 0 runs on the page's main thread and is the one
+// whose result is reported; helper workers only warm the shared TT.
+pub const WasmSmp = struct {
+    alloc: std.mem.Allocator,
+    tbl: TranspositionTable,
+    shared: SharedSearchState,
+    contexts: []ThreadContext,
+    cont_tables: []evaluation.ContHistTable,
+    // One shadow-stack region per thread. Index 0 is empty (thread 0 uses the
+    // linker stack); indices 1..n-1 are the helper-worker stacks.
+    stacks: [][]u8,
+
+    pub fn begin(
+        alloc: std.mem.Allocator,
+        state: *const State,
+        max_depth: u8,
+        max_time_ms: u32,
+        num_threads: usize,
+        game_history: ?*const PositionHistory,
+        network: ?*const nnue.Network,
+    ) !*WasmSmp {
+        const n = @max(@min(num_threads, max_threads), 1);
+
+        const self = try alloc.create(WasmSmp);
+        self.alloc = alloc;
+
+        self.tbl = try TranspositionTable.init(alloc);
+        self.tbl.newSearch();
+
+        self.cont_tables = try alloc.alloc(evaluation.ContHistTable, n);
+        for (self.cont_tables) |*t| t.clear();
+
+        self.shared = SharedSearchState{
+            .max_depth = max_depth,
+            .start_ns = clock.nowNanos(),
+            .network = network,
+            // Iterative deepening runs to max_depth but stops on the clock; 0
+            // means no time limit (depth-bounded).
+            .options = .{ .max_time_ms = if (max_time_ms == 0) null else max_time_ms },
+        };
+        self.shared.lmr_table = computeLmrTable(self.shared.search_params.lmr_base, self.shared.search_params.lmr_div);
+
+        self.contexts = try alloc.alloc(ThreadContext, n);
+        for (self.contexts, 0..) |*ctx, i| {
+            var history = PositionHistory{};
+            if (game_history) |gh| {
+                for (0..gh.len) |j| history.push(gh.hashes[j]);
+            } else {
+                history.push(state.zobrist_hash);
+            }
+            ctx.* = ThreadContext{
+                .state = state.*,
+                .killers = KillerTable{},
+                .history = history,
+                .history_table = evaluation.HistoryTable{},
+                .countermoves = CountermoveTable{},
+                .cont_hist = &self.cont_tables[i],
+                .thread_id = i,
+                .tbl = &self.tbl,
+                .shared = &self.shared,
+                .acc_stack = undefined,
+            };
+            for (&ctx.acc_stack.accs) |*acc| acc.computed = .{ false, false };
+            ctx.acc_stack.debug_eval_count = 0;
+        }
+
+        self.stacks = try alloc.alloc([]u8, n);
+        for (self.stacks, 0..) |*s, i| {
+            // page_allocator returns page-aligned (64 KiB) memory, so the
+            // resulting stack top (base + size) is suitably aligned.
+            s.* = if (i == 0) &.{} else try alloc.alloc(u8, wasm_worker_stack_size);
+        }
+
+        return self;
+    }
+
+    // Absolute linear-memory address a helper worker must load into its
+    // __stack_pointer global (the stack grows down from the top of its region).
+    pub fn stackTop(self: *const WasmSmp, thread_id: usize) usize {
+        const s = self.stacks[thread_id];
+        return @intFromPtr(s.ptr) + s.len;
+    }
+
+    // Run full iterative deepening for one thread into the shared TT. Called on
+    // the main thread for thread 0 and from each Web Worker for the helpers.
+    pub fn runThread(self: *WasmSmp, thread_id: usize) void {
+        workerThread(&self.contexts[thread_id]);
+    }
+
+    pub fn stop(self: *WasmSmp) void {
+        self.shared.stop_flag.store(true, .release);
+    }
+
+    // Thread 0's result is the answer (helpers only warmed the TT). Reading
+    // contexts[0] avoids any cross-worker visibility question since thread 0 ran
+    // on the same (main) thread that calls this.
+    pub fn result(self: *const WasmSmp) ?SearchResult {
+        const ctx = &self.contexts[0];
+        const m = ctx.best_move orelse return null;
+        return .{
+            .move = m,
+            .score = ctx.best_score,
+            .depth = ctx.best_depth,
+            .nodes = self.shared.node_count.load(.monotonic),
+            .cutoffs = self.shared.cutoffs.load(.monotonic),
+            .first_move_cutoffs = self.shared.first_move_cutoffs.load(.monotonic),
+        };
+    }
+
+    pub fn deinit(self: *WasmSmp) void {
+        const alloc = self.alloc;
+        for (self.stacks) |s| if (s.len != 0) alloc.free(s);
+        alloc.free(self.stacks);
+        alloc.free(self.contexts);
+        alloc.free(self.cont_tables);
+        self.tbl.deinit();
+        alloc.destroy(self);
+    }
+};
+
 // Standalone quiescence evaluation for use outside of search (e.g. quiet filtering).
 // Runs qsearch with a full window and no time constraints.
 pub fn quiescenceEval(state: *const State) i32 {
     var mutable_state = state.*;
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const now = std.Io.Clock.awake.now(io);
     var shared = SharedSearchState{
         .max_depth = 0,
-        .io = io,
-        .start_time = now,
+        .start_ns = clock.nowNanos(),
     };
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
@@ -1814,6 +2149,35 @@ test "repetition only checks same side to move" {
     // 0xBBBB at position 1 should not match anything checked from position 4
     // (we check positions 2, 0 - not 1, 3)
     try expect(!history.isTwofold(0xBBBB, 5));
+}
+
+test "ReusableSearcher matches single-threaded searchParallel" {
+    // The self-play searcher must select the same move/score as
+    // searchParallel(.., 1, ..) -- it is the same search with the per-move
+    // scratch (cont-hist + LMR table) hoisted out of the hot path.
+    const fens = [_][]const u8{
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    };
+    for (fens) |fen| {
+        const state = try State.fromFen(fen);
+
+        var tbl_a = try TranspositionTable.init(std.testing.allocator);
+        defer tbl_a.deinit();
+        const a = (try searchParallel(&state, 6, 1, null, &tbl_a, .{}, null)).?;
+
+        var searcher = try ReusableSearcher.init(std.testing.allocator, .{});
+        defer searcher.deinit();
+        var tbl_b = try TranspositionTable.init(std.testing.allocator);
+        defer tbl_b.deinit();
+        const b = searcher.search(&state, 6, null, &tbl_b, .{}, null).?;
+
+        try expectEqual(a.move.start, b.move.start);
+        try expectEqual(a.move.end, b.move.end);
+        try expectEqual(a.score, b.score);
+    }
 }
 
 test "isImproving semantics" {

@@ -24,6 +24,10 @@ const Args = struct {
     checkpoint: ?[]const u8,
     @"export": ?[]const u8,
     checkpoint_interval: ?u32,
+    loader_threads: ?usize,
+    weight_decay: ?f32,
+    ft_weight_decay: ?f32,
+    sigmoid_divisor: ?f32,
 };
 
 const default_epochs: u32 = 50;
@@ -54,6 +58,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const lambda = args.lambda orelse default_lambda;
     const export_path = args.@"export" orelse "output.nnue";
     const checkpoint_interval = args.checkpoint_interval orelse default_checkpoint_interval;
+    const loader_threads = args.loader_threads orelse (std.Thread.getCpuCount() catch 4);
+    const weight_decay = args.weight_decay orelse dense_weight_decay;
+    const ft_weight_decay = args.ft_weight_decay orelse 0;
+    // Target calibration: target = sigmoid(score / sigmoid_divisor). Must match
+    // the dataset's score scale (fit per dataset, like texel K). Default 400.
+    const target_sigmoid_k: f32 = 1.0 / (args.sigmoid_divisor orelse 400.0);
 
     var single_threaded: std.Io.Threaded = .init_single_threaded;
     const io = single_threaded.io();
@@ -67,6 +77,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("  batch_size: {d}\n", .{batch_size});
     try stderr.print("  lr: {d:.6}\n", .{lr});
     try stderr.print("  lambda: {d:.2}\n", .{lambda});
+    try stderr.print("  loader_threads: {d}\n", .{loader_threads});
+    try stderr.print("  dense_weight_decay: {d:.4}\n", .{weight_decay});
+    try stderr.print("  ft_weight_decay: {d:.4}\n", .{ft_weight_decay});
+    try stderr.print("  sigmoid_divisor: {d:.1}\n", .{args.sigmoid_divisor orelse 400.0});
     try stderr.flush();
 
     // GPU setup
@@ -94,13 +108,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Split optimizers: FT (no weight decay) and dense (with weight decay)
     const ft_params = params[0..2]; // ft.weight, ft.bias
     const dense_params = params[2..]; // fc1-fc2-output weights and biases
-    var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = 0 });
+    var adam_ft = try ml.Adam.init(allocator, &ctx, &ops, ft_params, .{ .lr = lr, .weight_decay = ft_weight_decay });
     defer adam_ft.deinit();
-    var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = dense_weight_decay });
+    var adam_dense = try ml.Adam.init(allocator, &ctx, &ops, dense_params, .{ .lr = lr, .weight_decay = weight_decay });
     defer adam_dense.deinit();
 
     // Data loader
-    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda);
+    var loader = try DataLoader.init(allocator, &ctx, args.data, batch_size, lambda, loader_threads, target_sigmoid_k);
     defer loader.deinit();
 
     try stderr.print("Data: {d} records ({d} train, {d} val)\n", .{
@@ -124,7 +138,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (args.checkpoint) |ckpt_path| {
         const named_params = try model.namedParameters();
         defer allocator.free(named_params);
-        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &adam_ft);
+        const meta = try ml.serialize.load(allocator, &ctx, ckpt_path, named_params, &.{ &adam_ft, &adam_dense });
         start_epoch = meta.epoch + 1;
         best_val_loss = meta.best_val_loss;
         adam_ft.step_count = meta.adam_step;
@@ -164,6 +178,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             defer batch.release();
 
             const output = try model.forward(batch, &graph);
+            loss_fn.bucket = batch.bucket_indices;
             const loss = try loss_fn.forward(output, batch.targets, &graph);
 
             try graph.backward(output);
@@ -199,6 +214,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             defer batch.release();
 
             const output = try model.forward(batch, &graph);
+            loss_fn.bucket = batch.bucket_indices;
             const loss = try loss_fn.forward(output, batch.targets, &graph);
             graph.reset();
 
@@ -238,7 +254,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try ckpt_w.print("checkpoint_epoch{d}.ktml", .{epoch + 1});
             const ckpt_name = ckpt_w.buffered();
 
-            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &adam_ft, .{
+            try ml.serialize.save(allocator, &ctx, ckpt_name, named_params, &.{ &adam_ft, &adam_dense }, .{
                 .epoch = epoch,
                 .step = adam_ft.step_count,
                 .learning_rate = adam_ft.config.lr,
@@ -285,10 +301,12 @@ noinline fn validateExport(
     const net = try nnue.Network.load(io, allocator, export_path);
     defer net.deinit(allocator);
 
-    // Weight statistics
+    // Weight statistics. Iterate by reference: `for (net.ft_weights)` would copy
+    // the whole [num_features][ft_out]i16 array (~42MB at ft_out=512) onto the
+    // stack and overflow it.
     var ft_nonzero: usize = 0;
     var ft_max_abs: u16 = 0;
-    for (net.ft_weights) |row| {
+    for (&net.ft_weights) |*row| {
         for (row) |w| {
             if (w != 0) ft_nonzero += 1;
             const abs: u16 = @abs(w);

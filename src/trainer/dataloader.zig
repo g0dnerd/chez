@@ -13,7 +13,6 @@ const Batch = @import("model.zig").Batch;
 
 const record_size = 35; // 32 position + 2 score + 1 WDL
 const max_active = nnue.max_active_features; // 30
-const sigmoid_k: f32 = 1.0 / 400.0;
 
 fn uploadU32(ctx: *const Context, data: []const u32) Context.Error!Buffer {
     const cl = Context.cl;
@@ -30,6 +29,17 @@ fn uploadU32(ctx: *const Context, data: []const u32) Context.Error!Buffer {
     return .{ .mem = mem, .len = data.len };
 }
 
+// Per-worker slice of a batch. Each worker fills a contiguous range of batch
+// positions [start, end); the output buffers are written at disjoint offsets
+// (base = b * max_active), so no synchronization is needed between workers.
+const PrepareCtx = struct {
+    loader: *DataLoader,
+    record_indices: []const u32,
+    start: usize,
+    end: usize,
+    err: ?anyerror = null,
+};
+
 pub const DataLoader = struct {
     data: []const u8,
     data_len: usize,
@@ -39,6 +49,9 @@ pub const DataLoader = struct {
     val_records: usize,
     batch_size: usize,
     lambda: f32,
+    // Score->target sigmoid steepness (target = sigmoid(score * sigmoid_k)).
+    // Must be calibrated to the dataset's score scale, not hardcoded.
+    sigmoid_k: f32,
     ctx: *const Context,
     allocator: std.mem.Allocator,
 
@@ -51,6 +64,13 @@ pub const DataLoader = struct {
     stm_na_buf: []u32,
     opp_na_buf: []u32,
     target_buf: []f32,
+    bucket_buf: []u32,
+
+    // Worker pool for parallel feature extraction (CPU is the training
+    // bottleneck; the per-record loop is embarrassingly parallel).
+    num_threads: usize,
+    prepare_threads: []std.Thread,
+    prepare_ctxs: []PrepareCtx,
 
     file: std.Io.File,
 
@@ -60,6 +80,8 @@ pub const DataLoader = struct {
         path: []const u8,
         batch_size: usize,
         lambda: f32,
+        num_threads: usize,
+        sigmoid_k: f32,
     ) !DataLoader {
         var single_threaded: std.Io.Threaded = .init_single_threaded;
         const io = single_threaded.io();
@@ -94,6 +116,19 @@ pub const DataLoader = struct {
         const stm_na_buf = try allocator.alloc(u32, batch_size);
         const opp_na_buf = try allocator.alloc(u32, batch_size);
         const target_buf = try allocator.alloc(f32, batch_size);
+        const bucket_buf = try allocator.alloc(u32, batch_size);
+
+        const resolved_threads = @max(1, num_threads);
+        const prepare_threads = try allocator.alloc(std.Thread, resolved_threads);
+        const prepare_ctxs = try allocator.alloc(PrepareCtx, resolved_threads);
+
+        // Trigger the lazy Zobrist key init (via computeHash in decodePosition)
+        // on the main thread so worker threads only ever read the immutable keys.
+        if (total_records > 0) {
+            var warm_buf: [32]u8 = undefined;
+            @memcpy(&warm_buf, mapped[0..32]);
+            _ = serde.decodePosition(&warm_buf) catch {};
+        }
 
         return .{
             .data = mapped,
@@ -104,6 +139,7 @@ pub const DataLoader = struct {
             .val_records = val_records,
             .batch_size = batch_size,
             .lambda = lambda,
+            .sigmoid_k = sigmoid_k,
             .ctx = ctx,
             .allocator = allocator,
             .indices = indices,
@@ -112,6 +148,10 @@ pub const DataLoader = struct {
             .stm_na_buf = stm_na_buf,
             .opp_na_buf = opp_na_buf,
             .target_buf = target_buf,
+            .bucket_buf = bucket_buf,
+            .num_threads = resolved_threads,
+            .prepare_threads = prepare_threads,
+            .prepare_ctxs = prepare_ctxs,
             .file = file,
         };
     }
@@ -161,14 +201,61 @@ pub const DataLoader = struct {
         @memset(self.stm_idx_buf[0 .. bs * max_active], 0);
         @memset(self.opp_idx_buf[0 .. bs * max_active], 0);
 
-        for (record_indices, 0..) |rec_idx, b| {
+        // Fan the per-record feature extraction out across worker threads. Each
+        // worker owns a contiguous range of batch positions; writes are disjoint
+        // (indexed by position), so no locking is needed.
+        const nthreads = @max(1, @min(self.num_threads, bs));
+        if (nthreads == 1) {
+            var ctx = PrepareCtx{ .loader = self, .record_indices = record_indices, .start = 0, .end = bs };
+            prepareWorker(&ctx);
+            if (ctx.err) |e| return e;
+        } else {
+            const chunk = bs / nthreads;
+            for (0..nthreads) |i| {
+                const start = i * chunk;
+                const end = if (i + 1 == nthreads) bs else start + chunk;
+                self.prepare_ctxs[i] = .{ .loader = self, .record_indices = record_indices, .start = start, .end = end };
+            }
+            // Workers handle all but the last chunk; the main thread runs the last.
+            for (0..nthreads - 1) |i| {
+                self.prepare_threads[i] = try std.Thread.spawn(.{}, prepareWorker, .{&self.prepare_ctxs[i]});
+            }
+            prepareWorker(&self.prepare_ctxs[nthreads - 1]);
+            for (0..nthreads - 1) |i| self.prepare_threads[i].join();
+            for (0..nthreads) |i| if (self.prepare_ctxs[i].err) |e| return e;
+        }
+
+        return .{
+            .stm_indices = try uploadU32(self.ctx, self.stm_idx_buf[0 .. bs * max_active]),
+            .stm_num_active = try uploadU32(self.ctx, self.stm_na_buf[0..bs]),
+            .opp_indices = try uploadU32(self.ctx, self.opp_idx_buf[0 .. bs * max_active]),
+            .opp_num_active = try uploadU32(self.ctx, self.opp_na_buf[0..bs]),
+            .targets = try Buffer.upload(self.ctx, self.target_buf[0..bs]),
+            .bucket_indices = try uploadU32(self.ctx, self.bucket_buf[0..bs]),
+            .size = @intCast(bs),
+        };
+    }
+
+    // Fills batch positions [ctx.start, ctx.end) of the shared staging buffers.
+    // Runs on the main thread and on spawned workers; not a method so it can be
+    // passed to std.Thread.spawn.
+    fn prepareWorker(ctx: *PrepareCtx) void {
+        const self = ctx.loader;
+        for (ctx.start..ctx.end) |b| {
+            const rec_idx = ctx.record_indices[b];
             const offset = @as(usize, rec_idx) * record_size;
             var pos_buf: [32]u8 = undefined;
             @memcpy(&pos_buf, self.data[offset..][0..32]);
 
-            const state = try serde.decodePosition(&pos_buf);
+            const state = serde.decodePosition(&pos_buf) catch |e| {
+                ctx.err = e;
+                return;
+            };
             const stm = state.to_move;
             const opp: engine.Color = @intCast(~@as(u1, @intCast(stm)));
+
+            // Piece-count output bucket (must match inference in nnue.zig).
+            self.bucket_buf[b] = @intCast(nnue.outputBucket(&state));
 
             // Feature extraction
             const stm_features = nnue.activeFeatures(&state, stm);
@@ -200,18 +287,9 @@ pub const DataLoader = struct {
             // Flip if STM is black (score is already STM perspective)
             const wdl_value = if (stm == engine.Colors.black) 1.0 - wdl_raw else wdl_raw;
 
-            const score_sigmoid = sigmoid(score * sigmoid_k);
+            const score_sigmoid = sigmoid(score * self.sigmoid_k);
             self.target_buf[b] = self.lambda * score_sigmoid + (1.0 - self.lambda) * wdl_value;
         }
-
-        return .{
-            .stm_indices = try uploadU32(self.ctx, self.stm_idx_buf[0 .. bs * max_active]),
-            .stm_num_active = try uploadU32(self.ctx, self.stm_na_buf[0..bs]),
-            .opp_indices = try uploadU32(self.ctx, self.opp_idx_buf[0 .. bs * max_active]),
-            .opp_num_active = try uploadU32(self.ctx, self.opp_na_buf[0..bs]),
-            .targets = try Buffer.upload(self.ctx, self.target_buf[0..bs]),
-            .size = @intCast(bs),
-        };
     }
 
     pub fn deinit(self: *DataLoader) void {
@@ -226,6 +304,9 @@ pub const DataLoader = struct {
         self.allocator.free(self.stm_na_buf);
         self.allocator.free(self.opp_na_buf);
         self.allocator.free(self.target_buf);
+        self.allocator.free(self.bucket_buf);
+        self.allocator.free(self.prepare_threads);
+        self.allocator.free(self.prepare_ctxs);
     }
 };
 

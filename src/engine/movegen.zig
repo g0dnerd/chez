@@ -419,7 +419,9 @@ pub fn hasAnyLegalMove(state: *const State, c: Color) bool {
     var pieces = state.colorBitboard(c);
     const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
-    const in_check = isSquareAttackedBy(state, king_square, ~c);
+    // in_check is maintained by makeMove/fromFen for the side to move, so trust
+    // the cached flag instead of recomputing the full attack scan every node.
+    const in_check = state.in_check == c;
 
     if (in_check) {
         // Single mutable copy, reused via make/unmake for all candidate moves
@@ -463,7 +465,9 @@ pub fn legalMoves(state: *const State, c: Color) MoveList {
     var pieces = state.colorBitboard(c);
     const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
-    const in_check = isSquareAttackedBy(state, king_square, ~c);
+    // in_check is maintained by makeMove/fromFen for the side to move, so trust
+    // the cached flag instead of recomputing the full attack scan every node.
+    const in_check = state.in_check == c;
 
     if (in_check) {
         // Single mutable copy, reused via make/unmake for all candidate moves
@@ -528,7 +532,9 @@ pub fn legalCaptures(state: *const State, c: Color) MoveList {
     var pieces = state.colorBitboard(c);
     const king_mask = state.pieceBitboard(piece.king).bitAnd(Bitboard, pieces);
     const king_square = king_mask.trailingZeros();
-    const in_check = isSquareAttackedBy(state, king_square, ~c);
+    // in_check is maintained by makeMove/fromFen for the side to move, so trust
+    // the cached flag instead of recomputing the full attack scan every node.
+    const in_check = state.in_check == c;
     const enemy_pieces = state.colorBitboard(~c);
 
     if (in_check) {

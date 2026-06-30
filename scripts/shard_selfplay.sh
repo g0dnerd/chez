@@ -20,9 +20,15 @@ record_size=35          # 32 pos + 2 score + 1 wdl (must match selfplay.zig)
 shards=0                # 0 => auto (NUMA nodes if numactl present, else 1)
 threads=0               # 0 => auto (cores / shards)
 games=100000            # total games across all shards
-depth=10
-nodes=0                 # 0 => no per-move node cap
+depth=10                # search-depth ceiling (node cap is the real limiter)
+# Generous soft node cap: bounds worst-case per-move time (predictable fleet
+# throughput), labels stay near depth-10 except on tactical explosions.
+# 0 = uncapped (slower, unbounded on pathological positions).
+nodes=200000
 eval_file=""
+# NB: data-quality filters (keep decisive positions, adjudicate only clearly-won
+# games) are binary defaults in selfplay.zig now (score_filter 10000,
+# adjudication 2500cp) -- no need to set them here.
 out=selfplay_data.bin
 numa=auto               # auto | on | off
 keep_shards=0

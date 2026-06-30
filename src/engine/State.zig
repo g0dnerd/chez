@@ -954,21 +954,24 @@ pub fn setZobristSeed(seed: u64) void {
     seed_override = seed;
 }
 
-fn initZobristKeys(io: std.Io) void {
+fn initZobristKeys(io: ?std.Io) void {
     if (@atomicLoad(bool, &init_done, .monotonic)) return;
-    init_mutex.lock(io) catch unreachable;
 
     const builtin = @import("builtin");
+    const is_freestanding = builtin.target.os.tag == .freestanding;
+    // wasm is single-threaded, so first-init needs no cross-thread lock.
+    if (!is_freestanding) init_mutex.lock(io.?) catch unreachable;
+
     var seed: u64 = undefined;
     if (seed_override) |s| {
         seed = s;
-    } else if (builtin.target.os.tag == .freestanding) {
+    } else if (is_freestanding) {
         // Fixed seed for WASM - deterministic behavior
         seed = 0x4d595f5345454421;
     } else if (builtin.target.os.tag == .linux) {
         _ = std.os.linux.getrandom(std.mem.asBytes(&seed), @sizeOf(u64), 0);
     } else {
-        std.Io.random(io, std.mem.asBytes(&seed));
+        std.Io.random(io.?, std.mem.asBytes(&seed));
     }
     var rng = std.Random.DefaultPrng.init(seed);
     const random = rng.random();
@@ -996,13 +999,18 @@ fn initZobristKeys(io: std.Io) void {
     }
 
     @atomicStore(bool, &init_done, true, .release);
-    init_mutex.unlock(io);
+    if (!is_freestanding) init_mutex.unlock(io.?);
 }
 
 pub fn getZobristKeys() *const ZobristKeys {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    initZobristKeys(io);
+    if (@import("builtin").target.os.tag == .freestanding) {
+        // No std.Io on wasm-freestanding; single-threaded, so no lock needed.
+        initZobristKeys(null);
+    } else {
+        var threaded: std.Io.Threaded = .init_single_threaded;
+        const io = threaded.io();
+        initZobristKeys(io);
+    }
     return &keys_storage;
 }
 
