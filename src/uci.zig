@@ -1,5 +1,6 @@
 const std = @import("std");
 const chez = @import("chez.zig");
+const fathom = @import("fathom.zig");
 const engine = chez.engine;
 const nnue = engine.nnue;
 const search = engine.search;
@@ -59,38 +60,61 @@ const InfoCtx = struct {
     io: std.Io,
 };
 
-fn infoCallback(
-    ctx_ptr: ?*anyopaque,
-    depth: u8,
-    score: i32,
-    nodes: u64,
-    time_ms: u64,
-    pv: []const Move,
-) void {
+fn infoCallback(ctx_ptr: ?*anyopaque, report: search.InfoReport) void {
+    const ctx: *InfoCtx = @ptrCast(@alignCast(ctx_ptr.?));
+
+    const nps = report.nodes * 1000 / @max(report.time_ms, 1);
+
+    // Format the whole line into a local buffer first, then emit it with a
+    // single writeAll. A mid-line writer error can then never leave a partial
+    // 'info ...' line in the shared stdout buffer for the next callback to
+    // concatenate onto. 512 bytes comfortably holds the fixed fields plus a
+    // 32-move PV.
+    var line_buf: [512]u8 = undefined;
+    var lw = std.Io.Writer.fixed(&line_buf);
+    const w = &lw;
+
+    w.print("info depth {d} seldepth {d}", .{ report.depth, report.seldepth }) catch {};
+
+    if (report.score >= mate_score_threshold) {
+        const plies = checkmate_score - report.score;
+        w.print(" score mate {d}", .{@divTrunc(plies + 1, 2)}) catch {};
+    } else if (report.score <= -mate_score_threshold) {
+        const plies = checkmate_score + report.score;
+        w.print(" score mate -{d}", .{@divTrunc(plies + 1, 2)}) catch {};
+    } else {
+        w.print(" score cp {d}", .{report.score}) catch {};
+    }
+
+    switch (report.bound) {
+        .exact => {},
+        .lower => w.writeAll(" lowerbound") catch {},
+        .upper => w.writeAll(" upperbound") catch {},
+    }
+
+    w.print(" nodes {d} nps {d} hashfull {d} tbhits {d} time {d}", .{
+        report.nodes, nps, report.hashfull, report.tbhits, report.time_ms,
+    }) catch {};
+
+    if (report.pv.len > 0) {
+        w.writeAll(" pv") catch {};
+        for (report.pv) |m| {
+            w.print(" {f}", .{m}) catch {};
+        }
+    }
+    w.writeByte('\n') catch {};
+
+    ctx.mutex.lock(ctx.io) catch unreachable;
+    defer ctx.mutex.unlock(ctx.io);
+    ctx.writer.writeAll(w.buffered()) catch return;
+    ctx.writer.flush() catch return;
+}
+
+fn currmoveCallback(ctx_ptr: ?*anyopaque, depth: u8, move: Move, move_number: u32) void {
     const ctx: *InfoCtx = @ptrCast(@alignCast(ctx_ptr.?));
     ctx.mutex.lock(ctx.io) catch unreachable;
     defer ctx.mutex.unlock(ctx.io);
-
-    if (score >= mate_score_threshold) {
-        const plies = checkmate_score - score;
-        const full_moves = @divTrunc(plies + 1, 2);
-        ctx.writer.print("info depth {d} score mate {d} nodes {d} time {d}", .{ depth, full_moves, nodes, time_ms }) catch return;
-    } else if (score <= -mate_score_threshold) {
-        const plies = checkmate_score + score;
-        const full_moves = @divTrunc(plies + 1, 2);
-        ctx.writer.print("info depth {d} score mate -{d} nodes {d} time {d}", .{ depth, full_moves, nodes, time_ms }) catch return;
-    } else {
-        ctx.writer.print("info depth {d} score cp {d} nodes {d} time {d}", .{ depth, score, nodes, time_ms }) catch return;
-    }
-
-    if (pv.len > 0) {
-        ctx.writer.writeAll(" pv") catch return;
-        for (pv) |m| {
-            ctx.writer.writeByte(' ') catch return;
-            ctx.writer.print("{f}", .{m}) catch return;
-        }
-    }
-    ctx.writer.writeByte('\n') catch return;
+    ctx.writer.print("info depth {d} currmove {f} currmovenumber {d}\n", .{ depth, move, move_number }) catch return;
     ctx.writer.flush() catch return;
 }
 
@@ -197,6 +221,8 @@ pub fn main() !void {
             stdout.writeAll("option name HistPruneDepth type spin default 3 min 0 max 8\n") catch {};
             stdout.writeAll("option name HistPruneMargin type spin default 2000 min 200 max 12000\n") catch {};
             stdout.writeAll("option name IirMinDepth type spin default 4 min 2 max 12\n") catch {};
+            stdout.writeAll("option name SyzygyPath type string default <empty>\n") catch {};
+            stdout.writeAll("option name SyzygyProbeDepth type spin default 1 min 1 max 10\n") catch {};
             stdout.writeAll("uciok\n") catch {};
             stdout.flush() catch {};
             stdout_mutex.unlock(io);
@@ -265,6 +291,31 @@ pub fn main() !void {
                 search_params.histprune_margin = std.fmt.parseInt(i32, opt_val, 10) catch search_params.histprune_margin;
             } else if (std.mem.eql(u8, opt_name, "IirMinDepth")) {
                 search_params.iir_min_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.iir_min_depth;
+            } else if (std.mem.eql(u8, opt_name, "SyzygyPath")) {
+                if (opt_val.len > 0) {
+                    // tb_init is not thread-safe: stop any running search first.
+                    if (search_thread) |t| {
+                        stop_flag.store(true, .release);
+                        t.join();
+                        search_thread = null;
+                    }
+                    if (std.heap.page_allocator.dupeZ(u8, opt_val)) |path_z| {
+                        defer std.heap.page_allocator.free(path_z);
+                        const loaded = fathom.init(path_z.ptr);
+                        engine.tablebase.raw_probe_fn = if (loaded) &fathom.probeRaw else null;
+                        engine.tablebase.largest = if (loaded) fathom.largest else 0;
+                        try stdout_mutex.lock(io);
+                        if (loaded) {
+                            stdout.print("info string Syzygy: loaded up to {d}-man tables from '{s}'\n", .{ fathom.largest, opt_val }) catch {};
+                        } else {
+                            stdout.print("info string Syzygy: no tables found at '{s}' (probing disabled)\n", .{opt_val}) catch {};
+                        }
+                        stdout.flush() catch {};
+                        stdout_mutex.unlock(io);
+                    } else |_| {}
+                }
+            } else if (std.mem.eql(u8, opt_name, "SyzygyProbeDepth")) {
+                search_params.syzygy_probe_depth = std.fmt.parseInt(i32, opt_val, 10) catch search_params.syzygy_probe_depth;
             }
         } else if (std.mem.startsWith(u8, line, "position")) {
             if (search_thread != null) continue;
@@ -366,6 +417,10 @@ pub fn main() !void {
                     .on_info = .{
                         .context = &info_ctx,
                         .func = infoCallback,
+                    },
+                    .on_currmove = .{
+                        .context = &info_ctx,
+                        .func = currmoveCallback,
                     },
                     .search_params = search_params,
                 },

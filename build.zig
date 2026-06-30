@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     tui.root_module.addImport("kore", kore);
+    addFathom(b, tui.root_module);
 
     const libchez = b.addLibrary(.{
         .name = "chez",
@@ -158,6 +159,9 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     uci.root_module.addImport("kore", kore);
+    // Syzygy WDL probing via vendored Fathom (uci + selfplay only; engine + WASM
+    // stay C-free). tbprobe.c #includes tbchess.c, so only tbprobe.c is listed.
+    addFathom(b, uci.root_module);
 
     const selfplay = b.addExecutable(.{
         .name = "selfplay",
@@ -171,6 +175,29 @@ pub fn build(b: *std.Build) !void {
             },
         }),
     });
+    addFathom(b, selfplay.root_module);
+
+    // Temp (v14-selfplay-v11labeler branch): build ONLY selfplay, so the
+    // format-v4 nnue.zig (which lacks num_output_buckets/outputBucket) doesn't
+    // have to satisfy the trainer/inspector binaries.
+    const selfplay_only_step = b.step("selfplay-only", "Build only the selfplay binary");
+    selfplay_only_step.dependOn(&b.addInstallArtifact(selfplay, .{}).step);
+
+    // Temp (v14-selfplay-v11labeler branch): pilot dataset stats tool.
+    const dataset_stats = b.addExecutable(.{
+        .name = "dataset-stats",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dataset_stats.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "chez", .module = chez_mod },
+                .{ .name = "kore", .module = kore },
+            },
+        }),
+    });
+    const dataset_stats_step = b.step("dataset-stats", "Build the pilot dataset-stats tool");
+    dataset_stats_step.dependOn(&b.addInstallArtifact(dataset_stats, .{}).step);
 
     const train_nnue = b.addExecutable(.{
         .name = "train_nnue",
@@ -184,6 +211,8 @@ pub fn build(b: *std.Build) !void {
             },
         }),
     });
+    const train_nnue_step = b.step("train_nnue", "Build the NNUE trainer binary");
+    train_nnue_step.dependOn(&b.addInstallArtifact(train_nnue, .{}).step);
 
     const test_step = b.step("test", "Run unit tests");
     const test_filters: []const []const u8 = b.option(
@@ -311,4 +340,16 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     b.installArtifact(server);
+}
+
+// Attach the vendored Fathom Syzygy prober (C + libc) to a module. Used only by
+// the uci and selfplay executables; the engine module and WASM target never call
+// this so they stay free of any C/libc dependency.
+fn addFathom(b: *std.Build, mod: *std.Build.Module) void {
+    mod.addIncludePath(b.path("vendor/fathom"));
+    mod.addCSourceFile(.{
+        .file = b.path("vendor/fathom/tbprobe.c"),
+        .flags = &.{ "-O3", "-std=gnu11" },
+    });
+    mod.link_libc = true;
 }

@@ -14,6 +14,7 @@ pub const nnue = @import("nnue.zig");
 pub const piece = @import("piece.zig");
 pub const square = @import("square.zig");
 pub const search = @import("search.zig");
+pub const tablebase = @import("tablebase.zig");
 
 pub const MagicTableEntry = struct {
     magic: u64,

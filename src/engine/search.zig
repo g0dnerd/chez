@@ -47,6 +47,9 @@ pub const SearchParams = struct {
     // Internal Iterative Reductions: with no TT move at depth >= iir_min_depth,
     // search one ply shallower.
     iir_min_depth: i32 = 4,
+    // Syzygy WDL probing: probe tablebases only at interior nodes with depth >=
+    // syzygy_probe_depth (no effect unless tables are loaded). See engine.tablebase.
+    syzygy_probe_depth: i32 = 1,
 };
 
 // Precompute the LMR reduction table [depth][move_index] from the log formula.
@@ -74,6 +77,8 @@ fn computeLmrTable(lmr_base: i32, lmr_div: i32) [64][64]u8 {
 const checkmate_score: i32 = 100000;
 const max_ply: usize = 64;
 const mate_score_threshold: i32 = checkmate_score - max_ply;
+// Syzygy WDL win/loss band: above any normal eval, below mate scores, within i16.
+const tb_win_value: i32 = 28000;
 const alpha_init: i32 = std.math.minInt(i32) + 1;
 const beta_init: i32 = std.math.maxInt(i32);
 const max_threads: usize = 16;
@@ -400,6 +405,24 @@ pub const TranspositionTable = struct {
         self.generation +%= 1;
     }
 
+    // Estimate fill as permille (0..1000) by sampling the first 1000 entries,
+    // Stockfish-style. Counts only entries written during the current search
+    // (generation match): entries are never cleared between searches (newSearch
+    // only bumps the generation), so counting any non-empty slot would saturate
+    // at ~1000 after the first few moves and stop reflecting this search's fill.
+    pub fn hashfull(self: *const TranspositionTable) u16 {
+        const sample: usize = @min(self.entries.len, 1000);
+        if (sample == 0) return 0;
+        var used: usize = 0;
+        for (self.entries[0..sample]) |*entry| {
+            const data = entry.data.load(.monotonic);
+            const flag: TranspositionFlag = @enumFromInt(@as(u2, @truncate(data >> 24)));
+            const gen: u8 = @truncate(data >> 43);
+            if (flag != .empty and gen == self.generation) used += 1;
+        }
+        return @intCast(used * 1000 / sample);
+    }
+
     pub fn deinit(self: *TranspositionTable) void {
         self.alloc.free(self.entries);
     }
@@ -497,9 +520,35 @@ pub const TranspositionTable = struct {
     }
 };
 
+// Whether a reported score is exact or an aspiration-window fail bound.
+// .lower means the true score is >= reported (fail-high); .upper means <=.
+pub const Bound = enum { exact, lower, upper };
+
+// One per-depth (or aspiration-fail) search report. Passed by value so the
+// field set can grow without churning the callback signature. nps is derived
+// by the consumer from nodes/time_ms.
+pub const InfoReport = struct {
+    depth: u8,
+    seldepth: u8,
+    score: i32,
+    bound: Bound = .exact,
+    nodes: u64,
+    time_ms: u64,
+    hashfull: u16, // permille, 0..1000
+    tbhits: u64,
+    pv: []const Move,
+};
+
 pub const InfoCallback = struct {
     context: ?*anyopaque,
-    func: *const fn (ctx: ?*anyopaque, depth: u8, score: i32, nodes: u64, time_ms: u64, pv: []const Move) void,
+    func: *const fn (ctx: ?*anyopaque, report: InfoReport) void,
+};
+
+// Fired before searching each root move on the main thread, once the search has
+// run long enough to be worth narrating (see currmove gate in searchAtDepth).
+pub const CurrmoveCallback = struct {
+    context: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, depth: u8, move: Move, move_number: u32) void,
 };
 
 pub const SearchOptions = struct {
@@ -507,6 +556,7 @@ pub const SearchOptions = struct {
     max_time_ms: ?u64 = null,
     max_nodes: ?u64 = null,
     on_info: ?InfoCallback = null,
+    on_currmove: ?CurrmoveCallback = null,
     search_params: SearchParams = .{},
 };
 
@@ -518,6 +568,8 @@ const SharedSearchState = struct {
     // first move searched. first/total ≈ 85-92% indicates healthy ordering.
     cutoffs: AtomicCounter = AtomicCounter.init(0),
     first_move_cutoffs: AtomicCounter = AtomicCounter.init(0),
+    // Syzygy WDL probe hits across all threads.
+    tbhits: AtomicCounter = AtomicCounter.init(0),
     max_depth: u8 = 0,
     // Monotonic nanoseconds at search start, for elapsed-time measurement.
     // See clock.nowNanos (0 on freestanding/wasm, which has no time control).
@@ -528,6 +580,12 @@ const SharedSearchState = struct {
     // LMR reductions [depth][move_index], filled per search from search_params.
     // Zero until set (qsearch-only shared states never use it).
     lmr_table: [64][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** 64,
+
+    // Milliseconds elapsed since search start. See start_ns / clock.nowNanos
+    // (0 on freestanding/wasm, which has no time control).
+    fn elapsedMs(self: *const SharedSearchState) u64 {
+        return @intCast(@divTrunc(clock.nowNanos() - self.start_ns, std.time.ns_per_ms));
+    }
 
     fn futilityMargin(self: *const SharedSearchState, depth: u8) i32 {
         return switch (depth) {
@@ -585,11 +643,7 @@ fn checkTime(shared: *SharedSearchState) void {
         }
     }
     if (shared.options.max_time_ms) |max_ms| {
-        const elapsed: u64 = @intCast(@divTrunc(
-            clock.nowNanos() - shared.start_ns,
-            std.time.ns_per_ms,
-        ));
-        if (elapsed >= max_ms) {
+        if (shared.elapsedMs() >= max_ms) {
             shared.stop_flag.store(true, .monotonic);
         }
     }
@@ -642,6 +696,9 @@ const ThreadContext = struct {
     best_move: ?Move = null,
     best_score: i32 = std.math.minInt(i32) + 1,
     best_depth: u8 = 0,
+    // Greatest ply this thread has reached. A plain per-thread running max
+    // (updated per node, no atomic) folded into the info line for thread 0.
+    seldepth: u32 = 0,
 };
 
 // Quiescence search: search only captures until the position is "quiet"
@@ -653,8 +710,10 @@ fn quiescence(
     beta: i32,
     shared: *SharedSearchState,
     acc_stack: *nnue.AccumulatorStack,
+    seldepth: *u32,
 ) i32 {
     const nodes = shared.node_count.fetchAdd(1, .monotonic);
+    if (ply > seldepth.*) seldepth.* = @intCast(ply);
 
     if (nodes & 2047 == 0) checkTime(shared);
     if (shared.stop_flag.load(.monotonic)) return 0;
@@ -682,7 +741,7 @@ fn quiescence(
                 nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
             }
 
-            const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
+            const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack, seldepth);
 
             state.unmakeMove(m, to_move, p, undo);
 
@@ -751,7 +810,7 @@ fn quiescence(
             nnue.recordMove(acc_stack, ply + 1, state, net, m, to_move, p, &undo);
         }
 
-        const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack);
+        const score = -quiescence(state, ply + 1, -beta, -alpha, shared, acc_stack, seldepth);
 
         state.unmakeMove(m, to_move, p, undo);
 
@@ -797,6 +856,8 @@ const SearchContext = struct {
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
     cont_hist: *evaluation.ContHistTable,
+    // Per-thread running max ply (see ThreadContext.seldepth).
+    seldepth: *u32,
 };
 
 fn negamax(
@@ -808,6 +869,7 @@ fn negamax(
     search_ctx: SearchContext,
 ) i32 {
     const nodes = search_ctx.shared.node_count.fetchAdd(1, .monotonic);
+    if (ply > search_ctx.seldepth.*) search_ctx.seldepth.* = @intCast(ply);
     if (nodes & 2047 == 0) checkTime(search_ctx.shared);
     if (search_ctx.shared.stop_flag.load(.monotonic)) return 0;
 
@@ -851,11 +913,29 @@ fn negamax(
 
     const to_move = state.to_move;
 
+    // Syzygy WDL probe at interior nodes. Trust the verdict only at halfmove_clock
+    // == 0 (Stockfish-style): WDL is 50-move-correct only when the counter is reset,
+    // so cursed/blessed collapse to draw cleanly. Piece-count and castling gates live
+    // in probeWdl. Return without a TT store -- the i16 TT clamp would corrupt the
+    // tb_win band; caching it is a deferred optimization.
+    if (ply > 0 and engine.tablebase.available() and state.halfmove_clock == 0 and
+        @as(i32, depth) >= search_ctx.shared.search_params.syzygy_probe_depth)
+    {
+        if (engine.tablebase.probeWdl(state)) |wdl| {
+            _ = search_ctx.shared.tbhits.fetchAdd(1, .monotonic);
+            return switch (wdl) {
+                .win => tb_win_value - @as(i32, @intCast(ply)),
+                .loss => -(tb_win_value - @as(i32, @intCast(ply))),
+                .draw => 0,
+            };
+        }
+    }
+
     // At depth 0, drop into quiescence search immediately.
     // Quiescence handles checkmate detection when in check.
     // This avoids generating a full MoveList at the most numerous nodes.
     if (depth == 0) {
-        return quiescence(state, ply, alpha, beta, search_ctx.shared, search_ctx.acc_stack);
+        return quiescence(state, ply, alpha, beta, search_ctx.shared, search_ctx.acc_stack, search_ctx.seldepth);
     }
 
     const in_check = state.in_check == to_move;
@@ -1188,6 +1268,8 @@ fn searchAtDepthWithBounds(
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
     cont_hist: *evaluation.ContHistTable,
+    seldepth: *u32,
+    narrate_currmove: bool,
 ) ?SearchResult {
     var best_score: i32 = std.math.minInt(i32);
     var best_move: ?Move = null;
@@ -1220,10 +1302,23 @@ fn searchAtDepthWithBounds(
         }
     }
 
+    // Narrate root moves only once the search has run long enough that a GUI
+    // display is worthwhile (matches Stockfish's >1s gate). The gate is read
+    // once per depth (not per root move), and only on the narrating pass — the
+    // caller passes narrate_currmove=false for non-main threads, aspiration
+    // re-searches, and the full-window fallback, so currmovenumber does not
+    // restart from 1 several times within a single depth.
+    const currmove_cb: ?CurrmoveCallback =
+        if (narrate_currmove and shared.elapsedMs() > 1000) shared.options.on_currmove else null;
+
     for (0..moves.len) |i| {
         if (shared.stop_flag.load(.monotonic)) break;
 
         const m = moves.pickNext(i);
+
+        // currmovenumber is 1-based in pick (best-first) order.
+        if (currmove_cb) |cb| cb.func(cb.context, depth, m, @intCast(i + 1));
+
         const p = state.mailbox[m.start].?;
         const undo = state.makeMove(m, to_move, p);
         if (shared.network) |net| {
@@ -1259,6 +1354,7 @@ fn searchAtDepthWithBounds(
             .acc_stack = acc_stack,
             .stack = stack,
             .cont_hist = cont_hist,
+            .seldepth = seldepth,
         };
         if (i == 0) {
             // First move: full window search
@@ -1312,6 +1408,8 @@ fn searchAtDepth(
     acc_stack: *nnue.AccumulatorStack,
     stack: *[max_ply + 1]StackEntry,
     cont_hist: *evaluation.ContHistTable,
+    seldepth: *u32,
+    narrate_currmove: bool,
 ) ?SearchResult {
     return searchAtDepthWithBounds(
         state,
@@ -1328,6 +1426,8 @@ fn searchAtDepth(
         acc_stack,
         stack,
         cont_hist,
+        seldepth,
+        narrate_currmove,
     );
 }
 
@@ -1335,18 +1435,31 @@ fn searchAtDepth(
 // FIXME: Check/tune this.
 const aspiration_window: i32 = 25;
 
-// Extract the principal variation from the transposition table
-fn extractPV(root_state: *const State, tbl: *TranspositionTable, buf: []Move) usize {
+// Extract the principal variation from the transposition table. The first move
+// is seeded from the search's chosen best move when known: the root is not
+// stored in the TT by the root search, so probing it yields nothing or an
+// unreliable transposition entry whose best move can disagree with the move the
+// engine actually plays. Subsequent moves are chased through the TT from the
+// resulting (stored) child positions.
+fn extractPV(root_state: *const State, tbl: *TranspositionTable, buf: []Move, root_move: ?Move) usize {
     var state = root_state.*;
     var count: usize = 0;
     var seen: [32]u64 = undefined;
+    var next_move = root_move;
     while (count < buf.len) {
         // Loop detection
         for (seen[0..count]) |h| if (h == state.zobrist_hash) return count;
         seen[count] = state.zobrist_hash;
 
-        const entry = tbl.probe(state.zobrist_hash) orelse break;
-        const best = entry.best_move orelse break;
+        var best: Move = undefined;
+        if (next_move) |nm| {
+            best = nm;
+        } else if (tbl.probe(state.zobrist_hash)) |entry| {
+            best = entry.best_move orelse break;
+        } else {
+            break;
+        }
+        next_move = null;
 
         // Validate the move is legal
         var moves = movegen.legalMoves(&state, state.to_move);
@@ -1366,6 +1479,32 @@ fn extractPV(root_state: *const State, tbl: *TranspositionTable, buf: []Move) us
         _ = state.makeMove(best, color, piece_at);
     }
     return count;
+}
+
+// Gather telemetry (nodes, time, seldepth, hashfull, tbhits, PV) and hand it to
+// the info callback. Callers gate this to the main thread (thread 0).
+//
+// Only exact scores carry a PV and a hashfull figure: an aspiration fail-low/
+// fail-high reports a provisional bound for a depth that has not converged, and
+// the root is never stored in the TT on such a pass, so extractPV would yield an
+// empty or stale line. Skipping both also keeps the per-fail emit cheap (no TT
+// scan, no PV walk).
+fn emitInfo(ctx: *ThreadContext, depth: u8, score: i32, bound: Bound, best_move: ?Move) void {
+    const cb = ctx.shared.options.on_info orelse return;
+    const nodes = ctx.shared.node_count.load(.monotonic);
+    var pv_buf: [32]Move = undefined;
+    const pv_len = if (bound == .exact) extractPV(&ctx.state, ctx.tbl, &pv_buf, best_move) else 0;
+    cb.func(cb.context, .{
+        .depth = depth,
+        .seldepth = @intCast(@min(ctx.seldepth, 255)),
+        .score = score,
+        .bound = bound,
+        .nodes = nodes,
+        .time_ms = ctx.shared.elapsedMs(),
+        .hashfull = if (bound == .exact) ctx.tbl.hashfull() else 0,
+        .tbhits = ctx.shared.tbhits.load(.monotonic),
+        .pv = pv_buf[0..pv_len],
+    });
 }
 
 // Worker thread function for Lazy SMP
@@ -1415,6 +1554,10 @@ fn workerThread(ctx: *ThreadContext) void {
                     &ctx.acc_stack,
                     &ctx.search_stack,
                     ctx.cont_hist,
+                    &ctx.seldepth,
+                    // Narrate currmove only on the first aspiration attempt so
+                    // re-searches don't restart currmovenumber from 1.
+                    ctx.thread_id == 0 and attempts == 0,
                 );
 
                 if (ctx.shared.stop_flag.load(.monotonic)) break;
@@ -1422,10 +1565,12 @@ fn workerThread(ctx: *ThreadContext) void {
                 if (result) |r| {
                     if (r.score <= alpha) {
                         // Fail low: widen alpha
+                        if (ctx.thread_id == 0) emitInfo(ctx, depth, r.score, .upper, null);
                         window *= 4;
                         alpha = prev_score - window;
                     } else if (r.score >= beta) {
                         // Fail high: widen beta
+                        if (ctx.thread_id == 0) emitInfo(ctx, depth, r.score, .lower, null);
                         window *= 4;
                         beta = prev_score + window;
                     } else {
@@ -1454,6 +1599,10 @@ fn workerThread(ctx: *ThreadContext) void {
                             &ctx.acc_stack,
                             &ctx.search_stack,
                             ctx.cont_hist,
+                            &ctx.seldepth,
+                            // Full-window re-search: aspiration attempt 0 already
+                            // narrated this depth, so don't restart currmove here.
+                            false,
                         );
                     }
                 }
@@ -1473,6 +1622,8 @@ fn workerThread(ctx: *ThreadContext) void {
                 &ctx.acc_stack,
                 &ctx.search_stack,
                 ctx.cont_hist,
+                &ctx.seldepth,
+                ctx.thread_id == 0,
             );
         }
 
@@ -1488,16 +1639,7 @@ fn workerThread(ctx: *ThreadContext) void {
 
             // Emit info from thread 0 only
             if (ctx.thread_id == 0) {
-                if (ctx.shared.options.on_info) |cb| {
-                    const nodes = ctx.shared.node_count.load(.monotonic);
-                    const elapsed_ms: u64 = @intCast(@divTrunc(
-                        clock.nowNanos() - ctx.shared.start_ns,
-                        std.time.ns_per_ms,
-                    ));
-                    var pv_buf: [32]Move = undefined;
-                    const pv_len = extractPV(&ctx.state, ctx.tbl, &pv_buf);
-                    cb.func(cb.context, depth, r.score, nodes, elapsed_ms, pv_buf[0..pv_len]);
-                }
+                emitInfo(ctx, depth, r.score, .exact, r.move);
             }
 
             // Early exit if checkmate found
@@ -1757,6 +1899,7 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8, network: ?*const
     acc_stack.debug_eval_count = 0;
 
     var search_stack: [max_ply + 1]StackEntry = [_]StackEntry{.{}} ** (max_ply + 1);
+    var seldepth: u32 = 0;
 
     const cont_hist = try std.heap.page_allocator.create(evaluation.ContHistTable);
     defer std.heap.page_allocator.destroy(cont_hist);
@@ -1776,6 +1919,8 @@ pub fn searchSingleThreaded(state: *const State, max_depth: u8, network: ?*const
             &acc_stack,
             &search_stack,
             cont_hist,
+            &seldepth,
+            true,
         );
         if (result) |r| {
             best_move = r.move;
@@ -1946,7 +2091,8 @@ pub fn quiescenceEval(state: *const State) i32 {
     var acc_stack: nnue.AccumulatorStack = undefined;
     for (&acc_stack.accs) |*acc| acc.computed = .{ false, false };
     acc_stack.debug_eval_count = 0;
-    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared, &acc_stack);
+    var seldepth: u32 = 0;
+    return quiescence(&mutable_state, 0, -checkmate_score, checkmate_score, &shared, &acc_stack, &seldepth);
 }
 
 pub fn isGameOver(state: *const State) ?GameResult {

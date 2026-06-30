@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const engine = @import("chez").engine;
+const fathom = @import("fathom.zig");
 const kore = @import("kore");
 pub const serde = @import("selfplay/serde.zig");
 
@@ -13,7 +14,7 @@ const default_threads: usize = 4;
 // Upper bound on selfplay worker threads (sizes the fixed context/thread arrays).
 // High enough to saturate large many-core data-gen boxes.
 const max_threads: usize = 256;
-const random_plies: u16 = 8;
+const default_random_plies: u16 = 8;
 const skip_plies: u16 = 16;
 // Defaults restore pre-"speedup" data quality: keep decisive positions
 // (high score_filter) and adjudicate only clearly-won games (high threshold).
@@ -22,6 +23,20 @@ const default_score_filter: i32 = 10000;
 const default_adjudication_threshold: i32 = 2500;
 const default_adjudication_count: u16 = 4;
 const sample_interval: u16 = 4;
+// Syzygy WDL label magnitude (centipawns). Large enough to saturate the training
+// sigmoid for decisive endgames; draws are labeled 0. Recorded via shouldRecordTb,
+// which bypasses score_filter so TB-perfect decisive labels are always kept.
+const tb_label_cp: i32 = 20000;
+// Once a position enters Syzygy range, moves are played with this tiny node budget:
+// the TB verdict (not the search) labels every position, so play strength is
+// irrelevant -- we only need cheap legal progress to walk the endgame tail out and
+// sample it, instead of truncating the game at first TB contact.
+const tb_playout_node_cap: u64 = 200;
+
+// Buckets for the recorded-position ply histogram (ply measured from each game's
+// root, i.e. the book position or startpos). Game length is capped at
+// max_game_plies (200) plus a few random opening plies, so 256 covers all plies.
+const ply_hist_buckets: usize = 256;
 
 // Tunable data-quality knobs, overridable via CLI.
 const RecordCfg = struct {
@@ -30,9 +45,12 @@ const RecordCfg = struct {
     adjudication_count: u16 = default_adjudication_count,
 };
 // Draw adjudication: balanced eval for many consecutive plies past the opening.
+// Relaxed for v14: trigger deeper (min_ply 120) and require a longer dead-equal
+// run (16 plies) so long maneuvering/endgame phases get recorded instead of being
+// cut as draws -- and fewer winnable-but-near-0 positions are mislabeled draws.
 const draw_adjudication_threshold: i32 = 10;
-const draw_adjudication_count: u16 = 8;
-const draw_adjudication_min_ply: u16 = 80;
+const draw_adjudication_count: u16 = 16;
+const draw_adjudication_min_ply: u16 = 120;
 // Hard cap on game length so worst-case games can't run to the 50-move rule at full depth.
 const max_game_plies: u16 = 200;
 // Per-worker TT size: 2^21 buckets = 8M entries (~128 MB). Larger than the engine
@@ -59,17 +77,29 @@ const SelfplayGame = struct {
     ttable: *engine.search.TranspositionTable,
     searcher: *engine.search.ReusableSearcher,
     network: ?*const nnue.Network,
+    // Balanced opening positions (parsed from a FEN book). Empty => start from
+    // the initial position. Each game picks one at random as its root, then plays
+    // random_plies random moves on top so games from the same line still diverge
+    // (search is deterministic at a fixed node budget).
+    book: []const engine.State,
+    random_plies: u16,
     depth: u8,
     max_nodes: ?u64,
     cfg: RecordCfg,
     ply: u16,
     records: [max_game_records]TrainingRecord,
+    // Game ply at which each buffered record was sampled (parallel to records).
+    record_plies: [max_game_records]u16,
     num_records: usize,
     adjudication_consecutive: u16,
     adjudication_winning_side: engine.Color,
     draw_consecutive: u16,
+    // TB-perfect game outcome, captured at first tablebase contact. Once set it
+    // overrides the played-out result for the whole game's WDL byte (the cheap
+    // in-TB playout may stumble into a 50-move draw in a position TB knows is won).
+    tb_outcome: ?GameOutcome,
 
-    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, cfg: RecordCfg, ttable: *engine.search.TranspositionTable, searcher: *engine.search.ReusableSearcher, network: ?*const nnue.Network) Self {
+    fn init(rng: std.Random, depth: u8, max_nodes: ?u64, cfg: RecordCfg, ttable: *engine.search.TranspositionTable, searcher: *engine.search.ReusableSearcher, network: ?*const nnue.Network, book: []const engine.State, random_plies: u16) Self {
         return .{
             .state = .defaultPosition(),
             .rng = rng,
@@ -77,25 +107,33 @@ const SelfplayGame = struct {
             .ttable = ttable,
             .searcher = searcher,
             .network = network,
+            .book = book,
+            .random_plies = random_plies,
             .depth = depth,
             .max_nodes = max_nodes,
             .cfg = cfg,
             .ply = 0,
             .records = undefined,
+            .record_plies = undefined,
             .num_records = 0,
             .adjudication_consecutive = 0,
             .adjudication_winning_side = engine.Colors.white,
             .draw_consecutive = 0,
+            .tb_outcome = null,
         };
     }
 
     fn reset(self: *Self) void {
-        self.state = .defaultPosition();
+        self.state = if (self.book.len > 0)
+            self.book[self.rng.uintLessThan(usize, self.book.len)]
+        else
+            .defaultPosition();
         self.history = .{};
         self.ply = 0;
         self.num_records = 0;
         self.adjudication_consecutive = 0;
         self.draw_consecutive = 0;
+        self.tb_outcome = null;
         self.ttable.newSearch();
     }
 
@@ -135,6 +173,17 @@ const SelfplayGame = struct {
         return true;
     }
 
+    // Record gate for TB-labeled endgame positions. Drops shouldRecord's score_filter
+    // (decisive endgames must be kept) but keeps sample_interval: we now play the
+    // endgame out in TB range, so consecutive plies are correlated and need thinning
+    // just like the eval path. Keeps skip_plies and the in-check gate.
+    fn shouldRecordTb(self: *const Self) bool {
+        if (self.ply < skip_plies) return false;
+        if (self.state.in_check != null) return false;
+        if (self.ply % sample_interval != 0) return false;
+        return true;
+    }
+
     fn bufferPosition(self: *Self, score: i32) !void {
         if (self.num_records >= max_game_records) return;
         var record = &self.records[self.num_records];
@@ -142,6 +191,7 @@ const SelfplayGame = struct {
         try serde.encodePositionToBuffer(self.state, &record.position);
         record.score = std.math.cast(i16, score) orelse
             if (score > 0) std.math.maxInt(i16) else std.math.minInt(i16);
+        self.record_plies[self.num_records] = self.ply;
         self.num_records += 1;
     }
 
@@ -152,48 +202,84 @@ const SelfplayGame = struct {
             return gameResultToOutcome(res);
         }
 
+        // Probe Syzygy before searching: in TB range we play with a tiny node budget
+        // (the TB verdict, not the search, labels positions), so walking the endgame
+        // out to sample its tail is nearly free.
+        const tb_wdl = engine.tablebase.probeWdl(&self.state);
+        const node_cap: ?u64 = if (tb_wdl != null) tb_playout_node_cap else self.max_nodes;
+
         const search_res = self.searcher.search(
             &self.state,
             self.depth,
             &self.history,
             self.ttable,
-            .{ .max_nodes = self.max_nodes },
+            .{ .max_nodes = node_cap },
             self.network,
         ) orelse return error.SearchFailed;
 
         const best_move = search_res.move;
         const score = search_res.score;
 
-        // Label with the backed-up search score (NNUE-driven when a net is loaded),
-        // a stronger target than a static eval of the same position.
-        if (self.shouldRecord(score)) {
-            try self.bufferPosition(score);
-        }
+        // Syzygy WDL: in TB range the exact endgame verdict labels every sampled
+        // position (bypassing score_filter so decisive endgames are kept). Rather than
+        // record one position and adjudicate immediately, we keep playing the endgame
+        // out with the tiny node budget above, so the sub-7-man tail is actually
+        // sampled -- the v15 goal. The verdict is captured once and overrides the whole
+        // game's WDL byte in playGame, so a weak cheap-playout drifting into a 50-move
+        // draw can't mislabel a won endgame. probeWdl is null when no tables are loaded,
+        // so the else branch keeps the existing search-score labeling unchanged.
+        if (tb_wdl) |wdl| {
+            if (self.tb_outcome == null) {
+                // WDL is from the side to move; map to white's perspective.
+                self.tb_outcome = switch (wdl) {
+                    .win => if (self.state.to_move == engine.Colors.white) .white_wins else .black_wins,
+                    .loss => if (self.state.to_move == engine.Colors.white) .black_wins else .white_wins,
+                    .draw => .draw,
+                };
+            }
+            if (self.shouldRecordTb()) {
+                const tb_score: i32 = switch (wdl) {
+                    .win => tb_label_cp,
+                    .loss => -tb_label_cp,
+                    .draw => 0,
+                };
+                try self.bufferPosition(tb_score);
+            }
+            // No eval-based adjudication in TB range (the result is already known); end
+            // only when the record buffer is full, since further play samples nothing.
+            if (self.num_records >= max_game_records) return self.tb_outcome;
+        } else {
+            if (self.shouldRecord(score)) {
+                // Label with the backed-up search score (NNUE-driven when a net is
+                // loaded), a stronger target than a static eval of the same position.
+                try self.bufferPosition(score);
+            }
 
-        const abs_score = @as(i32, @intCast(@abs(score)));
-        if (abs_score > self.cfg.adjudication_threshold) {
-            const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
-            if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
-                self.adjudication_consecutive += 1;
+            const abs_score = @as(i32, @intCast(@abs(score)));
+            if (abs_score > self.cfg.adjudication_threshold) {
+                const winning_side: engine.Color = if (score > 0) self.state.to_move else ~self.state.to_move;
+                if (self.adjudication_consecutive > 0 and winning_side == self.adjudication_winning_side) {
+                    self.adjudication_consecutive += 1;
+                } else {
+                    self.adjudication_consecutive = 1;
+                    self.adjudication_winning_side = winning_side;
+                }
+                if (self.adjudication_consecutive >= self.cfg.adjudication_count) {
+                    return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
+                }
             } else {
-                self.adjudication_consecutive = 1;
-                self.adjudication_winning_side = winning_side;
+                self.adjudication_consecutive = 0;
             }
-            if (self.adjudication_consecutive >= self.cfg.adjudication_count) {
-                return if (winning_side == engine.Colors.white) .white_wins else .black_wins;
-            }
-        } else {
-            self.adjudication_consecutive = 0;
-        }
 
-        // Draw adjudication: a long run of near-zero evals past the opening.
-        if (self.ply >= draw_adjudication_min_ply and abs_score <= draw_adjudication_threshold) {
-            self.draw_consecutive += 1;
-            if (self.draw_consecutive >= draw_adjudication_count) {
-                return .draw;
+            // Draw adjudication: a long run of near-zero evals past the opening.
+            if (self.ply >= draw_adjudication_min_ply and abs_score <= draw_adjudication_threshold) {
+                self.draw_consecutive += 1;
+                if (self.draw_consecutive >= draw_adjudication_count) {
+                    return .draw;
+                }
+            } else {
+                self.draw_consecutive = 0;
             }
-        } else {
-            self.draw_consecutive = 0;
         }
 
         _ = self.state.makeMove(best_move, self.state.to_move, self.state.mailbox[best_move.start].?);
@@ -211,8 +297,8 @@ const SelfplayGame = struct {
     fn playGame(self: *Self) !struct { outcome: GameOutcome, positions: usize } {
         self.reset();
 
-        // Random opening phase
-        for (0..random_plies) |_| {
+        // Random opening phase (on top of the book root, if any)
+        for (0..self.random_plies) |_| {
             if (self.makeRandomMove()) |outcome| {
                 return .{ .outcome = outcome, .positions = self.num_records };
             }
@@ -221,10 +307,12 @@ const SelfplayGame = struct {
         // Search phase
         while (self.ply < max_game_plies) {
             if (try self.makeMoveAtDepth()) |outcome| {
-                return .{ .outcome = outcome, .positions = self.num_records };
+                // Once a game touches the tablebase, the TB verdict is the ground-truth
+                // label for the whole game, regardless of how the cheap playout ended.
+                return .{ .outcome = self.tb_outcome orelse outcome, .positions = self.num_records };
             }
         }
-        return .{ .outcome = .draw, .positions = self.num_records };
+        return .{ .outcome = self.tb_outcome orelse .draw, .positions = self.num_records };
     }
 
     // Write all buffered records to the output writer.
@@ -255,6 +343,11 @@ const WorkerCtx = struct {
     total_positions: *std.atomic.Value(usize),
     total_games: *std.atomic.Value(usize),
     network: ?*const nnue.Network,
+    book: []const engine.State,
+    random_plies: u16,
+    // Shared recorded-position ply histogram; each worker merges its local copy in once at the end.
+    ply_hist: *[ply_hist_buckets]u64,
+    hist_mutex: *std.Io.Mutex,
 };
 
 fn workerLoop(ctx: *WorkerCtx) void {
@@ -267,12 +360,19 @@ fn workerLoop(ctx: *WorkerCtx) void {
     defer searcher.deinit();
 
     var rng = std.Random.Pcg.init(ctx.seed);
-    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, ctx.cfg, &ttable, &searcher, ctx.network);
+    var game = SelfplayGame.init(rng.random(), ctx.depth, ctx.max_nodes, ctx.cfg, &ttable, &searcher, ctx.network, ctx.book, ctx.random_plies);
+
+    // Worker-local ply histogram, merged into the shared one once at the end to
+    // avoid per-record contention.
+    var local_hist = [_]u64{0} ** ply_hist_buckets;
 
     for (0..ctx.games_per_worker) |_| {
         const result = game.playGame() catch continue;
 
         if (result.positions > 0) {
+            for (game.record_plies[0..result.positions]) |p| {
+                local_hist[@min(@as(usize, p), ply_hist_buckets - 1)] += 1;
+            }
             // No flush here: the shared writer's buffer auto-drains when full and
             // is flushed once at the end. Flushing per game would serialize a
             // syscall under the write mutex across all workers.
@@ -292,6 +392,10 @@ fn workerLoop(ctx: *WorkerCtx) void {
             ctx.stderr_mutex.unlock(ctx.io);
         }
     }
+
+    ctx.hist_mutex.lock(ctx.io) catch return;
+    defer ctx.hist_mutex.unlock(ctx.io);
+    for (ctx.ply_hist, local_hist) |*g, l| g.* += l;
 }
 
 const nnue = engine.nnue;
@@ -305,7 +409,52 @@ const Args = struct {
     score_filter: ?i32,
     adjudication_threshold: ?i32,
     adjudication_count: ?u16,
+    openings: ?[]const u8,
+    random_plies: ?u16,
+    syzygy: ?[]const u8,
 };
+
+// Load a balanced opening book: one FEN per line (blank lines and unparseable
+// lines are skipped). Two passes so the result is an exact-sized slice.
+fn loadOpenings(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]engine.State {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const len: usize = @intCast(stat.size);
+    if (len == 0) return error.EmptyOpenings;
+
+    const ptr = try std.posix.mmap(
+        null,
+        len,
+        std.os.linux.PROT{ .READ = true },
+        .{ .TYPE = .SHARED },
+        file.handle,
+        0,
+    );
+    defer std.posix.munmap(@alignCast(ptr));
+    const data = ptr[0..len];
+
+    var count: usize = 0;
+    var pass1 = std.mem.tokenizeScalar(u8, data, '\n');
+    while (pass1.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        if (line.len == 0) continue;
+        _ = engine.State.fromFen(line) catch continue;
+        count += 1;
+    }
+    if (count == 0) return error.EmptyOpenings;
+
+    const book = try allocator.alloc(engine.State, count);
+    var i: usize = 0;
+    var pass2 = std.mem.tokenizeScalar(u8, data, '\n');
+    while (pass2.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        if (line.len == 0) continue;
+        book[i] = engine.State.fromFen(line) catch continue;
+        i += 1;
+    }
+    return book[0..i];
+}
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const arg_parser = try kore.args.declarative.Parser(Args);
@@ -320,6 +469,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const max_nodes = parsed_args.nodes;
     const num_games = parsed_args.num_games orelse default_games;
     const num_threads = parsed_args.num_threads orelse default_threads;
+    const random_plies = parsed_args.random_plies orelse default_random_plies;
     const cfg = RecordCfg{
         .score_filter = parsed_args.score_filter orelse default_score_filter,
         .adjudication_threshold = parsed_args.adjudication_threshold orelse default_adjudication_threshold,
@@ -351,6 +501,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     defer if (network) |n| n.deinit(std.heap.page_allocator);
 
+    // Load the balanced opening book if one was given; otherwise start from the
+    // initial position and rely on random_plies alone for diversity.
+    var book: []engine.State = &.{};
+    if (parsed_args.openings) |openings_path| {
+        book = loadOpenings(io, std.heap.page_allocator, openings_path) catch |err| blk: {
+            try stderr.print("Warning: could not load openings {s}: {}\n", .{ openings_path, err });
+            try stderr.flush();
+            break :blk &.{};
+        };
+    }
+    defer if (book.len > 0) std.heap.page_allocator.free(book);
+
     try stderr.print("Selfplay: {d} games, depth {d}, {d} thread(s)", .{ num_games, depth, num_threads });
     if (max_nodes) |n| try stderr.print(", node cap {d}", .{n});
     if (network != null) try stderr.print(", NNUE eval", .{});
@@ -358,8 +520,34 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stderr.print("Filters: score_filter {d}, adjudication {d}cp x{d} plies\n", .{
         cfg.score_filter, cfg.adjudication_threshold, cfg.adjudication_count,
     });
+    if (book.len > 0) {
+        try stderr.print("Openings: {d} book positions + {d} random plies\n", .{ book.len, random_plies });
+    } else {
+        try stderr.print("Openings: startpos + {d} random plies\n", .{random_plies});
+    }
     try stderr.print("Record format: {d} bytes (32 pos + 2 score + 1 wdl)\n", .{record_size});
     try stderr.flush();
+
+    // Initialize Syzygy tablebases before spawning workers (tb_init is not
+    // thread-safe; probes afterward are concurrent-safe). When loaded, endgame
+    // positions get TB-perfect WDL labels + adjudication; otherwise probing is a
+    // no-op and selfplay behaves exactly as before.
+    if (parsed_args.syzygy) |syzygy_path| {
+        if (std.heap.page_allocator.dupeZ(u8, syzygy_path)) |path_z| {
+            defer std.heap.page_allocator.free(path_z);
+            if (fathom.init(path_z.ptr)) {
+                engine.tablebase.raw_probe_fn = &fathom.probeRaw;
+                engine.tablebase.largest = fathom.largest;
+                try stderr.print("Syzygy: loaded up to {d}-man tables from {s}\n", .{ fathom.largest, syzygy_path });
+            } else {
+                try stderr.print("Warning: no Syzygy tables found at {s} (probing disabled)\n", .{syzygy_path});
+            }
+            try stderr.flush();
+        } else |err| {
+            try stderr.print("Warning: could not allocate Syzygy path: {}\n", .{err});
+            try stderr.flush();
+        }
+    }
 
     const actual_threads = @min(num_threads, max_threads);
     const games_per_worker = num_games / actual_threads;
@@ -374,6 +562,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var shared_positions = std.atomic.Value(usize).init(0);
     var shared_games = std.atomic.Value(usize).init(0);
+    var ply_hist = [_]u64{0} ** ply_hist_buckets;
+    var hist_mutex: std.Io.Mutex = .init;
 
     var contexts: [max_threads]WorkerCtx = undefined;
     for (0..actual_threads) |i| {
@@ -391,6 +581,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .total_positions = &shared_positions,
             .total_games = &shared_games,
             .network = network,
+            .book = book,
+            .random_plies = random_plies,
+            .ply_hist = &ply_hist,
+            .hist_mutex = &hist_mutex,
         };
     }
 
@@ -417,7 +611,49 @@ pub fn main(init: std.process.Init.Minimal) !void {
         total_positions,
         total_positions * record_size,
     });
+
+    try printPlyHistogram(stderr, &ply_hist);
     try stderr.flush();
+}
+
+// Emit the recorded-position ply distribution: per-10-ply bins plus cumulative
+// tails at the draw-adjudication-relevant thresholds. Ply is measured from each
+// game's root (book position or startpos), so it reflects how deep into the
+// played-out game positions are being sampled.
+fn printPlyHistogram(w: *std.Io.Writer, hist: *const [ply_hist_buckets]u64) !void {
+    var total: u64 = 0;
+    var weighted: u64 = 0;
+    var max_ply: usize = 0;
+    for (hist, 0..) |c, p| {
+        total += c;
+        weighted += c * p;
+        if (c > 0) max_ply = p;
+    }
+    if (total == 0) return;
+    const ftot: f64 = @floatFromInt(total);
+
+    try w.print("\nRecorded-position ply histogram ({d} positions, mean ply {d:.1}, max {d}):\n", .{
+        total, @as(f64, @floatFromInt(weighted)) / ftot, max_ply,
+    });
+    var lo: usize = 0;
+    while (lo <= max_ply) : (lo += 10) {
+        var bin: u64 = 0;
+        var i = lo;
+        while (i < lo + 10 and i < ply_hist_buckets) : (i += 1) bin += hist[i];
+        if (bin == 0) continue;
+        const frac = @as(f64, @floatFromInt(bin)) / ftot;
+        const bars = @as(usize, @intFromFloat(frac * 200.0));
+        try w.print("  ply {d:>3}-{d:<3} {d:>10}  {d:.4}  ", .{ lo, lo + 9, bin, frac });
+        for (0..bars) |_| try w.writeByte('#');
+        try w.writeByte('\n');
+    }
+    for ([_]usize{ 80, 100, 120, 160 }) |thr| {
+        var tail: u64 = 0;
+        for (hist, 0..) |c, p| {
+            if (p >= thr) tail += c;
+        }
+        try w.print("  ply >= {d:>3}: {d:.4}\n", .{ thr, @as(f64, @floatFromInt(tail)) / ftot });
+    }
 }
 
 test {

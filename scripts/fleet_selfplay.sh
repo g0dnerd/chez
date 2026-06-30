@@ -71,6 +71,7 @@ remote_dir='~/chez-selfplay'
 # Label self-play with the current best NNUE net (uploaded to each host).
 # Bump this to the latest net each generation; pass --eval to override.
 eval_file="data/net_v7_lambda075.nnue"
+openings_file=""
 do_build=1
 interval=10
 once=0
@@ -87,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --identity) identity=$2; shift 2;;
     --remote-dir) remote_dir=$2; shift 2;;
     --eval) eval_file=$2; shift 2;;
+    --openings) openings_file=$2; shift 2;;
     --no-build) do_build=0; shift;;
     --interval) interval=$2; shift 2;;
     --once) once=1; shift;;
@@ -242,6 +244,7 @@ cmd_start() {
         [[ -n "${BUILDARGS[$i]}" ]] && args+=(--build-args "${BUILDARGS[$i]}")
       fi
       [[ -n "$eval_file" ]] && args+=(--eval "$eval_file")
+      [[ -n "$openings_file" ]] && args+=(--openings "$openings_file")
       args+=(--)
       args+=("${passthrough[@]}")
       "$cloud" "${args[@]}"

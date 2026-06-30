@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const kore = @import("kore");
 const chez = @import("chez.zig");
+const fathom = @import("fathom.zig");
 const engine = chez.engine;
 const ns_per_s: f64 = @floatCast(std.time.ns_per_s);
 
@@ -66,6 +67,7 @@ const Args = struct {
     nn_simulations: ?u32, // MCTS simulations for NN engine
     book: ?[]const u8, // Path to Polyglot opening book (.bin)
     nnue: ?[]const u8, // Path to .nnue file for NNUE evaluation
+    syzygy: ?[]const u8, // Path to a directory of Syzygy WDL tablebases (.rtbw)
 };
 
 // Neural network engine subprocess
@@ -229,6 +231,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.writeAll("NNUE evaluation loaded.\n");
             try stdout.flush();
         }
+    }
+
+    // Load Syzygy tablebases. Once wired, the engine's search probes them
+    // automatically at <=5-man, rule50==0 nodes (SyzygyProbeDepth defaults to 1).
+    if (parsed_args.syzygy) |syzygy_path| {
+        if (std.heap.page_allocator.dupeZ(u8, syzygy_path)) |path_z| {
+            defer std.heap.page_allocator.free(path_z);
+            if (fathom.init(path_z.ptr)) {
+                engine.tablebase.raw_probe_fn = &fathom.probeRaw;
+                engine.tablebase.largest = fathom.largest;
+                try stdout.print("Syzygy: loaded up to {d}-man tables from {s}\n", .{ fathom.largest, syzygy_path });
+            } else {
+                try stdout.print("Syzygy: no tables found at {s} (probing disabled)\n", .{syzygy_path});
+            }
+            try stdout.flush();
+        } else |_| {}
     }
 
     var undo_info: [2]engine.State.UndoInfo = undefined;

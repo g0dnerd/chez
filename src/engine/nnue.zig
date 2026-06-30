@@ -32,9 +32,6 @@ pub const fc1_out = 32;
 pub const fc2_in = fc1_out;
 pub const fc2_out = 32;
 
-// Piece-count output buckets: bucket = clamp((popcount(all_pieces) - 1) / 4, 0, 7).
-pub const num_output_buckets = 1;
-
 pub const max_active_features = 30;
 
 // SIMD width for accumulator (i16) passes.
@@ -42,8 +39,8 @@ const ft_vec_len = std.simd.suggestVectorLength(i16) orelse 8;
 
 // .nnue file format constants
 pub const magic_bytes = [4]u8{ 'C', 'H', 'E', 'Z' };
-pub const format_version: u32 = 7;
-pub const arch_hash: u32 = 0x48_4B_53_31; // "HKS1" (HalfKP, FT width 512, single output head, SCReLU FT activation)
+pub const format_version: u32 = 4;
+pub const arch_hash: u32 = 0x48_4B_50_32; // "HKP2" (HalfKP, FT width 512)
 pub const header_size = 16;
 
 // Per-section byte sizes (packed, no alignment padding)
@@ -53,15 +50,16 @@ const fc1_weights_bytes = fc1_in * fc1_out * @sizeOf(i8);
 const fc1_biases_bytes = fc1_out * @sizeOf(i32);
 const fc2_weights_bytes = fc2_in * fc2_out * @sizeOf(i8);
 const fc2_biases_bytes = fc2_out * @sizeOf(i32);
-// One output head per piece-count bucket.
-const output_weights_bytes = num_output_buckets * fc2_out * @sizeOf(i16);
-const output_bias_bytes = num_output_buckets * @sizeOf(i32);
+const output_weights_bytes = fc2_out * @sizeOf(i16);
+const output_weights_bytes_v2 = fc2_out * @sizeOf(i8);
+const output_bias_bytes = @sizeOf(i32);
 
 pub const data_bytes = ft_biases_bytes + ft_weights_bytes +
     fc1_weights_bytes + fc1_biases_bytes +
     fc2_weights_bytes + fc2_biases_bytes +
     output_weights_bytes + output_bias_bytes;
 pub const expected_file_size = header_size + data_bytes;
+const expected_file_size_v2 = expected_file_size - output_weights_bytes + output_weights_bytes_v2;
 
 // Data structures
 pub const Accumulator = struct {
@@ -145,9 +143,8 @@ pub const Network = struct {
     fc1_biases: [fc1_out]i32,
     fc2_weights: [fc2_out][fc2_in]i8,
     fc2_biases: [fc2_out]i32,
-    // One output head per piece-count bucket (bucket-major for inference indexing).
-    output_weights: [num_output_buckets][fc2_out]i16,
-    output_bias: [num_output_buckets]i32,
+    output_weights: [fc2_out]i16,
+    output_bias: i32,
 
     // Parse a Network from raw file bytes (little-endian).
     // Caller owns the returned pointer and must call deinit().
@@ -157,9 +154,10 @@ pub const Network = struct {
         if (!std.mem.eql(u8, data[0..4], &magic_bytes)) return error.InvalidMagic;
 
         const ver = std.mem.readInt(u32, data[4..8], .little);
-        if (ver != format_version) return error.UnsupportedVersion;
+        if (ver < 1 or ver > format_version) return error.UnsupportedVersion;
 
-        if (data.len < expected_file_size) return error.InvalidFileSize;
+        const min_size: usize = if (ver <= 2) expected_file_size_v2 else expected_file_size;
+        if (data.len < min_size) return error.InvalidFileSize;
 
         const arch = std.mem.readInt(u32, data[8..12], .little);
         if (arch != arch_hash) return error.ArchitectureMismatch;
@@ -181,11 +179,21 @@ pub const Network = struct {
         );
         off += ft_weights_bytes;
 
-        // FC weights are stored output-major [out][in].
-        @memcpy(
-            std.mem.asBytes(&net.fc1_weights),
-            data[off..][0..fc1_weights_bytes],
-        );
+        if (ver == 1) {
+            // v1: FC weights stored input-major [in][out], transpose to output-major.
+            const src1: *const [fc1_in][fc1_out]i8 = @alignCast(@ptrCast(data[off..][0..fc1_weights_bytes]));
+            for (0..fc1_out) |j| {
+                for (0..fc1_in) |k| {
+                    net.fc1_weights[j][k] = src1[k][j];
+                }
+            }
+        } else {
+            // v2: FC weights already output-major [out][in].
+            @memcpy(
+                std.mem.asBytes(&net.fc1_weights),
+                data[off..][0..fc1_weights_bytes],
+            );
+        }
         off += fc1_weights_bytes;
 
         @memcpy(
@@ -194,10 +202,19 @@ pub const Network = struct {
         );
         off += fc1_biases_bytes;
 
-        @memcpy(
-            std.mem.asBytes(&net.fc2_weights),
-            data[off..][0..fc2_weights_bytes],
-        );
+        if (ver == 1) {
+            const src2: *const [fc2_in][fc2_out]i8 = @alignCast(@ptrCast(data[off..][0..fc2_weights_bytes]));
+            for (0..fc2_out) |j| {
+                for (0..fc2_in) |k| {
+                    net.fc2_weights[j][k] = src2[k][j];
+                }
+            }
+        } else {
+            @memcpy(
+                std.mem.asBytes(&net.fc2_weights),
+                data[off..][0..fc2_weights_bytes],
+            );
+        }
         off += fc2_weights_bytes;
 
         @memcpy(
@@ -206,18 +223,21 @@ pub const Network = struct {
         );
         off += fc2_biases_bytes;
 
-        // Output heads: [num_output_buckets][fc2_out]i16 weights, then
-        // [num_output_buckets]i32 biases (bucket-major).
-        @memcpy(
-            std.mem.asBytes(&net.output_weights),
-            data[off..][0..output_weights_bytes],
-        );
-        off += output_weights_bytes;
+        if (ver <= 2) {
+            const src: *const [fc2_out]i8 = @ptrCast(data[off..][0..output_weights_bytes_v2]);
+            for (0..fc2_out) |i| {
+                net.output_weights[i] = src[i];
+            }
+            off += output_weights_bytes_v2;
+        } else {
+            @memcpy(
+                std.mem.asBytes(&net.output_weights),
+                data[off..][0..output_weights_bytes],
+            );
+            off += output_weights_bytes;
+        }
 
-        @memcpy(
-            std.mem.asBytes(&net.output_bias),
-            data[off..][0..output_bias_bytes],
-        );
+        net.output_bias = std.mem.readInt(i32, data[off..][0..4], .little);
 
         return net;
     }
@@ -269,25 +289,15 @@ pub const Network = struct {
         try w.writeAll(std.mem.asBytes(&self.fc2_weights));
         try w.writeAll(std.mem.asBytes(&self.fc2_biases));
 
-        // Output heads (bucket-major): weights then biases.
+        // Output
         try w.writeAll(std.mem.asBytes(&self.output_weights));
-        try w.writeAll(std.mem.asBytes(&self.output_bias));
+        try w.writeInt(i32, self.output_bias, .little);
     }
 
     pub fn deinit(self: *Network, allocator: std.mem.Allocator) void {
         allocator.destroy(self);
     }
 };
-
-// Piece-count output bucket: bucket = clamp((popcount(all_pieces) - 1) / 4, 0, 7).
-// Piece count ranges 2..32 (kings included) → buckets 0..7. Must stay identical to
-// the training-side bucket in trainer/dataloader.zig.
-pub fn outputBucket(state: *const State) usize {
-    const piece_count = state.colors[Colors.white].bitOr(Bitboard, state.colors[Colors.black]).popCount();
-    // Saturating sub: a kingless/empty (illegal) board has piece_count 0; map it to
-    // bucket 0 rather than underflowing the unsigned subtraction (panics in safe builds).
-    return @min(@as(usize, (piece_count -| 1) / 4), num_output_buckets - 1);
-}
 
 // Feature extraction
 // Flip square vertically (rank mirror) for black perspective.
@@ -346,10 +356,9 @@ pub fn activeFeatures(state: *const State, perspective: Color) FeatureList {
     return result;
 }
 
-// Quantized forward pass: accumulator → SCReLU → FC1 → FC2 → output.
+// Quantized forward pass: accumulator → ClippedReLU → FC1 → FC2 → output.
 // All arithmetic uses integer types to match the .nnue quantization scheme:
 //   - Feature transformer: i16 weights/biases, i16 accumulator
-//   - FT activation: SCReLU (squared clipped ReLU), output i8 at scale 127
 //   - Hidden layers: i8 weights, i32 biases, i8 activations (after CReLU)
 //   - Output: i8 weights, i32 bias, result in centipawns
 
@@ -598,11 +607,9 @@ fn evaluateRawFromAccumulator(state: *const State, net: *const Network, acc: *co
     const stm = state.to_move;
     const opp: Color = @intCast(~@as(u1, @intCast(stm)));
 
-    // SCReLU on the feature-transformer output: a_i8 = round(clamp(acc,0,127)² / 127),
-    // staying at scale 127 so FC1 is unchanged (see squaredClippedRelu_i16). The
-    // hidden layers below keep plain shiftClippedRelu.
-    const stm_relu = ops.squaredClippedRelu_i16(ft_out, &acc.values[stm]);
-    const opp_relu = ops.squaredClippedRelu_i16(ft_out, &acc.values[opp]);
+    // ClippedReLU: clamp to [0, 127], truncate to i8.
+    const stm_relu = ops.clippedRelu_i16(ft_out, &acc.values[stm]);
+    const opp_relu = ops.clippedRelu_i16(ft_out, &acc.values[opp]);
 
     // Concatenate perspectives: side-to-move first → [512]i8
     var concat: [fc1_in]i8 = undefined;
@@ -617,12 +624,10 @@ fn evaluateRawFromAccumulator(state: *const State, net: *const Network, acc: *co
     const fc2_raw = quantized.linearForward_i8(fc2_in, fc2_out, &fc1_act, @ptrCast(&net.fc2_weights), &net.fc2_biases);
     const fc2_act = quantized.shiftClippedRelu_i8(fc2_out, 6, &fc2_raw);
 
-    // Output: select the piece-count bucket head, then i8 activations × i16
-    // weights dot product + bias.
-    const bucket = outputBucket(state);
-    var output: i32 = net.output_bias[bucket];
+    // Output: i8 activations × i16 weights dot product + bias
+    var output: i32 = net.output_bias;
     for (0..fc2_out) |i| {
-        output += @as(i32, fc2_act[i]) * @as(i32, net.output_weights[bucket][i]);
+        output += @as(i32, fc2_act[i]) * @as(i32, net.output_weights[i]);
     }
     return output;
 }
@@ -728,7 +733,7 @@ test "network round trip" {
     // Set a known FT bias value at index 0
     std.mem.writeInt(i16, buf[header_size..][0..2], 42, .little);
 
-    // Set a known output bias (first bucket's bias = start of the bias section).
+    // Set a known output bias
     const output_bias_off = header_size + data_bytes - output_bias_bytes;
     std.mem.writeInt(i32, buf[output_bias_off..][0..4], -123, .little);
 
@@ -737,7 +742,7 @@ test "network round trip" {
 
     try std.testing.expectEqual(@as(i16, 42), net.ft_biases[0]);
     try std.testing.expectEqual(@as(i16, 0), net.ft_biases[1]);
-    try std.testing.expectEqual(@as(i32, -123), net.output_bias[0]);
+    try std.testing.expectEqual(@as(i32, -123), net.output_bias);
 }
 
 test "network write/load round trip" {
@@ -757,9 +762,9 @@ test "network write/load round trip" {
     net.fc1_biases[0] = 100;
     net.fc2_weights[0][0] = 3;
     net.fc2_biases[fc2_out - 1] = -50;
-    net.output_weights[0][0] = 21;
-    net.output_weights[0][fc2_out - 1] = -22;
-    net.output_bias[0] = 12345;
+    net.output_weights[0] = 21;
+    net.output_weights[fc2_out - 1] = -22;
+    net.output_bias = 12345;
 
     const buf = try allocator.alloc(u8, expected_file_size);
     defer allocator.free(buf);
@@ -779,9 +784,9 @@ test "network write/load round trip" {
     try std.testing.expectEqual(@as(i32, 100), net2.fc1_biases[0]);
     try std.testing.expectEqual(@as(i8, 3), net2.fc2_weights[0][0]);
     try std.testing.expectEqual(@as(i32, -50), net2.fc2_biases[fc2_out - 1]);
-    try std.testing.expectEqual(@as(i16, 21), net2.output_weights[0][0]);
-    try std.testing.expectEqual(@as(i16, -22), net2.output_weights[0][fc2_out - 1]);
-    try std.testing.expectEqual(@as(i32, 12345), net2.output_bias[0]);
+    try std.testing.expectEqual(@as(i16, 21), net2.output_weights[0]);
+    try std.testing.expectEqual(@as(i16, -22), net2.output_weights[fc2_out - 1]);
+    try std.testing.expectEqual(@as(i32, 12345), net2.output_bias);
 }
 
 test "loadFromBytes rejects bad magic" {
@@ -813,7 +818,7 @@ test "loadFromBytes rejects short file" {
 test "expected file size" {
     // header 16 + ft_biases (512×2) + ft_weights (40960×512×2) + fc1_weights
     // (1024×32) + fc1_biases (32×4) + fc2_weights (32×32) + fc2_biases (32×4)
-    // + output_weights (1×32×2) + output_bias (1×4)  — single head
+    // + output_weights (32×2) + output_bias (4)
     try std.testing.expectEqual(
         @as(usize, 16 + 1_024 + 41_943_040 + 32_768 + 128 + 1_024 + 128 + 64 + 4),
         expected_file_size,
@@ -854,22 +859,18 @@ test "evaluate zero network returns zero" {
 
 test "evaluate output bias only" {
     // With all weights zero, only the output bias contributes.
-    // Result = output_bias ÷ (127 × 64). Single output head, so every position
-    // selects bucket 0.
+    // Result = output_bias ÷ (127 × 64)
     const allocator = std.testing.allocator;
     const net = try createZeroNetwork(allocator);
     defer net.deinit(allocator);
 
-    const start_bucket = outputBucket(&State.defaultPosition());
-    try std.testing.expectEqual(@as(usize, 0), start_bucket);
-
-    net.output_bias[start_bucket] = 127 * 64; // Should produce exactly 1 centipawn
+    net.output_bias = 127 * 64; // Should produce exactly 1 centipawn
     try std.testing.expectEqual(@as(i32, 1), evaluate(&State.defaultPosition(), net));
 
-    net.output_bias[start_bucket] = -(127 * 64); // Should produce exactly -1 centipawn
+    net.output_bias = -(127 * 64); // Should produce exactly -1 centipawn
     try std.testing.expectEqual(@as(i32, -1), evaluate(&State.defaultPosition(), net));
 
-    net.output_bias[start_bucket] = 127 * 64 * 100; // 100 centipawns
+    net.output_bias = 127 * 64 * 100; // 100 centipawns
     try std.testing.expectEqual(@as(i32, 100), evaluate(&State.defaultPosition(), net));
 }
 

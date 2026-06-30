@@ -1,0 +1,16 @@
+Fathom — Syzygy tablebase probing library (vendored)
+
+Upstream:  https://github.com/jdart1/Fathom
+Commit:    c9c6fef0dddc05d2e242c183acf5833149ab676d
+License:   MIT (see LICENSE)
+
+Vendored files (from upstream src/):
+  tbprobe.c   — probing implementation (compiled; #includes tbchess.c)
+  tbchess.c   — move/board helpers, #included by tbprobe.c (not compiled standalone)
+  tbprobe.h   — public API (tb_init, tb_free, tb_probe_wdl, TB_LARGEST)
+  tbconfig.h  — build-time configuration (defaults; pulled in via <tbconfig.h>)
+  stdendian.h — endian helpers
+
+Usage in chez: only the `uci` and `selfplay` executables compile and link this C
+library (see build.zig). The engine module and the WASM target stay C-free.
+WDL-only probing of 3-4-5-man tables; see src/fathom.zig and src/engine/tablebase.zig.
