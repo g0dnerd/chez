@@ -24,3 +24,10 @@ sweep_summary.log
 
 # Editor/merge backup files
 *.orig
+
+# Scratch handoff/spec docs, tuned param dumps, review artifacts
+*_HANDOFF.md
+*_SPEC.md
+tuned_*.txt
+review-iteration-1.html
+fidelity_suite.fen
